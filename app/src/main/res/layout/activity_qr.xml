@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:gravity="center_horizontal">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="百度网盘扫码授权"
+            android:textColor="#FFFFFFFF"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <ImageView
+            android:id="@+id/ivQr"
+            android:layout_width="320dp"
+            android:layout_height="320dp"
+            android:layout_marginTop="20dp"
+            android:background="#FFFFFFFF"
+            android:scaleType="fitCenter" />
+
+        <TextView
+            android:id="@+id/tvQrStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="正在获取二维码…"
+            android:textColor="#FF9AA0A6"
+            android:textSize="15sp" />
+
+        <TextView
+            android:id="@+id/tvQrHelp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:gravity="center"
+            android:text="打开手机 百度网盘APP → 扫一扫，扫描二维码并在手机上确认登录"
+            android:textColor="#FF6E747B"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/tvQrRetry"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:background="#FF22262B"
+            android:paddingStart="20dp"
+            android:paddingEnd="20dp"
+            android:paddingTop="10dp"
+            android:paddingBottom="10dp"
+            android:text="重新获取二维码"
+            android:textColor="#FFFFFFFF"
+            android:textSize="14sp"
+            android:focusable="true" />
+    </LinearLayout>
+</ScrollView>
