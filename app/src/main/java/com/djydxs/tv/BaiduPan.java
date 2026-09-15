@@ -180,11 +180,13 @@ public final class BaiduPan {
             String sekey = "";
             if (pwd != null && !pwd.isEmpty()) {
                 String vbody = "pwd=" + enc(pwd) + "&vcode=&vcode_str=";
+                java.util.Map<String, String> vh = new java.util.HashMap<>();
+                vh.put("Referer", "https://pan.baidu.com/share/init?surl=" + surl);
                 Http.Resp vr = Http.request("POST",
                         "https://pan.baidu.com/share/verify?surl=" + surl
                                 + "&t=" + System.currentTimeMillis()
                                 + "&channel=chunlei&web=1&bdstoken=null&clienttype=0&app_id=250528",
-                        vbody, null, true);
+                        vbody, vh, true);
                 String errno = errnoOf(vr.body);
                 if (vr.code != 200 || !"0".equals(errno)) {
                     out.message = "提取码错误或链接失效(" + errno + ")";
@@ -213,6 +215,7 @@ public final class BaiduPan {
             // 3) 打开分享页（桌面 UA + BDCLND）
             java.util.Map<String, String> hdrs = new java.util.HashMap<>();
             hdrs.put("Cookie", finalCookie);
+            hdrs.put("Referer", "https://pan.baidu.com/share/init?surl=" + surl);
             Http.Resp page = Http.request("GET", shareUrl, null, hdrs, true);
             if (page.code != 200 || page.body.isEmpty()) {
                 out.message = "分享页访问失败(" + page.code + ")";
@@ -315,7 +318,10 @@ public final class BaiduPan {
                     }
                 }
                 if (ids2.isEmpty()) {
-                    out.message = "分享内没有可转存的文件(页面与接口均空, 目录=" + targetDir + ")";
+                    out.message = "没有文件[页长" + html.length()
+                            + " yun=" + html.contains("yunData")
+                            + " fl=" + html.contains("fs_id")
+                            + " 验证=" + html.contains("安全验证") + "]";
                     return out;
                 }
                 fsids = new long[ids2.size()];
