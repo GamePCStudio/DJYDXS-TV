@@ -79,7 +79,7 @@ public final class Site {
     private static final Pattern RE_IMG = Pattern.compile(
             "<img[^>]*?src=\"(https?:[^\"]+|//[^\"]+)\"", Pattern.CASE_INSENSITIVE);
     private static final Pattern RE_HB_CARD = Pattern.compile(
-            "<li[^>]*class=\"[^"]*haibao-movie-card[^"]*\"[^>]*>(.*?)</li>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+            "<li[^>]*class=\"[^\" ]*haibao-movie-card[^\" ]*\"[^>]*>(.*?)</li>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
     private static final Pattern RE_HB_TID = Pattern.compile("href=\"thread-(\\d+)-1-\\d+\\.html\"", Pattern.CASE_INSENSITIVE);
     private static final Pattern RE_HB_TITLE = Pattern.compile(
             "<p[^>]*class=\"[^\"]*haibao-card-title[^\"]*\"[^>]*>(.*?)</p>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
