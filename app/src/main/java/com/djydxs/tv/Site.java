@@ -76,7 +76,7 @@ public final class Site {
             "<a href=\"thread-(\\d+)-1-\\d+\\.html\"[^>]*>(.*?)</a>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
     /** 懒加载图片：优先 file=（Discuz 首楼真实图），其次 data-src/_src/origin，最后 src= */
     private static final Pattern RE_IMG_LAZY = Pattern.compile(
-            "<img[^>]*?(?:file|data-src|data-original|_src|origin)\s*=\"(https?:[^\"]+|//[^\"]+)\"",
+            "<img[^>]*?(?:file|data-src|data-original|_src|origin)[ \t]*=\"(https?:[^\"]+|//[^\"]+)\"",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern RE_IMG = Pattern.compile(
             "<img[^>]*?src=\"(https?:[^\"]+|//[^\"]+)\"", Pattern.CASE_INSENSITIVE);
