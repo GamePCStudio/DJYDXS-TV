@@ -14,6 +14,19 @@ import java.util.regex.Pattern;
 public final class Site {
     public static final String BASE = "https://4kzimu.top";
 
+    /** 论坛登录 Cookie（与 PY 版 DJYDXS-BD.py 内置 COOKIES 同源，解锁会员版块）。
+     *  过期后可在 设置→论坛登录 里重新登录覆盖。 */
+    public static final String DEFAULT_FORUM_COOKIE =
+            "cTo3_2132_saltkey=LT8prnHZ; cTo3_2132_lastvisit=1786540756; cTo3_2132_d_i18n=1; "
+            + "cTo3_2132_auth=9a78u8lqMEXHcRmxDZNME8RdODrNj7EGVDPztAMw0acbfosCY%2BwDHkZzuResPPmCxMgYICq33ahy%2FPIAoIStwVjl; "
+            + "cTo3_2132_lastcheckfeed=1410%7C1786544367; cTo3_2132_nofavfid=1; cTo3_2132_smile=5D1; "
+            + "cTo3_2132_visitedfid=112D2; cTo3_2132_member_login_status=1; cTo3_2132_movmod_112=liebiao; "
+            + "cTo3_2132_st_t=1410%7C1788883036%7C45167182f20df932a09c05ea4e2e8eaa; "
+            + "cTo3_2132_forum_lastvisit=D_2_1787903684D_112_1788883036; cTo3_2132_sid=F0TW8w; "
+            + "cTo3_2132_lip=104.28.211.46%2C1788883024; cTo3_2132_onlineusernum=34; "
+            + "cTo3_2132_ulastactivity=5df3hv1yM3mnCkPeJS4JTPJMoqRackSdYz3hxkDo2gpoky2WRZXY; "
+            + "cTo3_2132_lastact=1788940692%09plugin.php%09";
+
     public static class Category {
         public final int fid;
         public final String name;
@@ -83,6 +96,18 @@ public final class Site {
         return html != null && html.length() > 100
                 && html.contains("name=\"loginsubmit\"")
                 && html.contains("登录");
+    }
+
+    /** 启动时注入内置论坛 Cookie（用户没有手动登录过时生效）。 */
+    public static void ensureForumCookie() {
+        String have = CookieStore.get(BASE + "/", "cTo3_2132_auth");
+        if (have == null || have.isEmpty()) {
+            for (String kv : DEFAULT_FORUM_COOKIE.split("; ")) {
+                int i = kv.indexOf('=');
+                if (i <= 0) continue;
+                CookieStore.put(BASE + "/", kv.substring(0, i).trim(), kv.substring(i + 1).trim());
+            }
+        }
     }
 
     /** 版块列表（海报墙 + 表格兜底），返回条目与总页数。 */

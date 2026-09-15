@@ -49,19 +49,25 @@ public class QrActivity extends Activity {
         ivQr.setImageDrawable(null);
         pool.execute(() -> {
             BaiduPan.QrSession s = BaiduPan.qrStart();
+            if (s.sign.isEmpty() || s.qrimgUrl.isEmpty()) {
+                main.post(() -> tvStatus.setText("二维码获取失败，请重试（检查网络）"));
+                return;
+            }
+            sign = s.sign;
+            // 二维码图片必须在工作线程下载（主线程下载会抛 NetworkOnMainThreadException）
+            byte[] img = BaiduPan.fetchImage(s.qrimgUrl);
+            final android.graphics.Bitmap bmp =
+                    img == null ? null : BitmapFactory.decodeByteArray(img, 0, img.length);
             main.post(() -> {
-                if (s.sign.isEmpty() || s.qrimgUrl.isEmpty()) {
-                    tvStatus.setText("二维码获取失败，请重试（检查网络）");
-                    return;
-                }
-                sign = s.sign;
-                byte[] img = BaiduPan.fetchImage(s.qrimgUrl);
-                if (img != null) {
-                    Bitmap bmp = BitmapFactory.decodeByteArray(img, 0, img.length);
+                if (bmp != null) {
                     ivQr.setImageBitmap(bmp);
+                } else {
+                    tvStatus.setText("二维码下载失败，请点下方重试");
                 }
-                tvStatus.setText("请用 百度网盘APP 扫一扫");
-                startPolling();
+                if (bmp != null) {
+                    tvStatus.setText("请用 百度网盘APP 扫一扫");
+                    startPolling();
+                }
             });
         });
     }

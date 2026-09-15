@@ -49,6 +49,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         CookieStore.init(this);
         Settings.init(this);
+        Site.ensureForumCookie(); // 注入内置论坛 Cookie，解锁会员版块
         setContentView(R.layout.activity_list);
 
         tvTitle = findViewById(R.id.titleView);

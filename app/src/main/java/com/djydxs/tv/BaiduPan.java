@@ -351,6 +351,10 @@ public final class BaiduPan {
             conn.setConnectTimeout(12000);
             conn.setReadTimeout(15000);
             conn.setRequestProperty("User-Agent", Http.UA);
+            String ck = CookieStore.cookieFor(url);
+            if (ck != null && !ck.isEmpty()) {
+                conn.setRequestProperty("Cookie", ck);
+            }
             InputStream is = conn.getInputStream();
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
             byte[] buf = new byte[8192];

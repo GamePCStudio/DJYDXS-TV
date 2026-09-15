@@ -1,6 +1,7 @@
 package com.djydxs.tv;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.os.Bundle;
 import android.view.View;
@@ -53,6 +54,9 @@ public class SettingsActivity extends Activity {
         group.addView(option("最近转存：" + (Settings.lastTransfer().isEmpty() ? "无" : "有记录"),
                 "详情页转存后更新", null));
 
+        // ③.5 连接诊断
+        group.addView(option("连接诊断", "测试论坛/百度接口连通性", v -> runDiag()));
+
         // ④ 论坛登录（TV 上用内置浏览器登录，解锁会员版块）
         group.addView(sectionLabel("论坛账号"));
         group.addView(option("论坛登录（4kzimu.top）", "内置浏览器登录后自动记住 Cookie，解锁会员版块", v ->
@@ -67,6 +71,36 @@ public class SettingsActivity extends Activity {
                 rebuild();
             }));
         }
+    }
+
+    private void runDiag() {
+        Toast.makeText(this, "诊断中…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            final StringBuilder sb = new StringBuilder();
+            // 论坛首页
+            Http.Resp r1 = Http.get(Site.BASE + "/forum.php");
+            boolean forumOk = r1.code == 200 && !Site.isLoginWall(r1.body);
+            sb.append("论坛: ").append(r1.code == 0 ? "网络不可达" : ("HTTP " + r1.code))
+              .append(forumOk ? " (已登录)" : (r1.code == 200 ? " (被登录墙拦截)" : ""));
+            sb.append("\n");
+            // 百度二维码接口
+            Http.Resp r2 = Http.get("https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=skip");
+            String qrHint = "";
+            if (r2.code == 200 && r2.body.contains("sign")) qrHint = " (正常)";
+            sb.append("百度扫码接口: ").append(r2.code == 0 ? "网络不可达" : ("HTTP " + r2.code)).append(qrHint);
+            sb.append("\n");
+            // 百度网盘登录态
+            sb.append("百度登录态: ").append(CookieStore.hasBaiduLogin() ? "已授权" : "未授权");
+            sb.append("\n");
+            // 论坛 Cookie
+            String auth = CookieStore.get(Site.BASE + "/", "cTo3_2132_auth");
+            sb.append("论坛Cookie: ").append(auth == null || auth.isEmpty() ? "未注入" : "已内置");
+            runOnUiThread(() -> new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
+                    .setTitle("连接诊断")
+                    .setMessage(sb.toString())
+                    .setPositiveButton("好", null)
+                    .show());
+        }).start();
     }
 
     private TextView sectionLabel(String text) {

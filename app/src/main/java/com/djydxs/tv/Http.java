@@ -33,7 +33,11 @@ public final class Http {
             conn.setReadTimeout(20000);
             conn.setRequestMethod(method);
             conn.setRequestProperty("User-Agent", UA);
-            conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9");
+            conn.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
+            conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+            conn.setRequestProperty("Accept-Encoding", "identity");
+            conn.setRequestProperty("Connection", "keep-alive");
+            conn.setRequestProperty("Upgrade-Insecure-Requests", "1");
             if (url.contains("pan.baidu.com")) {
                 conn.setRequestProperty("Referer", "https://pan.baidu.com/");
             } else if (url.contains("4kzimu.top")) {
