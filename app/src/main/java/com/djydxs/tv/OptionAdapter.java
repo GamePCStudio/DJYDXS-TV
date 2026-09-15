@@ -54,12 +54,14 @@ public class OptionAdapter extends RecyclerView.Adapter<OptionAdapter.VH> {
         Option o = items.get(pos);
         String text = o.title + (o.sub == null || o.sub.isEmpty() ? "" : "\n" + o.sub);
         h.tv.setText(text);
-        h.tv.setTextColor(o.highlight ? 0xFF1E88E5 : 0xFFEEEEEE);
+        h.tv.setTextColor(o.highlight ? 0xFF1E88E5 : 0xFFC6CBD2);
         h.itemView.setOnClickListener(v -> {
             if (listener != null) listener.onClick(o, h.getAdapterPosition());
         });
+        // 焦点高亮由 bg_cat/bg_option selector 处理，这里只做缩放反馈
         h.itemView.setOnFocusChangeListener((v, has) -> {
-            v.setBackgroundColor(has ? 0xFF2A323C : 0xFF1A1F26);
+            v.setScaleX(has ? 1.06f : 1f);
+            v.setScaleY(has ? 1.06f : 1f);
         });
     }
 

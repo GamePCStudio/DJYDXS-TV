@@ -142,32 +142,67 @@ public final class Site {
     public static Paged<List<Movie>> search(String kw, int page) {
         Paged<List<Movie>> out = new Paged<>();
         out.data = new ArrayList<>();
+        out.pageCount = 1;
         try {
-            String url = BASE + "/search.php?mod=forum&srchtxt="
-                    + java.net.URLEncoder.encode(kw, "UTF-8") + "&searchsubmit=yes";
-            if (page > 1) url += "&page=" + page;
+            // 第 1 页：发起新搜索（有 10 秒防刷限制）；翻页：用 searchid 复用结果
+            String url;
+            if (page == 1) {
+                url = BASE + "/search.php?mod=forum&srchtxt="
+                        + java.net.URLEncoder.encode(kw, "UTF-8") + "&searchsubmit=yes";
+            } else {
+                String sid = lastSearchSid;
+                if (sid == null || sid.isEmpty()) return out;
+                url = BASE + "/search.php?mod=forum&searchid=" + sid
+                        + "&orderby=lastpost&ascdesc=desc&searchsubmit=yes&kw="
+                        + java.net.URLEncoder.encode(kw, "UTF-8") + "&page=" + page;
+            }
             Http.Resp r = Http.get(url);
             if (r.code != 200 || isLoginWall(r.body)) return out;
             String html = r.body;
-            // 搜索结果行：<li class="pbw" id="TID"> ... <h3>...<a ...>标题</a>
+            // 记录 searchid 供翻页
+            Matcher sidm = Pattern.compile("searchid=(\\d+)").matcher(html);
+            if (sidm.find()) lastSearchSid = sidm.group(1);
+            // 结果行：<li class="pbw" id="TID"> ... <h3 ...><a ...>标题</a> ... </li>
             Pattern li = Pattern.compile(
-                    "<li[^>]*class=\"pbw\"[^>]*id=\"(\\d+)\"[^>]*>\\s*<h3[^>]*>\\s*<a[^>]*>(.*?)</a>",
+                    "<li[^>]*class=\"pbw\"[^>]*id=\"(\\d+)\"[^>]*>(.*?)</li>",
                     Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
             Matcher mm = li.matcher(html);
+            Pattern at = Pattern.compile("<h3[^>]*>\\s*<a[^>]*>(.*?)</a>", Pattern.DOTALL);
+            Pattern fdate = Pattern.compile("<span>\\s*(\\d{4}-\\d{1,2}-\\d{1,2})");
+            Pattern ffid = Pattern.compile("forum-(\\d+)-\\d+\\.html|forumdisplay&amp;fid=(\\d+)");
             while (mm.find()) {
+                String tid = mm.group(1);
+                String body = mm.group(2);
+                Matcher ta = at.matcher(body);
+                if (!ta.find()) continue;
                 Movie m = new Movie();
-                m.tid = mm.group(1);
-                m.name = stripTags(mm.group(2));
+                m.tid = tid;
+                m.name = stripTags(ta.group(1));
                 if (m.name.length() < 2) continue;
-                m.fid = 0;
+                Matcher ff = ffid.matcher(body);
+                m.fid = ff.find() ? Integer.parseInt(ff.group(1) != null ? ff.group(1) : ff.group(2)) : 0;
+                Matcher fd = fdate.matcher(body);
+                if (fd.find()) m.remarks = fd.group(1);
                 out.data.add(m);
             }
-            out.pageCount = 5;
+            // 总页数
+            Matcher pm = Pattern.compile("共\\s*(\\d+)\\s*页").matcher(html);
+            if (pm.find()) {
+                try { out.pageCount = Math.max(1, Integer.parseInt(pm.group(1))); } catch (Exception ignored) {}
+            } else {
+                // 用总条数估算（Discuz 每页 36 条）
+                Matcher tm = Pattern.compile("相关内容\\s*(\\d+)\\s*个").matcher(html);
+                if (tm.find()) {
+                    try { out.pageCount = Math.max(1, (Integer.parseInt(tm.group(1)) + 35) / 36); } catch (Exception ignored) {}
+                }
+            }
             return out;
         } catch (Exception e) {
             return out;
         }
     }
+
+    private static volatile String lastSearchSid = "";
 
     /** 详情：标题/海报/简介/日期/片长 + 下载源（只保留百度）。 */
     public static Detail detail(int fid, String tid) {
