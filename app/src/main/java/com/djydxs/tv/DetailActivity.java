@@ -152,14 +152,23 @@ public class DetailActivity extends Activity {
         final String pwd = sharePwd;
         final String dir = Settings.saveDir();
         pool.execute(() -> {
-            BaiduPan.TransferResult r = BaiduPan.transfer(url, pwd, dir);
+            BaiduPan.TransferResult r;
+            try {
+                r = BaiduPan.transfer(url, pwd, dir);
+            } catch (Throwable e) {
+                // 兕底：任何异常都不允许闪退，转成失败提示
+                r = new BaiduPan.TransferResult();
+                r.ok = false;
+                r.message = "转存异常：" + e.getClass().getSimpleName();
+            }
+            final BaiduPan.TransferResult fr = r;
             main.post(() -> {
                 transferring = false;
-                Settings.recordTransfer(dir, r.ok);
+                Settings.recordTransfer(dir, fr.ok);
                 String t = new java.text.SimpleDateFormat("M-d HH:mm", java.util.Locale.CHINA)
                         .format(new java.util.Date());
-                tvTransferResult.setText((r.ok ? "✔ " : "✘ ") + r.message + "   (" + t + ")");
-                Toast.makeText(this, r.message, Toast.LENGTH_LONG).show();
+                tvTransferResult.setText((fr.ok ? "✔ " : "✘ ") + fr.message + "   (" + t + ")");
+                Toast.makeText(this, fr.message, Toast.LENGTH_LONG).show();
             });
         });
     }

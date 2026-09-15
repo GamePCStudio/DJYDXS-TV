@@ -223,8 +223,8 @@ public final class BaiduPan {
 
             // 4) 提取 shareid / uk：三种形态（window.yunData={...} / locals.mset({...}) / yunData.setData({...})）
             String shareid = null, uk = null;
-                    Pattern pSid = Pattern.compile("shareid[^\\d]{0,8}(\\d+)");
-                    Pattern pUk = Pattern.compile("share_uk[^\\d]{0,8}(\\d+)");
+                    Pattern pSid = Pattern.compile("shareid[^\\d]{0,8}(\\d{9,})");
+                    Pattern pUk = Pattern.compile("share_uk[^\\d]{0,8}(\\d{9,})");
             Matcher ms = pSid.matcher(html);
             if (ms.find()) shareid = ms.group(1);
             Matcher mu = pUk.matcher(html);
@@ -238,10 +238,10 @@ public final class BaiduPan {
             // 5) file_list：独立 JSON 块 "file_list":[{...}]
             long[] fsids = null;
             boolean rootIsDir = false;
-            Matcher mf = Pattern.compile("file_list[^\\[]{0,20} ((\\[{.*?\\}]))", Pattern.DOTALL).matcher(html);
-            if (mf.find()) {
+            String flJson = extractFileListJson(html);
+            if (flJson != null) {
                 try {
-                    JSONArray fl = new JSONArray(mf.group(1));
+                    JSONArray fl = new JSONArray(flJson);
                     List<Long> ids = new ArrayList<>();
                     String onlyDirPath = null;
                     for (int i = 0; i < fl.length(); i++) {
@@ -355,6 +355,38 @@ public final class BaiduPan {
         String s = m.group(1);
         if (s.startsWith("1") && s.length() > 20) s = s.substring(1);
         return s;
+    }
+
+    /** 从 HTML 里提取含 fs_id 的 "file_list":[...] JSON（页面有多个 file_list，只有真实文件列表含 fs_id）。 */
+    private static String extractFileListJson(String html) {
+        if (html == null) return null;
+        int from = 0;
+        while (true) {
+            int key = html.indexOf("file_list", from);
+            if (key < 0) return null;
+            from = key + 9;
+            int lb = html.indexOf('[', key);
+            if (lb < 0) return null;
+            boolean inStr = false, esc = false;
+            int depth = 0;
+            int end = -1;
+            for (int i = lb; i < html.length() && i < lb + 200000; i++) {
+                char c = html.charAt(i);
+                if (esc) { esc = false; continue; }
+                if (c == '\\') { esc = true; continue; }
+                if (c == '"') inStr = !inStr;
+                if (inStr) continue;
+                if (c == '[') depth++;
+                else if (c == ']') {
+                    depth--;
+                    if (depth == 0) { end = i + 1; break; }
+                }
+            }
+            if (end < 0) return null;
+            String candidate = html.substring(lb, end);
+            if (candidate.contains("fs_id")) return candidate;
+            // 否则继续找下一个 file_list 出现位置
+        }
     }
 
     private static String errnoOf(String body) {
