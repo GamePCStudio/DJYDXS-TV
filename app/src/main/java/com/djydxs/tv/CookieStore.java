@@ -23,12 +23,13 @@ public final class CookieStore {
     }
 
     private static Map<String, String> bucket(String host) {
-        Map<String, String> b = JAR.get(bucketKey(host));
+        String key = bucketKey(host);
+        Map<String, String> b = JAR.get(key);
         if (b == null) {
             b = new HashMap<>();
-            JAR.put(host, b);
+            JAR.put(key, b);
             if (prefs != null) {
-                String saved = prefs.getString("ck_" + host, null);
+                String saved = prefs.getString("ck_" + key, null);
                 if (saved != null) {
                     for (String kv : saved.split("; ")) {
                         int i = kv.indexOf('=');
@@ -43,22 +44,27 @@ public final class CookieStore {
     /** 从 Set-Cookie 响应头存储。 */
     public static void storeFrom(String url, Map<String, List<String>> headers) {
         if (headers == null) return;
-        String host = hostOf(url);
+        String host = bucketKey(hostOf(url));
         if (host == null) return;
         List<String> setCookies = headers.get("set-cookie");
         if (setCookies == null) setCookies = headers.get("Set-Cookie");
         if (setCookies == null) return;
         boolean changed = false;
+        String bkey = bucketKey(host);
         synchronized (JAR) {
-            Map<String, String> b = bucket(bucketKey(host));
+            Map<String, String> b = bucket(bkey);
             for (String sc : setCookies) {
                 String first = sc.split(";", 2)[0];
                 int i = first.indexOf('=');
                 if (i <= 0) continue;
                 String k = first.substring(0, i).trim();
                 String v = first.substring(i + 1).trim();
-                // 空值=过期删除
+                // 空值 = 站点要求删除该 cookie。
+                // 保护登录态：BDUSS/STOKEN/BDCLND 永不因响应清空（否则一次普通页面
+                // 请求就可能抹掉扫码授权），只在用户主动解除授权时清。
+                boolean isAuth = "BDUSS".equals(k) || "STOKEN".equals(k) || "BDCLND".equals(k);
                 if (v.isEmpty()) {
+                    if (isAuth) continue;
                     b.remove(k);
                 } else {
                     b.put(k, v);
@@ -70,17 +76,17 @@ public final class CookieStore {
                 for (Map.Entry<String, String> e : b.entrySet()) {
                     sb.append(e.getKey()).append('=').append(e.getValue()).append("; ");
                 }
-                prefs.edit().putString("ck_" + host, sb.toString()).apply();
+                prefs.edit().putString("ck_" + bkey, sb.toString()).apply();
             }
         }
     }
 
     /** 取请求用 Cookie 头。 */
     public static String cookieFor(String url) {
-        String host = hostOf(url);
+        String host = bucketKey(hostOf(url));
         if (host == null) return "";
         synchronized (JAR) {
-            Map<String, String> b = bucket(bucketKey(host));
+            Map<String, String> b = bucket(host);
             List<String> parts = new ArrayList<>();
             // BDUSS/STOKEN 放最前
             for (String pri : new String[]{"BDUSS", "STOKEN", "BDCLND"}) {
@@ -109,10 +115,10 @@ public final class CookieStore {
 
     /** 手动塞 cookie（扫码成功后写入 BDUSS/STOKEN）。 */
     public static void put(String url, String name, String value) {
-        String host = hostOf(url);
+        String host = bucketKey(hostOf(url));
         if (host == null) return;
         synchronized (JAR) {
-            Map<String, String> b = bucket(bucketKey(host));
+            Map<String, String> b = bucket(host);
             if (value == null || value.isEmpty()) b.remove(name);
             else b.put(name, value);
             if (prefs != null) {
@@ -126,10 +132,10 @@ public final class CookieStore {
     }
 
     public static String get(String url, String name) {
-        String host = hostOf(url);
+        String host = bucketKey(hostOf(url));
         if (host == null) return "";
         synchronized (JAR) {
-            return bucket(bucketKey(host)).get(name);
+            return bucket(host).get(name);
         }
     }
 

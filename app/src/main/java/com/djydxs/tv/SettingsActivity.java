@@ -24,6 +24,12 @@ public class SettingsActivity extends Activity {
         rebuild();
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        rebuild(); // 从扫码页/诊断返回后立即刷新授权状态显示
+    }
+
     private void rebuild() {
         group.removeAllViews();
         boolean authed = CookieStore.hasBaiduLogin();

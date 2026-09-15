@@ -328,14 +328,14 @@ public final class BaiduPan {
     private static boolean ensureDir(String path) {
         if (path == null || !path.startsWith("/")) return false;
         String p = path.endsWith("/") && path.length() > 1 ? path.substring(0, path.length() - 1) : path;
-        // 已存在？
+        // 已存在？api/list errno=0 或 errno=-9(目录不存在) 都属正常响应
         Http.Resp list = Http.get("https://pan.baidu.com/api/list?clienttype=0&app_id=250528&web=1&dir=" + enc(p));
-        if (list.code == 200 && list.body.replace(" ", "").contains("\"errno\":0")) return true;
+        if (list.code == 200 && "0".equals(errnoOf(list.body))) return true;
         // 创建
         Http.Resp cr = Http.request("POST",
                 "https://pan.baidu.com/api/create?clienttype=0&app_id=250528&web=1",
                 "path=" + enc(p) + "&isdir=1&block_list=%5B%5D", null, true);
-        return cr.code == 200 && cr.body.replace(" ", "").contains("\"errno\":0");
+        return cr.code == 200 && "0".equals(errnoOf(cr.body));
     }
 
     private static String getBdstoken() {
