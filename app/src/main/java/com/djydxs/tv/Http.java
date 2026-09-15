@@ -9,7 +9,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
-/** 简易 HTTP：带 Cookie jar，解析 Set-Cookie，统一 UA。 */
+/**
+ * 简易 HTTP：带持久 Cookie jar，手动跟随 302（每一跳的 Set-Cookie 都入库）。
+ * 对齐 PY 版行为：Discuz search.php 第一跳 302 会下发新 sid cookie，
+ * 自动重定向模式会丢失中间跳的 Set-Cookie，导致第二跳鉴权失败 —— 必须手动跟。
+ */
 public final class Http {
     public static final String UA =
             "Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -22,9 +26,9 @@ public final class Http {
 
     private Http() {}
 
-    /** GET/POST，自动带上 CookieStore 里对应 host 的 cookie，并把响应 Set-Cookie 存回去。 */
-    public static Resp request(String method, String url, String body,
-                               Map<String, String> extraHeaders, boolean followRedirects) {
+    /** GET/POST（不自动重定向），把响应 Set-Cookie 存进 jar。 */
+    private static Resp raw(String method, String url, String body,
+                            Map<String, String> extraHeaders) {
         HttpURLConnection conn = null;
         try {
             URL u = new URL(url);
@@ -32,12 +36,10 @@ public final class Http {
             conn.setConnectTimeout(15000);
             conn.setReadTimeout(20000);
             conn.setRequestMethod(method);
+            conn.setInstanceFollowRedirects(false); // 关键：手动跟跳
             conn.setRequestProperty("User-Agent", UA);
             conn.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
             conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
-            conn.setRequestProperty("Accept-Encoding", "identity");
-            conn.setRequestProperty("Connection", "keep-alive");
-            conn.setRequestProperty("Upgrade-Insecure-Requests", "1");
             if (url.contains("pan.baidu.com")) {
                 conn.setRequestProperty("Referer", "https://pan.baidu.com/");
             } else if (url.contains("4kzimu.top")) {
@@ -52,7 +54,6 @@ public final class Http {
                     conn.setRequestProperty(e.getKey(), e.getValue());
                 }
             }
-            conn.setInstanceFollowRedirects(followRedirects);
             if (body != null) {
                 conn.setDoOutput(true);
                 conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
@@ -75,6 +76,49 @@ public final class Http {
             return r;
         } finally {
             if (conn != null) conn.disconnect();
+        }
+    }
+
+    /** 带手动重定向的请求：最多跟 5 跳，每跳 Set-Cookie 入 jar，Location 相对路径自动补全。 */
+    public static Resp request(String method, String url, String body,
+                               Map<String, String> extraHeaders, boolean followRedirects) {
+        String cur = url;
+        for (int hop = 0; hop < 5; hop++) {
+            Resp r = raw(method, cur, body, extraHeaders);
+            if (followRedirects && (r.code == 301 || r.code == 302 || r.code == 303 || r.code == 307)) {
+                String loc = headerValue(r.headers, "location");
+                if (loc == null || loc.isEmpty()) return r;
+                cur = absUrl(cur, loc);
+                // 303/302 after POST -> GET
+                if (r.code == 303 || (r.code == 302 && "POST".equals(method))) {
+                    method = "GET";
+                    body = null;
+                }
+                continue;
+            }
+            return r;
+        }
+        Resp r = new Resp();
+        r.code = 0;
+        r.body = "";
+        return r;
+    }
+
+    private static String headerValue(Map<String, List<String>> headers, String name) {
+        if (headers == null) return null;
+        for (Map.Entry<String, List<String>> e : headers.entrySet()) {
+            if (e.getKey() != null && e.getKey().equalsIgnoreCase(name) && e.getValue() != null && !e.getValue().isEmpty()) {
+                return e.getValue().get(0);
+            }
+        }
+        return null;
+    }
+
+    private static String absUrl(String base, String loc) {
+        try {
+            return new java.net.URL(new URL(base), loc).toString();
+        } catch (Exception e) {
+            return base;
         }
     }
 

@@ -358,29 +358,33 @@ public final class BaiduPan {
         }
     }
 
-    /** 下载二维码图片字节。 */
+    /** 下载二维码图片字节（imgurl 可能无协议前缀，自动补 https:）。 */
     public static byte[] fetchImage(String url) {
-        HttpURLConnection conn = null;
-        try {
-            URL u = new URL(url);
-            conn = (HttpURLConnection) u.openConnection();
-            conn.setConnectTimeout(12000);
-            conn.setReadTimeout(15000);
-            conn.setRequestProperty("User-Agent", Http.UA);
-            String ck = CookieStore.cookieFor(url);
-            if (ck != null && !ck.isEmpty()) {
-                conn.setRequestProperty("Cookie", ck);
+        if (url != null && url.startsWith("//")) url = "https:" + url;
+        if (url != null && !url.startsWith("http")) url = "https://" + url;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            HttpURLConnection conn = null;
+            try {
+                URL u = new URL(url);
+                conn = (HttpURLConnection) u.openConnection();
+                conn.setConnectTimeout(12000);
+                conn.setReadTimeout(15000);
+                conn.setRequestProperty("User-Agent", Http.UA);
+                conn.setRequestProperty("Referer", "https://passport.baidu.com/");
+                int code = conn.getResponseCode();
+                if (code != 200) continue;
+                InputStream is = conn.getInputStream();
+                ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = is.read(buf)) > 0) bos.write(buf, 0, n);
+                if (bos.size() > 0) return bos.toByteArray();
+            } catch (Exception e) {
+                // retry
+            } finally {
+                if (conn != null) conn.disconnect();
             }
-            InputStream is = conn.getInputStream();
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = is.read(buf)) > 0) bos.write(buf, 0, n);
-            return bos.toByteArray();
-        } catch (Exception e) {
-            return null;
-        } finally {
-            if (conn != null) conn.disconnect();
         }
+        return null;
     }
 }

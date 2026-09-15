@@ -61,9 +61,7 @@ public final class Site {
         CATS.add(new Category(37,  "1080P最新剧集"));
         CATS.add(new Category(2,   "最新1080P电影"));
         CATS.add(new Category(115, "4K剧集.115网盘"));
-        CATS.add(new Category(116, "国语特效MKV"));
-        CATS.add(new Category(86,  "转载资源区"));
-        CATS.add(new Category(78,  "资源补档"));
+        // 已按要求移除：国语特效MKV / 转载资源区 / 资源补档
     }
 
     public static List<Category> categories() {
@@ -81,7 +79,7 @@ public final class Site {
     private static final Pattern RE_IMG = Pattern.compile(
             "<img[^>]*?src=\"(https?:[^\"]+|//[^\"]+)\"", Pattern.CASE_INSENSITIVE);
     private static final Pattern RE_HB_CARD = Pattern.compile(
-            "<li class=\"haibao-movie-card\">(.*?)</li>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+            "<li[^>]*class=\"[^"]*haibao-movie-card[^"]*\"[^>]*>(.*?)</li>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
     private static final Pattern RE_HB_TID = Pattern.compile("href=\"thread-(\\d+)-1-\\d+\\.html\"", Pattern.CASE_INSENSITIVE);
     private static final Pattern RE_HB_TITLE = Pattern.compile(
             "<p[^>]*class=\"[^\"]*haibao-card-title[^\"]*\"[^>]*>(.*?)</p>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
@@ -112,6 +110,16 @@ public final class Site {
                 if (i <= 0) continue;
                 CookieStore.put(BASE + "/", kv.substring(0, i).trim(), kv.substring(i + 1).trim());
             }
+        }
+    }
+
+    /** 兜底：用户手动粘贴论坛 Cookie（设置页用）。 */
+    public static void setForumCookieRaw(String raw) {
+        if (raw == null) return;
+        for (String kv : raw.replace("\n", "").split(";")) {
+            int i = kv.indexOf('=');
+            if (i <= 0) continue;
+            CookieStore.put(BASE + "/", kv.substring(0, i).trim(), kv.substring(i + 1).trim());
         }
     }
 
@@ -173,7 +181,8 @@ public final class Site {
         out.data = new ArrayList<>();
         out.pageCount = 1;
         try {
-            // 第 1 页：发起新搜索（有 10 秒防刷限制）；翻页：用 searchid 复用结果
+            // 第 1 页：发起新搜索（10 秒防刷）；翻页：searchid 复用结果
+            // 实测：GET srchtxt 直接 200 返回结果页（302 只发生在无 Cookie 时）
             String url;
             if (page == 1) {
                 url = BASE + "/search.php?mod=forum&srchtxt="
@@ -188,17 +197,21 @@ public final class Site {
             Http.Resp r = Http.get(url);
             if (r.code != 200 || isLoginWall(r.body)) return out;
             String html = r.body;
-            // 记录 searchid 供翻页
             Matcher sidm = Pattern.compile("searchid=(\\d+)").matcher(html);
             if (sidm.find()) lastSearchSid = sidm.group(1);
-            // 结果行：<li class="pbw" id="TID"> ... <h3 ...><a ...>标题</a> ... </li>
+
+            // 真实结构（实测）：
+            // <li class="pbw" id="35844">
+            //   <h3 class="xs3"> <a href="forum.php?mod=viewthread&tid=...">标题</a> </h3>
+            //   <p>...摘要...</p>
+            //   <p> <span>2026-8-17 15:52</span> - <span>...作者...</span> - <span><a href="forum-112-1.html">版块</a></span> </p>
             Pattern li = Pattern.compile(
                     "<li[^>]*class=\"pbw\"[^>]*id=\"(\\d+)\"[^>]*>(.*?)</li>",
                     Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
             Matcher mm = li.matcher(html);
             Pattern at = Pattern.compile("<h3[^>]*>\\s*<a[^>]*>(.*?)</a>", Pattern.DOTALL);
             Pattern fdate = Pattern.compile("<span>\\s*(\\d{4}-\\d{1,2}-\\d{1,2})");
-            Pattern ffid = Pattern.compile("forum-(\\d+)-\\d+\\.html|forumdisplay&amp;fid=(\\d+)");
+            Pattern ffid = Pattern.compile("forum-(\\d+)-\\d+\\.html");
             while (mm.find()) {
                 String tid = mm.group(1);
                 String body = mm.group(2);
@@ -209,21 +222,22 @@ public final class Site {
                 m.name = stripTags(ta.group(1));
                 if (m.name.length() < 2) continue;
                 Matcher ff = ffid.matcher(body);
-                m.fid = ff.find() ? Integer.parseInt(ff.group(1) != null ? ff.group(1) : ff.group(2)) : 0;
+                m.fid = ff.find() ? Integer.parseInt(ff.group(1)) : 0;
                 Matcher fd = fdate.matcher(body);
                 if (fd.find()) m.remarks = fd.group(1);
                 out.data.add(m);
             }
-            // 总页数
+            // 总条数：找到 "相关内容 90 个" -> 36 条/页
+            Matcher tm = Pattern.compile("相关内容\\s*(\\d+)\\s*个").matcher(html);
+            if (tm.find()) {
+                try {
+                    int total = Integer.parseInt(tm.group(1));
+                    out.pageCount = Math.max(1, (total + 35) / 36);
+                } catch (Exception ignored) {}
+            }
             Matcher pm = Pattern.compile("共\\s*(\\d+)\\s*页").matcher(html);
             if (pm.find()) {
                 try { out.pageCount = Math.max(1, Integer.parseInt(pm.group(1))); } catch (Exception ignored) {}
-            } else {
-                // 用总条数估算（Discuz 每页 36 条）
-                Matcher tm = Pattern.compile("相关内容\\s*(\\d+)\\s*个").matcher(html);
-                if (tm.find()) {
-                    try { out.pageCount = Math.max(1, (Integer.parseInt(tm.group(1)) + 35) / 36); } catch (Exception ignored) {}
-                }
             }
             return out;
         } catch (Exception e) {
@@ -323,8 +337,13 @@ public final class Site {
         p = p.trim();
         if (p.isEmpty()) return "";
         if (p.startsWith("//")) p = "https:" + p;
-        if (p.contains("nophoto") || p.contains("template/") || p.contains("static/")) return "";
-        if (p.startsWith("data:")) return ""; // base64 占位图不要
+        if (p.startsWith("/")) p = BASE + p;                 // 站内相对路径
+        if (p.startsWith("data:")) return "";                 // base64 占位图
+        String low = p.toLowerCase();
+        if (low.contains("nophoto") || low.contains("logo")
+                || low.contains("template/") || low.contains("static/")
+                || low.contains("smiley") || low.contains("/common/")) return "";
+        if (!low.startsWith("http")) return "";
         return p;
     }
 
