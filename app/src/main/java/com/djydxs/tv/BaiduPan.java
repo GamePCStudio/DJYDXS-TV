@@ -193,6 +193,9 @@ public final class BaiduPan {
                 Matcher mr = Pattern.compile("randsk[^\\d]{0,8}([\\w%]+)").matcher(vr.body);
                 if (mr.find()) {
                     sekey = mr.group(1); // URL 编码值，可直接放 Cookie
+                    // 关键：BDCLND 写入 CookieStore —— 后续 listShareDir 等
+                    // Http.get 请求自动携带；否则首次浏览分享子目录时缺它返回空
+                    CookieStore.put("https://pan.baidu.com/", "BDCLND", sekey);
                 }
             } else {
                 // 无提取码：直接开一次分享页，若回 Set-Cookie BDCLND 也带上
@@ -228,8 +231,32 @@ public final class BaiduPan {
             Matcher mu = pUk.matcher(html);
             if (mu.find()) uk = mu.group(1);
             if (shareid == null || uk == null) {
-                out.message = "分享页无数据(可能真失效或需验证)";
-                return out;
+                // 兜底：页面无数据且我们还没做过 verify（pwd 为空或之前跳过）——
+                // 百度有些分享需要 verify 一次才出数据（哪怕无提取码）
+                if (sekey.isEmpty() && pwd != null && !pwd.isEmpty()) {
+                    String vbody2 = "pwd=" + enc(pwd) + "&vcode=&vcode_str=";
+                    Http.Resp vr2 = Http.request("POST",
+                            "https://pan.baidu.com/share/verify?surl=" + surl
+                                    + "&t=" + System.currentTimeMillis()
+                                    + "&channel=chunlei&web=1&bdstoken=null&clienttype=0&app_id=250528",
+                            vbody2, null, true);
+                    Matcher mr2 = Pattern.compile("randsk[^\\d]{0,8}([\\w%]+)").matcher(vr2.body);
+                    if (mr2.find()) {
+                        CookieStore.put("https://pan.baidu.com/", "BDCLND", mr2.group(1));
+                        java.util.Map<String, String> hdrs2 = new java.util.HashMap<>();
+                        hdrs2.put("Cookie", CookieStore.cookieFor("https://pan.baidu.com/"));
+                        page = Http.request("GET", shareUrl, null, hdrs2, true);
+                        html = page.body;
+                        Matcher ms2 = pSid.matcher(html);
+                        if (ms2.find()) shareid = ms2.group(1);
+                        Matcher mu2 = pUk.matcher(html);
+                        if (mu2.find()) uk = mu2.group(1);
+                    }
+                }
+                if (shareid == null || uk == null) {
+                    out.message = "分享页无数据(可能真失效或需验证)";
+                    return out;
+                }
             }
             // bdstoken 优先从分享页 yunData 里提取（无登录态也带），失败才走 gettemplatevariable
             String bdstoken = "";
