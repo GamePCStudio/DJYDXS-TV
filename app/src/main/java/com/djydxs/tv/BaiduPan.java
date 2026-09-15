@@ -215,10 +215,8 @@ public final class BaiduPan {
                 out.message = "分享页访问失败(" + page.code + ")";
                 return out;
             }
-            if (page.body.contains("分享的文件已经被取消") || page.body.contains("已失效")) {
-                out.message = "分享链接已失效";
-                return out;
-            }
+            // 注意：页面模板里常驻"已失效"字样（分享者信息区），不能作为失效判据！
+            // 失效与否由后面的 shareid/uk/file_list 数据提取决定。
             String html = page.body;
 
             // 4) 提取 shareid / uk：三种形态（window.yunData={...} / locals.mset({...}) / yunData.setData({...})）
@@ -230,10 +228,14 @@ public final class BaiduPan {
             Matcher mu = pUk.matcher(html);
             if (mu.find()) uk = mu.group(1);
             if (shareid == null || uk == null) {
-                out.message = "分享页解析失败(新版页面/需APP确认)";
+                out.message = "分享页无数据(可能真失效或需验证)";
                 return out;
             }
-            String bdstoken = getBdstoken();
+            // bdstoken 优先从分享页 yunData 里提取（无登录态也带），失败才走 gettemplatevariable
+            String bdstoken = "";
+            Matcher mbt = Pattern.compile("bdstoken[^a-f0-9]{0,6}([a-f0-9]{32})").matcher(html);
+            if (mbt.find()) bdstoken = mbt.group(1);
+            if (bdstoken.isEmpty()) bdstoken = getBdstoken();
 
             // 5) file_list：独立 JSON 块 "file_list":[{...}]
             long[] fsids = null;
