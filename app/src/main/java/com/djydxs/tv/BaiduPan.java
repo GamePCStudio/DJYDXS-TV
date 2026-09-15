@@ -254,7 +254,11 @@ public final class BaiduPan {
                     }
                 }
                 if (shareid == null || uk == null) {
-                    out.message = "分享页无数据(可能真失效或需验证)";
+                    String diag = "len=" + html.length()
+                            + " hasYun=" + html.contains("yunData")
+                            + " hasFL=" + html.contains("file_list")
+                            + " hasVerify=" + html.contains("安全验证");
+                    out.message = "分享页无数据[" + diag + "]";
                     return out;
                 }
             }
@@ -301,8 +305,21 @@ public final class BaiduPan {
                 }
             }
             if (fsids == null || fsids.length == 0) {
-                out.message = "分享内没有可转存的文件";
-                return out;
+                // 兜底：页面 file_list 不可用时，走 share/list 接口拉根目录
+                JSONArray rootList = listShareDir(shareid, uk, "/", shareUrl);
+                List<Long> ids2 = new ArrayList<>();
+                if (rootList != null) {
+                    for (int i = 0; i < rootList.length(); i++) {
+                        JSONObject f = rootList.optJSONObject(i);
+                        if (f != null && f.optLong("fs_id", 0) > 0) ids2.add(f.optLong("fs_id"));
+                    }
+                }
+                if (ids2.isEmpty()) {
+                    out.message = "分享内没有可转存的文件(页面与接口均空, 目录=" + targetDir + ")";
+                    return out;
+                }
+                fsids = new long[ids2.size()];
+                for (int i = 0; i < ids2.size(); i++) fsids[i] = ids2.get(i);
             }
             StringBuilder fsarr = new StringBuilder("[");
             for (int i = 0; i < fsids.length; i++) {
@@ -323,8 +340,33 @@ public final class BaiduPan {
                     body, hdrs, true);
             String errno = errnoOf(tr.body);
             out.ok = "0".equals(errno);
+            if (out.ok) {
+                out.message = "转存成功 → " + targetDir;
+                return out;
+            }
+            // errno=12 目标目录已有同名文件：自动改用带序号的新目录重试一次
+            if ("12".equals(errno)) {
+                String alt = targetDir.replaceAll("/$", "") + " (2)";
+                if (ensureDir(alt)) {
+                    String body2 = "fsidlist=" + enc(fsarr.toString()) + "&path=" + enc(alt);
+                    Http.Resp tr2 = Http.request("POST",
+                            "https://pan.baidu.com/share/transfer?shareid=" + shareid
+                                    + "&from=" + uk + "&bdstoken=" + bdstoken
+                                    + "&channel=chunlei&clienttype=0&web=1&app_id=250528",
+                            body2, hdrs, true);
+                    String errno2 = errnoOf(tr2.body);
+                    if ("0".equals(errno2)) {
+                        out.ok = true;
+                        out.message = "目标已有同名文件，已转存到新目录 → " + alt;
+                        return out;
+                    }
+                    out.message = "目标已有同名文件，自动重试仍失败(errno=" + errno2 + ")";
+                    return out;
+                }
+                out.message = "目标目录已有同名文件，请在网盘删除后重试";
+                return out;
+            }
             out.message = transferMsg(errno);
-            if (out.ok) out.message += " → " + targetDir;
             return out;
         } finally {
             Http.desktopUa.set(false);
@@ -335,8 +377,11 @@ public final class BaiduPan {
         if ("0".equals(errno)) return "转存成功";
         if ("12".equals(errno)) return "目标目录已有同名文件";
         if ("105".equals(errno)) return "分享链接已损坏/失效";
-        if ("4".equals(errno)) return "网盘空间不足或转存次数超限";
-        if ("-1".equals(errno) || errno == null || errno.isEmpty()) return "转存失败(接口无响应)";
+        if ("4".equals(errno)) return "网盘空间不足或非会员转存次数已超限";
+        if ("-6".equals(errno)) return "百度登录态失效，请重新扫码授权";
+        if ("-70".equals(errno)) return "文件存在安全风险，百度拒绝转存";
+        if ("-30".equals(errno)) return "文件已失效或被百度屏蔽";
+        if ("-1".equals(errno) || errno == null || errno.isEmpty()) return "转存接口无响应(网络/风控)";
         return "转存失败 errno=" + errno;
     }
 
