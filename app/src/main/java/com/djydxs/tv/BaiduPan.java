@@ -20,6 +20,7 @@ public final class BaiduPan {
     public static class QrSession {
         public String sign = "";
         public String qrimgUrl = "";
+        public String error = ""; // 失败原因（net=HTTP码 / errno / 解析失败）
     }
 
     public static class QrPoll {
@@ -29,20 +30,35 @@ public final class BaiduPan {
 
     // ---------- 扫码登录 ----------
 
-    /** 1) 取二维码：passport.baidu.com/v2/api/getqrcode */
+    /** 1) 取二维码：passport.baidu.com/v2/api/getqrcode，带明确错误信息 */
     public static QrSession qrStart() {
         QrSession s = new QrSession();
         Http.Resp r = Http.get("https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=skip");
-        if (r.code != 200 || r.body.isEmpty()) return s;
+        if (r.code == 0) {
+            s.error = "网络不可达(检查电视网络/DNS)";
+            return s;
+        }
+        if (r.code != 200 || r.body.isEmpty()) {
+            s.error = "接口HTTP " + r.code;
+            return s;
+        }
         try {
             JSONObject o = new JSONObject(r.body);
-            if (!"0".equals(String.valueOf(o.opt("errno")))) return s;
+            String errno = String.valueOf(o.opt("errno"));
+            if (!"0".equals(errno)) {
+                s.error = "接口errno=" + errno;
+                return s;
+            }
             s.sign = o.optString("sign", "");
             s.qrimgUrl = o.optString("imgurl", "");
-        } catch (Exception ignored) {
+            if (s.sign.isEmpty() || s.qrimgUrl.isEmpty()) {
+                s.error = "响应缺 sign/imgurl 字段";
+            }
+        } catch (Exception e) {
+            s.error = "响应非JSON(可能被风控拦截)";
         }
         return s;
-    }
+ }
 
     /** 2) 轮询：channel/unicast；已确认 -> 3) qrlogin 拿 BDUSS。 */
     public static QrPoll qrPoll(String sign) {

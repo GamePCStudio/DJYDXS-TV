@@ -10,13 +10,37 @@ android {
         applicationId "com.djydxs.tv"
         minSdk 21
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode 3
+        versionName "1.3"
+    }
+
+    signingConfigs {
+        release {
+            // CI 里从 Secrets 注入；本地编译时可用 app/release.keystore.jks
+            def ksBase64 = System.getenv("KEYSTORE_BASE64")
+            if (ksBase64) {
+                def ksFile = rootProject.file("release.keystore.jks")
+                if (!ksFile.exists()) {
+                    ksFile.getParentFile().mkdirs()
+                    ksFile.bytes = new ByteArrayInputStream(Base64.decoder.decode(ksBase64))
+                }
+                storeFile ksFile
+            } else {
+                storeFile rootProject.file("app/release.keystore.jks")
+            }
+            storePassword System.getenv("KEYSTORE_PASSWORD") ?: "djydxs2026"
+            keyAlias System.getenv("KEY_ALIAS") ?: "djydxs"
+            keyPassword System.getenv("KEY_PASSWORD") ?: "djydxs2026"
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+        debug {
+            signingConfig signingConfigs.release
         }
     }
 

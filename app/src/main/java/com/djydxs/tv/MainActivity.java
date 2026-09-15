@@ -166,6 +166,10 @@ public class MainActivity extends Activity {
                         ? (!kwEquals(kw) || fid != currentFid)
                         : !kwEquals(kw);
                 if (stale) return;
+                // 海报缺失的条目补抓详情页（限 12 条，避免首屏太久）
+                if (kw == null || kw.isEmpty()) {
+                    Site.prefetchPics(res.data, 12);
+                }
                 currentPage = page;
                 totalPages = Math.max(1, res.pageCount);
                 if (page == 1) movieAdapter.setItems(res.data);

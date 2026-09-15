@@ -7,3 +7,6 @@
 /captures
 .externalNativeBuild
 .cxx
+
+app/release.keystore.jks
+release.keystore.jks

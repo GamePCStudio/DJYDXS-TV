@@ -49,8 +49,8 @@ public class QrActivity extends Activity {
         ivQr.setImageDrawable(null);
         pool.execute(() -> {
             BaiduPan.QrSession s = BaiduPan.qrStart();
-            if (s.sign.isEmpty() || s.qrimgUrl.isEmpty()) {
-                main.post(() -> tvStatus.setText("二维码获取失败，请重试（检查网络）"));
+            if (s.error != null && !s.error.isEmpty()) {
+                main.post(() -> tvStatus.setText("获取失败：" + s.error));
                 return;
             }
             sign = s.sign;
@@ -61,12 +61,11 @@ public class QrActivity extends Activity {
             main.post(() -> {
                 if (bmp != null) {
                     ivQr.setImageBitmap(bmp);
-                } else {
-                    tvStatus.setText("二维码下载失败，请点下方重试");
-                }
-                if (bmp != null) {
                     tvStatus.setText("请用 百度网盘APP 扫一扫");
                     startPolling();
+                } else {
+                    // 图片下载失败：给出直链让用户手机浏览器打开扫码
+                    tvStatus.setText("二维码图下载失败。\n可在手机浏览器打开：\n" + s.qrimgUrl);
                 }
             });
         });

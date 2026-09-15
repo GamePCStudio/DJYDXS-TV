@@ -74,7 +74,12 @@ public final class Site {
 
     private static final Pattern RE_THREAD = Pattern.compile(
             "<a href=\"thread-(\\d+)-1-\\d+\\.html\"[^>]*>(.*?)</a>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
-    private static final Pattern RE_IMG = Pattern.compile("<img[^>]*?src=\"([^\"]+)\"", Pattern.CASE_INSENSITIVE);
+    /** 懒加载图片：优先 file=（Discuz 首楼真实图），其次 data-src/_src/origin，最后 src= */
+    private static final Pattern RE_IMG_LAZY = Pattern.compile(
+            "<img[^>]*?(?:file|data-src|data-original|_src|origin)\s*=\"(https?:[^\"]+|//[^\"]+)\"",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern RE_IMG = Pattern.compile(
+            "<img[^>]*?src=\"(https?:[^\"]+|//[^\"]+)\"", Pattern.CASE_INSENSITIVE);
     private static final Pattern RE_HB_CARD = Pattern.compile(
             "<li class=\"haibao-movie-card\">(.*?)</li>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
     private static final Pattern RE_HB_TID = Pattern.compile("href=\"thread-(\\d+)-1-\\d+\\.html\"", Pattern.CASE_INSENSITIVE);
@@ -134,12 +139,11 @@ public final class Site {
             Movie m = new Movie();
             m.tid = mt.group(1);
             m.fid = fid;
-            Matcher mp = RE_IMG.matcher(body);
+            Matcher mp = RE_IMG_LAZY.matcher(body);
+            if (!mp.find()) mp = RE_IMG.matcher(body);
             if (mp.find()) {
-                String p = mp.group(1);
-                if (p != null && !p.contains("nophoto") && !p.startsWith("template/") && !p.startsWith("static/")) {
-                    m.pic = p;
-                }
+                String p = normPic(mp.group(1));
+                if (!p.isEmpty()) m.pic = p;
             }
             m.name = stripTags(g1(RE_HB_TITLE, body));
             String sub = stripTags(g1(RE_HB_SUB, body));
@@ -249,16 +253,17 @@ public final class Site {
             if (raw.length() > 600) raw = raw.substring(0, 600);
             d.movie.content = raw;
         }
-        // 海报
+        // 海报：详情页优先懒加载属性（Discuz file=），再退回 src=
         if (!post.isEmpty()) {
-            Matcher mi = RE_IMG.matcher(post);
-            if (mi.find()) d.movie.pic = mi.group(1);
+            Matcher mi = RE_IMG_LAZY.matcher(post);
+            if (!mi.find()) mi = RE_IMG.matcher(post);
+            if (mi.find()) d.movie.pic = normPic(mi.group(1));
         }
         if (d.movie.pic.isEmpty()) {
             Pattern poster = Pattern.compile(
                     "file=\"(https?://[^\"\\s]+?(?:posters|DSXintu|dstmdb)[^\"\\s]*)\"", Pattern.CASE_INSENSITIVE);
             Matcher mp = poster.matcher(post.isEmpty() ? html : post);
-            if (mp.find()) d.movie.pic = mp.group(1);
+            if (mp.find()) d.movie.pic = normPic(mp.group(1));
         }
         // 日期+片长
         String date = g1(RE_POSTED, html);
@@ -313,6 +318,16 @@ public final class Site {
         return d;
     }
 
+    private static String normPic(String p) {
+        if (p == null) return "";
+        p = p.trim();
+        if (p.isEmpty()) return "";
+        if (p.startsWith("//")) p = "https:" + p;
+        if (p.contains("nophoto") || p.contains("template/") || p.contains("static/")) return "";
+        if (p.startsWith("data:")) return ""; // base64 占位图不要
+        return p;
+    }
+
     // ---------- utils ----------
     public static class Paged<T> {
         public T data;
@@ -352,6 +367,31 @@ public final class Site {
         return s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
                 .replace("&quot;", "\"").replace("&#39;", "'").replace("&nbsp;", " ")
                 .replace("&#x27;", "'");
+    }
+
+    /** 列表项海报缺失时补抓详情页拿海报（限量，避免拖慢首屏）。 */
+    public static void prefetchPics(List<Movie> movies, int max) {
+        int done = 0;
+        for (Movie m : movies) {
+            if (done >= max) break;
+            if (m.pic != null && !m.pic.isEmpty()) continue;
+            try {
+                Http.Resp r = Http.get(BASE + "/thread-" + m.tid + "-1-1.html");
+                if (r.code != 200 || isLoginWall(r.body)) continue;
+                String post = g1(RE_FIRST_POST, r.body);
+                String scope = post.isEmpty() ? r.body : post;
+                Matcher mi = RE_IMG_LAZY.matcher(scope);
+                if (!mi.find()) mi = RE_IMG.matcher(scope);
+                if (mi.find()) {
+                    String p = normPic(mi.group(1));
+                    if (!p.isEmpty()) {
+                        m.pic = p;
+                        done++;
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     public static List<Movie> emptyList() {
