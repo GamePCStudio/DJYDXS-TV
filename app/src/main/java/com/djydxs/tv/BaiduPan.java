@@ -107,8 +107,7 @@ public final class BaiduPan {
                     }
                     // 从响应 JSON 里顺带拿用户名（可失败）
                     String uname = "";
-                    Matcher mu = Pattern.compile("\x22userName\x22\\s*:\\s*\x22([^\x22]+)\x22").matcher(r2.body);
-                    if (mu.find()) uname = mu.group(1);
+                    // 用户名由 userName() 接口单独获取（QrActivity 里会调）
                     out.status = "ok";
                     out.message = "授权成功" + (uname.isEmpty() ? "" : ":" + uname);
                     return out;
@@ -191,7 +190,7 @@ public final class BaiduPan {
                     out.message = "提取码错误或链接失效(" + errno + ")";
                     return out;
                 }
-                Matcher mr = Pattern.compile("\x22randsk\x22\\s*:\\s*\x22([^\x22]+)\x22").matcher(vr.body);
+                Matcher mr = Pattern.compile("randsk[^\\d]{0,8}([\\w%]+)").matcher(vr.body);
                 if (mr.find()) {
                     sekey = mr.group(1); // URL 编码值，可直接放 Cookie
                 }
@@ -224,8 +223,8 @@ public final class BaiduPan {
 
             // 4) 提取 shareid / uk：三种形态（window.yunData={...} / locals.mset({...}) / yunData.setData({...})）
             String shareid = null, uk = null;
-                    Pattern pSid = Pattern.compile("shareid\x22?\\s*:\\s*\x22?(\\d+)");
-                    Pattern pUk = Pattern.compile("share_uk\x22?\\s*:\\s*\x22?(\\d+)");
+                    Pattern pSid = Pattern.compile("shareid[^\\d]{0,8}(\\d+)");
+                    Pattern pUk = Pattern.compile("share_uk[^\\d]{0,8}(\\d+)");
             Matcher ms = pSid.matcher(html);
             if (ms.find()) shareid = ms.group(1);
             Matcher mu = pUk.matcher(html);
@@ -239,7 +238,7 @@ public final class BaiduPan {
             // 5) file_list：独立 JSON 块 "file_list":[{...}]
             long[] fsids = null;
             boolean rootIsDir = false;
-            Matcher mf = Pattern.compile("\x22file_list\x22\\s*(\\[{.*?\\}])", Pattern.DOTALL).matcher(html);
+            Matcher mf = Pattern.compile("file_list[^\\[]{0,20} ((\\[{.*?\\}]))", Pattern.DOTALL).matcher(html);
             if (mf.find()) {
                 try {
                     JSONArray fl = new JSONArray(mf.group(1));
