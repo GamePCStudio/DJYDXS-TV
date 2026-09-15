@@ -56,11 +56,10 @@ public final class Site {
     private static final List<Category> CATS = new ArrayList<>();
     static {
         CATS.add(new Category(112, "4KSDR.Remux"));
-        CATS.add(new Category(119, "1080P.Remux"));
         CATS.add(new Category(58,  "1080P高码版"));
         CATS.add(new Category(37,  "1080P最新剧集"));
         CATS.add(new Category(2,   "最新1080P电影"));
-        // 已按要求移除：4K剧集.115网盘 / 国语特效MKV / 转载资源区 / 资源补档
+        // 已按要求移除：1080P.Remux / 4K剧集.115网盘 / 国语特效MKV / 转载资源区 / 资源补档
     }
 
     public static List<Category> categories() {
@@ -79,6 +78,14 @@ public final class Site {
             "<img[^>]*?src=\"(https?:[^\"]+|//[^\"]+)\"", Pattern.CASE_INSENSITIVE);
     private static final Pattern RE_HB_CARD = Pattern.compile(
             "<li[^>]*class=\"[^\" ]*haibao-movie-card[^\" ]*\"[^>]*>(.*?)</li>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+    // 2026-09 新版海报墙：<li class="byg_threadlist_pic_li"> <a href="thread-x" title="标题" style="background-image: url(海报URL)">...</a>
+    private static final Pattern RE_BYG_CARD = Pattern.compile(
+            "<li[^>]*class=\"[^\" ]*byg_threadlist_pic_li[^\" ]*\"[^>]*>(.*?)</li>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+    private static final Pattern RE_BYG_ANCHOR = Pattern.compile(
+            "<a[^>]*href=\"thread-(\\d+)-1-\\d+\\.html\"[^>]*title=\"([^\"]*)\"[^>]*style=\"[^\"]*background-image:\\s*url\\(([^)]+)\\)",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern RE_BYG_TITLE = Pattern.compile(
+            "<h3[^>]*class=\"[^\" ]*byg_pic_tit[^\" ]*\"[^>]*>\\s*<a[^>]*>(.*?)</a>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
     private static final Pattern RE_HB_TID = Pattern.compile("href=\"thread-(\\d+)-1-\\d+\\.html\"", Pattern.CASE_INSENSITIVE);
     private static final Pattern RE_HB_TITLE = Pattern.compile(
             "<p[^>]*class=\"[^\"]*haibao-card-title[^\"]*\"[^>]*>(.*?)</p>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
@@ -136,7 +143,29 @@ public final class Site {
         String html = r.body;
         out.pageCount = pageCount(html);
 
-        // 海报墙卡片
+        // 2026-09 新版海报墙（byg_*）：background-image 上直接带海报 URL
+        Matcher mg = RE_BYG_CARD.matcher(html);
+        boolean usedByg = false;
+        while (mg.find()) {
+            String body = mg.group(1);
+            Matcher ma = RE_BYG_ANCHOR.matcher(body);
+            if (!ma.find()) continue;
+            Movie m = new Movie();
+            m.tid = ma.group(1);
+            m.fid = fid;
+            m.name = unescape(ma.group(2)).trim();
+            String pic = normPic(ma.group(3));
+            if (!pic.isEmpty()) m.pic = pic;
+            // title 缺失时退回 byg_pic_tit
+            if (m.name.isEmpty()) {
+                m.name = stripTags(g1(RE_BYG_TITLE, body));
+            }
+            if (m.name.length() < 1) continue;
+            out.data.add(m);
+            usedByg = true;
+        }
+
+        // 旧版海报墙卡片
         Matcher mc = RE_HB_CARD.matcher(html);
         boolean usedCards = false;
         while (mc.find()) {
@@ -161,7 +190,7 @@ public final class Site {
             usedCards = true;
         }
         // 表格布局兜底
-        if (!usedCards) {
+        if (!usedByg && !usedCards) {
             Matcher mt = RE_THREAD.matcher(html);
             while (mt.find()) {
                 Movie m = new Movie();

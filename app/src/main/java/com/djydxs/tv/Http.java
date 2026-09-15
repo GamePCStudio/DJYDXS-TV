@@ -24,6 +24,9 @@ public final class Http {
         public Map<String, List<String>> headers;
     }
 
+    /** 转存链路切桌面 UA（移动 UA 会被百度导向 wap 分享页）。线程级开关。 */
+    public static final ThreadLocal<Boolean> desktopUa = ThreadLocal.withInitial(() -> false);
+
     private Http() {}
 
     /** GET/POST（不自动重定向），把响应 Set-Cookie 存进 jar。 */
@@ -37,7 +40,8 @@ public final class Http {
             conn.setReadTimeout(20000);
             conn.setRequestMethod(method);
             conn.setInstanceFollowRedirects(false); // 关键：手动跟跳
-            conn.setRequestProperty("User-Agent", UA);
+            conn.setRequestProperty("User-Agent",
+                    Boolean.TRUE.equals(desktopUa.get()) ? BaiduPan.DESKTOP_UA : UA);
             conn.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
             conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
             if (url.contains("pan.baidu.com")) {

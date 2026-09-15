@@ -15,6 +15,10 @@ import java.util.regex.Pattern;
 
 /** 百度网盘：扫码登录 + 分享转存（对齐 BaiduPCS-Py 的网页接口流程）。 */
 public final class BaiduPan {
+
+    // 转存链路必须用桌面 UA：移动 UA 会被百度导向 wap 分享页（无 yunData/file_list 数据）
+    public static final String DESKTOP_UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
     private BaiduPan() {}
 
     public static class QrSession {
@@ -103,7 +107,7 @@ public final class BaiduPan {
                     }
                     // 从响应 JSON 里顺带拿用户名（可失败）
                     String uname = "";
-                    Matcher mu = Pattern.compile("\"userName\"\\s*:\\s*\"([^\"]+)\"").matcher(r2.body);
+                    Matcher mu = Pattern.compile("\x22userName\x22\\s*:\\s*\x22([^\x22]+)\x22").matcher(r2.body);
                     if (mu.find()) uname = mu.group(1);
                     out.status = "ok";
                     out.message = "授权成功" + (uname.isEmpty() ? "" : ":" + uname);
@@ -160,125 +164,142 @@ public final class BaiduPan {
             return out;
         }
         if (targetDir == null || !targetDir.startsWith("/")) targetDir = "/apps/DJYDXS";
-        // 1) 确保目录存在
-        if (!ensureDir(targetDir)) {
-            out.message = "转存目录创建失败：" + targetDir;
-            return out;
-        }
-        // 2) 解析 surl
-        String surl = resolveSurl(shareUrl);
-        if (surl.isEmpty()) {
-            out.message = "分享链接格式无法识别";
-            return out;
-        }
-        // 3) 直接打开分享页，尝试拿 yunData
-        String sekey = "";
-        Http.Resp open = Http.get(shareUrl);
-        if (open.code == 200) {
-            sekey = CookieStore.get(shareUrl, "BDCLND");
-            if (sekey == null) sekey = "";
-        }
-        // 4) 需要提取码：share/verify 换 BDCLND
-        if ((sekey == null || sekey.isEmpty()) && pwd != null && !pwd.isEmpty()) {
-            String verifyBody = "pwd=" + enc(pwd) + "&vcode=&vcode_str=";
-            Http.Resp vr = Http.request("POST",
-                    "https://pan.baidu.com/share/verify?surl=" + surl
-                            + "&t=" + System.currentTimeMillis()
-                            + "&channel=chunlei&web=1&bdstoken=null&clienttype=0&app_id=250528",
-                    verifyBody, null, true);
-            String errno = errnoOf(vr.body);
-            if (vr.code != 200 || !"0".equals(errno)) {
-                out.message = "提取码错误或链接失效(" + errno + ")";
-                return out;
-            }
-            String ck = CookieStore.get(shareUrl, "BDCLND");
-            sekey = ck == null ? "" : ck;
-        }
-        // 5) 带 BDCLND 访问分享页拿 yunData
-        if (sekey != null && !sekey.isEmpty()) {
-            CookieStore.put(shareUrl, "BDCLND", sekey);
-        }
-        Http.Resp page = Http.get(shareUrl);
-        if (page.code != 200 || page.body.isEmpty()) {
-            out.message = "分享页访问失败";
-            return out;
-        }
-        if (page.body.contains("分享的文件已经被取消") || page.body.contains("已失效")) {
-            out.message = "分享链接已失效";
-            return out;
-        }
-        Matcher my = Pattern.compile("yunData\\.setData\\((\\{.*?\\})\\);", Pattern.DOTALL).matcher(page.body);
-        if (!my.find()) {
-            out.message = "分享页解析失败(可能需在APP确认或链接失效)";
-            return out;
-        }
+        Http.desktopUa.set(true); // 整条链路用桌面 UA
         try {
-            JSONObject yd = new JSONObject(my.group(1));
-            String shareid = yd.optString("shareid", "");
-            String uk = yd.optString("share_uk", yd.optString("uk", ""));
-            String bdstoken = yd.optString("bdstoken", "");
-            if (bdstoken.isEmpty()) bdstoken = getBdstoken();
-            if (shareid.isEmpty() || uk.isEmpty()) {
-                out.message = "分享信息缺少 shareid/uk";
+            if (!ensureDir(targetDir)) {
+                out.message = "转存目录创建失败：" + targetDir;
                 return out;
             }
-            JSONArray fileList = yd.optJSONArray("file_list");
-            if (fileList == null) {
-                JSONObject flObj = yd.optJSONObject("file_list");
-                fileList = flObj == null ? null : flObj.optJSONArray("list");
-            }
-            if (fileList == null || fileList.length() == 0) {
-                out.message = "分享里没有文件";
+            String surl = resolveSurl(shareUrl);
+            if (surl.isEmpty()) {
+                out.message = "分享链接格式无法识别";
                 return out;
             }
-            // 根目录只有一个子目录：进入内层转存
-            String transferFrom = "/";
-            if (fileList.length() == 1) {
-                JSONObject f0 = fileList.optJSONObject(0);
-                if (f0 != null && f0.optInt("isdir", 0) == 1) {
-                    String subPath = f0.optString("path", "");
-                    if (!subPath.isEmpty()) {
-                        transferFrom = subPath;
-                        fileList = listShareDir(shareid, uk, subPath, shareUrl);
-                        if (fileList == null || fileList.length() == 0) {
-                            out.message = "分享目录为空";
-                            return out;
+            String cookie = CookieStore.cookieFor("https://pan.baidu.com/");
+
+            // 1) verify 换 randsk（带提取码时）—— randsk 就是 BDCLND 的 URL 编码值
+            String sekey = "";
+            if (pwd != null && !pwd.isEmpty()) {
+                String vbody = "pwd=" + enc(pwd) + "&vcode=&vcode_str=";
+                Http.Resp vr = Http.request("POST",
+                        "https://pan.baidu.com/share/verify?surl=" + surl
+                                + "&t=" + System.currentTimeMillis()
+                                + "&channel=chunlei&web=1&bdstoken=null&clienttype=0&app_id=250528",
+                        vbody, null, true);
+                String errno = errnoOf(vr.body);
+                if (vr.code != 200 || !"0".equals(errno)) {
+                    out.message = "提取码错误或链接失效(" + errno + ")";
+                    return out;
+                }
+                Matcher mr = Pattern.compile("\x22randsk\x22\\s*:\\s*\x22([^\x22]+)\x22").matcher(vr.body);
+                if (mr.find()) {
+                    sekey = mr.group(1); // URL 编码值，可直接放 Cookie
+                }
+            } else {
+                // 无提取码：直接开一次分享页，若回 Set-Cookie BDCLND 也带上
+                Http.get(shareUrl);
+            }
+
+            // 2) 手动拼 Cookie（BDCLND 不能依赖 CookieHandler）
+            StringBuilder ck = new StringBuilder(cookie == null ? "" : cookie);
+            if (sekey != null && !sekey.isEmpty()) {
+                if (ck.length() > 0 && !ck.toString().endsWith("; ")) ck.append("; ");
+                ck.append("BDCLND=").append(sekey);
+            }
+            String finalCookie = ck.toString();
+
+            // 3) 打开分享页（桌面 UA + BDCLND）
+            java.util.Map<String, String> hdrs = new java.util.HashMap<>();
+            hdrs.put("Cookie", finalCookie);
+            Http.Resp page = Http.request("GET", shareUrl, null, hdrs, true);
+            if (page.code != 200 || page.body.isEmpty()) {
+                out.message = "分享页访问失败(" + page.code + ")";
+                return out;
+            }
+            if (page.body.contains("分享的文件已经被取消") || page.body.contains("已失效")) {
+                out.message = "分享链接已失效";
+                return out;
+            }
+            String html = page.body;
+
+            // 4) 提取 shareid / uk：三种形态（window.yunData={...} / locals.mset({...}) / yunData.setData({...})）
+            String shareid = null, uk = null;
+                    Pattern pSid = Pattern.compile("shareid\x22?\\s*:\\s*\x22?(\\d+)");
+                    Pattern pUk = Pattern.compile("share_uk\x22?\\s*:\\s*\x22?(\\d+)");
+            Matcher ms = pSid.matcher(html);
+            if (ms.find()) shareid = ms.group(1);
+            Matcher mu = pUk.matcher(html);
+            if (mu.find()) uk = mu.group(1);
+            if (shareid == null || uk == null) {
+                out.message = "分享页解析失败(新版页面/需APP确认)";
+                return out;
+            }
+            String bdstoken = getBdstoken();
+
+            // 5) file_list：独立 JSON 块 "file_list":[{...}]
+            long[] fsids = null;
+            boolean rootIsDir = false;
+            Matcher mf = Pattern.compile("\x22file_list\x22\\s*(\\[{.*?\\}])", Pattern.DOTALL).matcher(html);
+            if (mf.find()) {
+                try {
+                    JSONArray fl = new JSONArray(mf.group(1));
+                    List<Long> ids = new ArrayList<>();
+                    String onlyDirPath = null;
+                    for (int i = 0; i < fl.length(); i++) {
+                        JSONObject f = fl.optJSONObject(i);
+                        if (f == null) continue;
+                        long id = f.optLong("fs_id", 0);
+                        if (id <= 0) continue;
+                        // 根目录只有一个子目录 -> 进内层
+                        if (f.optInt("isdir", 0) == 1 && fl.length() == 1) {
+                            onlyDirPath = f.optString("path", "/");
+                            rootIsDir = true;
+                        } else {
+                            ids.add(id);
                         }
                     }
+                    if (rootIsDir && onlyDirPath != null) {
+                        JSONArray sub = listShareDir(shareid, uk, onlyDirPath, shareUrl);
+                        if (sub != null) {
+                            for (int i = 0; i < sub.length(); i++) {
+                                JSONObject f = sub.optJSONObject(i);
+                                if (f != null && f.optLong("fs_id", 0) > 0) ids.add(f.optLong("fs_id"));
+                            }
+                        }
+                    }
+                    fsids = new long[ids.size()];
+                    for (int i = 0; i < ids.size(); i++) fsids[i] = ids.get(i);
+                } catch (Exception ignored) {
                 }
             }
-            // 6) 收集 fs_id
-            StringBuilder fsids = new StringBuilder("[");
-            int cnt = 0;
-            for (int i = 0; i < fileList.length(); i++) {
-                JSONObject f = fileList.optJSONObject(i);
-                if (f == null) continue;
-                long fsId = f.optLong("fs_id", 0);
-                if (fsId <= 0) continue;
-                if (cnt > 0) fsids.append(",");
-                fsids.append(fsId);
-                cnt++;
-            }
-            fsids.append("]");
-            if (cnt == 0) {
+            if (fsids == null || fsids.length == 0) {
                 out.message = "分享内没有可转存的文件";
                 return out;
             }
-            // 7) share/transfer
-            String body = "fsidlist=" + enc(fsids.toString()) + "&path=" + enc(targetDir);
+            StringBuilder fsarr = new StringBuilder("[");
+            for (int i = 0; i < fsids.length; i++) {
+                if (i > 0) fsarr.append(",");
+                fsarr.append(fsids[i]);
+            }
+            fsarr.append("]");
+
+            // 6) share/transfer（带 BDCLND cookie）
+            hdrs.put("Cookie", finalCookie);
+            hdrs.put("X-Requested-With", "XMLHttpRequest");
+            hdrs.put("Origin", "https://pan.baidu.com");
+            String body = "fsidlist=" + enc(fsarr.toString()) + "&path=" + enc(targetDir);
             Http.Resp tr = Http.request("POST",
                     "https://pan.baidu.com/share/transfer?shareid=" + shareid
                             + "&from=" + uk + "&bdstoken=" + bdstoken
                             + "&channel=chunlei&clienttype=0&web=1&app_id=250528",
-                    body, null, true);
+                    body, hdrs, true);
             String errno = errnoOf(tr.body);
             out.ok = "0".equals(errno);
             out.message = transferMsg(errno);
             if (out.ok) out.message += " → " + targetDir;
             return out;
-        } catch (Exception e) {
-            out.message = "转存异常：" + e.getClass().getSimpleName();
-            return out;
+        } finally {
+            Http.desktopUa.set(false);
         }
     }
 
