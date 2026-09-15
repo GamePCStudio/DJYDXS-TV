@@ -26,7 +26,7 @@ android {
                 }
                 storeFile ksFile
             } else {
-                storeFile rootProject.file("app/release.keystore.jks")
+                storeFile rootProject.file("release.keystore.jks")
             }
             storePassword System.getenv("KEYSTORE_PASSWORD") ?: "djydxs2026"
             keyAlias System.getenv("KEY_ALIAS") ?: "djydxs"
