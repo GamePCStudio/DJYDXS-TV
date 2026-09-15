@@ -60,8 +60,7 @@ public final class Site {
         CATS.add(new Category(58,  "1080P高码版"));
         CATS.add(new Category(37,  "1080P最新剧集"));
         CATS.add(new Category(2,   "最新1080P电影"));
-        CATS.add(new Category(115, "4K剧集.115网盘"));
-        // 已按要求移除：国语特效MKV / 转载资源区 / 资源补档
+        // 已按要求移除：4K剧集.115网盘 / 国语特效MKV / 转载资源区 / 资源补档
     }
 
     public static List<Category> categories() {

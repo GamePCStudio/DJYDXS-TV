@@ -23,7 +23,7 @@ public final class CookieStore {
     }
 
     private static Map<String, String> bucket(String host) {
-        Map<String, String> b = JAR.get(host);
+        Map<String, String> b = JAR.get(bucketKey(host));
         if (b == null) {
             b = new HashMap<>();
             JAR.put(host, b);
@@ -50,7 +50,7 @@ public final class CookieStore {
         if (setCookies == null) return;
         boolean changed = false;
         synchronized (JAR) {
-            Map<String, String> b = bucket(host);
+            Map<String, String> b = bucket(bucketKey(host));
             for (String sc : setCookies) {
                 String first = sc.split(";", 2)[0];
                 int i = first.indexOf('=');
@@ -80,7 +80,7 @@ public final class CookieStore {
         String host = hostOf(url);
         if (host == null) return "";
         synchronized (JAR) {
-            Map<String, String> b = bucket(host);
+            Map<String, String> b = bucket(bucketKey(host));
             List<String> parts = new ArrayList<>();
             // BDUSS/STOKEN 放最前
             for (String pri : new String[]{"BDUSS", "STOKEN", "BDCLND"}) {
@@ -112,7 +112,7 @@ public final class CookieStore {
         String host = hostOf(url);
         if (host == null) return;
         synchronized (JAR) {
-            Map<String, String> b = bucket(host);
+            Map<String, String> b = bucket(bucketKey(host));
             if (value == null || value.isEmpty()) b.remove(name);
             else b.put(name, value);
             if (prefs != null) {
@@ -129,7 +129,7 @@ public final class CookieStore {
         String host = hostOf(url);
         if (host == null) return "";
         synchronized (JAR) {
-            return bucket(host).get(name);
+            return bucket(bucketKey(host)).get(name);
         }
     }
 
@@ -143,6 +143,14 @@ public final class CookieStore {
         put("https://pan.baidu.com", "STOKEN", null);
         put("https://passport.baidu.com", "BDUSS", null);
         put("https://passport.baidu.com", "STOKEN", null);
+    }
+
+    /** 桶 key：baidu.com 全家桶共享（passport 设置的 BDUSS/STOKEN 对 pan 有效）。 */
+    private static String bucketKey(String host) {
+        if (host == null) return "other";
+        if (host.endsWith("baidu.com")) return "baidu.com";
+        if (host.endsWith("4kzimu.top")) return "4kzimu.top";
+        return host;
     }
 
     private static String hostOf(String url) {

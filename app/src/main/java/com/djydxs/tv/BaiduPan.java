@@ -82,38 +82,40 @@ public final class BaiduPan {
             if ("0".equals(st)) {
                 String v = cv.optString("v", "");
                 if (v.isEmpty()) return out;
+                // 实测有效端点（2026-09）：v2/api/qrlogin 已 404，
+                // 改用 v3/login/main/qrbdusslogin?bduss=<v>，BDUSS/STOKEN 走 Set-Cookie 下发
                 Http.Resp r2 = Http.request("GET",
-                        "https://passport.baidu.com/v2/api/qrlogin?bduss=&qrloginfrom=pc&bdToken="
-                                + java.net.URLEncoder.encode(v, "UTF-8"),
+                        "https://passport.baidu.com/v3/login/main/qrbdusslogin?bduss="
+                                + java.net.URLEncoder.encode(v, "UTF-8") + "&qrloginfrom=pc",
                         null, null, true);
-                if (r2.code == 200 && !r2.body.isEmpty()) {
-                    // 响应里带 BDUSS=xxx（qrlogin 302 到 v2/api/loginhistory 或直接 JSON）
-                    Matcher m = Pattern.compile("BDUSS=([A-Za-z0-9%~_\\-]{40,})").matcher(r2.body);
-                    if (m.find()) {
-                        String bduss = java.net.URLDecoder.decode(m.group(1), "UTF-8");
-                        CookieStore.put("https://pan.baidu.com", "BDUSS", bduss);
-                        CookieStore.put("https://passport.baidu.com", "BDUSS", bduss);
-                        // STOKEN 通常在 qrlogin 的 Set-Cookie 里，兜底从 cookie store 取
-                        String stoken = CookieStore.get("https://passport.baidu.com", "STOKEN");
-                        if (stoken == null || stoken.isEmpty()) {
-                            stoken = CookieStore.get("https://pan.baidu.com", "STOKEN");
-                        }
-                        if (stoken != null && !stoken.isEmpty()) {
-                            CookieStore.put("https://pan.baidu.com", "STOKEN", stoken);
-                        }
-                        out.status = "ok";
-                        out.message = "授权成功";
-                        return out;
-                    }
-                    // JSON 形式 {"bduss":"..."}
-                    Matcher m2 = Pattern.compile("\"bduss\"\\s*:\\s*\"([A-Za-z0-9~_\\-]{40,})\"").matcher(r2.body);
-                    if (m2.find()) {
-                        CookieStore.put("https://pan.baidu.com", "BDUSS", m2.group(1));
-                        out.status = "ok";
-                        out.message = "授权成功";
-                        return out;
-                    }
+                // Http 层已把响应 Set-Cookie 存入 CookieStore（passport + 泛域）
+                String bduss = CookieStore.get("https://pan.baidu.com", "BDUSS");
+                if (bduss == null || bduss.isEmpty()) {
+                    bduss = CookieStore.get("https://passport.baidu.com", "BDUSS");
                 }
+                if (bduss != null && bduss.length() > 40) {
+                    String stoken = CookieStore.get("https://pan.baidu.com", "STOKEN");
+                    if (stoken == null || stoken.isEmpty()) {
+                        stoken = CookieStore.get("https://passport.baidu.com", "STOKEN");
+                    }
+                    if (stoken != null && !stoken.isEmpty()) {
+                        CookieStore.put("https://pan.baidu.com", "STOKEN", stoken);
+                    }
+                    // 从响应 JSON 里顺带拿用户名（可失败）
+                    String uname = "";
+                    Matcher mu = Pattern.compile("\"userName\"\\s*:\\s*\"([^\"]+)\"").matcher(r2.body);
+                    if (mu.find()) uname = mu.group(1);
+                    out.status = "ok";
+                    out.message = "授权成功" + (uname.isEmpty() ? "" : ":" + uname);
+                    return out;
+                }
+                // 没拿到 BDUSS：区分错误
+                if (r2.body.contains("310005") || r2.body.contains("过期")) {
+                    out.message = "确认已超时，请重新扫码";
+                } else if (r2.code == 0) {
+                    out.message = "网络异常";
+                }
+                return out;
             }
         } catch (Exception ignored) {
         }
