@@ -220,16 +220,12 @@ public final class Site {
                 if (!p.isEmpty()) m.pic = p;
             }
             m.name = cleanTitle(stripTags(g1(RE_HB_TITLE, body)));
-            String sub = stripTags(g1(RE_HB_SUB, body));
-            // 仅从副标题取日期；不要对整段 body 做 extractDate，否则会误匹配
-            // thread-<tid>-1-1.html 里的 tid（如 6062-1-1）当成日期。副标题若非完整日期
-            // （如仅年份 2026），remarks 留空，交给表格布局页 rowDates 按 tid 补真实日期。
+            // 仅从副标题取完整日期（如 2026-9-15）作为角标；副标题若是孤立年份（2026）
+            // 则不并入片名、也不放进角标，交给表格布局页 rowDates 按 tid 补真实日期。
+            // 注意：绝不要把年份拼回片名（用户不需要片名带年份）。
             String date = extractDate(sub);
             if (!date.isEmpty()) {
                 m.remarks = date;
-                // 副标题本身就是日期时不再并入片名，避免重复
-            } else if (!sub.isEmpty() && !m.name.contains(sub)) {
-                m.name = (m.name + " " + sub).trim();
             }
             if (m.name.length() < 1) continue;
             out.data.add(m);
@@ -409,9 +405,8 @@ public final class Site {
             Matcher mp = poster.matcher(post.isEmpty() ? html : post);
             if (mp.find()) d.movie.pic = normPic(mp.group(1));
         }
-        // 角标只保留 年月日（不附加片长）
-        String date = extractDate(g1(RE_POSTED, html));
-        d.movie.remarks = date;
+        // 角标：日期 · 片长（与 PY _marks 一致：年月日 + 时长分钟）
+        d.movie.remarks = buildRemarks("", html);
 
         // 下载源：只保留百度
         Matcher mb = RE_NTCJ.matcher(html);
@@ -509,6 +504,9 @@ public final class Site {
         if (t.find()) s = s.substring(0, t.start()).trim();
         // 去尾部体积
         s = s.replaceAll("[\\s\\.]*\\d+(\\.\\d+)?[GMT]$", "").trim();
+        // 去标题尾部孤立的发行年份（如 " 2026" / ".2026"）：年份须以分隔符（空格/点）与前文
+        // 隔开、且为 19xx/20xx 才剥离，避免误伤「银翼杀手2049」这类片名本身含年份的影片
+        s = s.replaceAll("[\\s.]+((?:19|20)\\d{2})$", "").trim();
         // 去多余分隔
         s = s.replaceAll("^[《\\[]+|[》\\]]+$", "").trim();
         return s;
@@ -531,6 +529,28 @@ public final class Site {
     public static String stripTags(String s) {
         if (s == null) return "";
         return unescape(s.replaceAll("<[^>]+>", "")).replaceAll("\\s+", " ").trim();
+    }
+
+    /** 拼海报/详情角标：优先保留已有 remarks 里的日期（表格布局/列表阶段抽到的真实日期），
+     *  再补详情页首楼里的片长，结果形如 "2026-9-9 · 117分钟"；只有其一则只显示其一。
+     *  与 PY _marks 保持一致（日期 + 时长）。 */
+    private static String buildRemarks(String existing, String html) {
+        if (html == null || html.isEmpty()) return existing == null ? "" : existing.trim();
+        String post = g1(RE_FIRST_POST, html);
+        String scope = post.isEmpty() ? html : post;
+        String date = extractDate(g1(RE_POSTED, html));
+        String runtime = g1(RE_RUNTIME, scope);
+        String base = (existing == null) ? "" : existing.trim();
+        // 去掉已有 remarks 里可能残留的片长尾巴，避免重复
+        base = base.replaceAll("·?\\s*\\d{1,3}分钟", "").trim();
+        if (base.isEmpty() && !date.isEmpty()) base = date;
+        StringBuilder sb = new StringBuilder();
+        if (!base.isEmpty()) sb.append(base);
+        if (!runtime.isEmpty()) {
+            if (sb.length() > 0) sb.append(" · ");
+            sb.append(runtime).append("分钟");
+        }
+        return sb.toString();
     }
 
     public static String unescape(String s) {
@@ -619,9 +639,8 @@ public final class Site {
                     if (!p.isEmpty()) m.pic = p;
                 }
             }
-            // 角标只保留 年月日：详情页 RE_POSTED 取到的真实日期优先（覆盖列表阶段可能的脏值），不附加片长
-            String date = extractDate(g1(RE_POSTED, html));
-            if (!date.isEmpty()) m.remarks = date;
+            // 角标：日期 · 片长。已有日期（表格布局/列表阶段）优先保留，这里补上详情页片长
+            m.remarks = buildRemarks(m.remarks, html);
             return htmlHasBaiduShare(html);
         } catch (Exception e) {
             return false;
