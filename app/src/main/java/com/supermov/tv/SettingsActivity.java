@@ -68,11 +68,6 @@ public class SettingsActivity extends Activity {
         // ③.5 连接诊断
         group.addView(option("连接诊断", "测试论坛/百度接口连通性", v -> runDiag()));
 
-        // ④ 论坛登录（TV 上用内置浏览器登录，解锁会员版块）
-        group.addView(sectionLabel("论坛账号"));
-        group.addView(option("论坛登录（4kzimu.top）", "内置浏览器登录后自动记住 Cookie，解锁会员版块", v ->
-                startActivity(new Intent(this, WebLoginActivity.class))));
-
         // ⑤ 解除授权
         if (authed) {
             group.addView(option("解除百度网盘授权", "清除本机保存的百度 Cookie", v -> {

@@ -81,7 +81,7 @@ public class MainActivity extends Activity {
         rvCats.setAdapter(catAdapter);
 
         // 影片列表
-        rvList.setLayoutManager(new GridLayoutManager(this, 2));
+        rvList.setLayoutManager(new GridLayoutManager(this, 3));
         movieAdapter = new MovieAdapter();
         movieAdapter.setOnClick(m -> confirmTransfer(m));
         rvList.setAdapter(movieAdapter);
@@ -148,12 +148,15 @@ public class MainActivity extends Activity {
             return;
         }
         String dir = Settings.saveDir();
-        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
+        AlertDialog dlg = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
                 .setTitle("转存影片")
                 .setMessage("《" + m.name + "》\n转存到：" + dir)
                 .setPositiveButton("转存", (d, w) -> doQuickTransfer(m))
                 .setNegativeButton("取消", null)
-                .show();
+                .create();
+        dlg.show();
+        // TV 遥控器：焦点直接落在"转存"上
+        dlg.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus();
     }
 
     private void doQuickTransfer(Site.Movie m) {
