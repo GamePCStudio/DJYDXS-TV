@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.SupeMov" parent="Theme.AppCompat.NoActionBar">
-        <item name="android:windowBackground">#FF101418</item>
+        <item name="android:windowBackground">@drawable/bg_wallpaper</item>
         <item name="android:colorPrimary">#FF1E88E5</item>
         <item name="android:statusBarColor">#FF101418</item>
     </style>
