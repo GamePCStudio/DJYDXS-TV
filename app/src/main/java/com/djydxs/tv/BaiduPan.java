@@ -201,7 +201,7 @@ public final class BaiduPan {
                     out.message = "提取码错误或链接失效(" + errno + ")";
                     return out;
                 }
-                Matcher mr = Pattern.compile("randsk[^\\d]{0,8}([\\w%]+)").matcher(vr.body);
+                Matcher mr = Pattern.compile("\x22randsk\x22:\x22([A-Za-z0-9%]+)\x22").matcher(vr.body);
                 if (mr.find()) {
                     sekey = mr.group(1); // URL 编码值，可直接放 Cookie
                     // 关键：BDCLND 写入 CookieStore —— 后续 listShareDir 等
@@ -256,7 +256,7 @@ public final class BaiduPan {
                                     + "&t=" + System.currentTimeMillis()
                                     + "&channel=chunlei&web=1&bdstoken=null&clienttype=0&app_id=250528",
                             vbody2, null, true);
-                    Matcher mr2 = Pattern.compile("randsk[^\\d]{0,8}([\\w%]+)").matcher(vr2.body);
+                    Matcher mr2 = Pattern.compile("\x22randsk\x22:\x22([A-Za-z0-9%]+)\x22").matcher(vr2.body);
                     String sekey2 = mr2.find() ? mr2.group(1) : "";
                     if (!sekey2.isEmpty()) {
                         CookieStore.put("https://pan.baidu.com/", "BDCLND", sekey2);

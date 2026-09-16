@@ -9,7 +9,7 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="DJYDXS 影视"
+        android:text="超级影库 SupeMov"
         android:textColor="#FFFFFFFF"
         android:textSize="30sp"
         android:textStyle="bold" />
