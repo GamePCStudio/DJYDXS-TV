@@ -67,7 +67,7 @@ public final class Site {
     private static final List<Category> CATS = new ArrayList<>();
     static {
         // 各版块的过滤器（名称与 typeid 均来自论坛页面实测，各版块互不相同；
-        // 「限制级」按要求不显示，「全部」= typeid 0）
+        // 「限制级」「情欲」按要求不显示，「全部」= typeid 0）
         Category c = new Category(112, "4K全景声");
         c.filters.add(new Filter("全部", 0));
         c.filters.add(new Filter("国语", 312));
@@ -89,29 +89,55 @@ public final class Site {
         CATS.add(c);
 
         c = new Category(37, "1080P最新剧集");
+        // 论坛页实测（fid=37）：连载中146 限制级433 美剧148 国内183 韩剧338 日剧339
+        //                动画剧集340 泰国436 纪录片335 老美剧348；已剔除「限制级」
         c.filters.add(new Filter("全部", 0));
+        c.filters.add(new Filter("连载中", 146));
+        c.filters.add(new Filter("美剧", 148));
         c.filters.add(new Filter("国内", 183));
+        c.filters.add(new Filter("韩剧", 338));
+        c.filters.add(new Filter("日剧", 339));
+        c.filters.add(new Filter("动画剧集", 340));
+        c.filters.add(new Filter("泰国", 436));
         c.filters.add(new Filter("纪录片", 335));
+        c.filters.add(new Filter("老美剧", 348));
         CATS.add(c);
 
         c = new Category(58, "1080P蓝光");
+        // 论坛页实测（fid=58）：活动推荐453 演唱会371 情欲342 限制级301 电影168 怀旧港片228
+        //   老片新看269 星影225 佳片有约267 经典永存326 国内231 欧美229 日韩230 其他323
+        //   动画319 国配270 WEB-DL248 TOP250 261 纪录片337；已剔除「情欲」「限制级」
         c.filters.add(new Filter("全部", 0));
+        c.filters.add(new Filter("活动推荐", 453));
+        c.filters.add(new Filter("演唱会", 371));
+        c.filters.add(new Filter("电影", 168));
         c.filters.add(new Filter("怀旧港片", 228));
         c.filters.add(new Filter("老片新看", 269));
+        c.filters.add(new Filter("星影", 225));
         c.filters.add(new Filter("佳片有约", 267));
+        c.filters.add(new Filter("经典永存", 326));
         c.filters.add(new Filter("国内", 231));
         c.filters.add(new Filter("欧美", 229));
         c.filters.add(new Filter("日韩", 230));
         c.filters.add(new Filter("其他", 323));
         c.filters.add(new Filter("动画", 319));
+        c.filters.add(new Filter("国配", 270));
+        c.filters.add(new Filter("WEB-DL", 248));
         c.filters.add(new Filter("TOP250", 261));
         c.filters.add(new Filter("纪录片", 337));
         CATS.add(c);
 
         c = new Category(2, "1080P杜比5.1");
+        // 论坛页实测（fid=2）：活动推荐449 情欲341 老片新看268 限制级265 演唱会370 佳片有约29
+        //   星影224 经典永存325 怀旧港片226 日韩53 国内52 欧美54 其他199 纪录片336
+        //   动画162 国语184 TOP250 88；已剔除「情欲」「限制级」
         c.filters.add(new Filter("全部", 0));
+        c.filters.add(new Filter("活动推荐", 449));
         c.filters.add(new Filter("老片新看", 268));
+        c.filters.add(new Filter("演唱会", 370));
         c.filters.add(new Filter("佳片有约", 29));
+        c.filters.add(new Filter("星影", 224));
+        c.filters.add(new Filter("经典永存", 325));
         c.filters.add(new Filter("怀旧港片", 226));
         c.filters.add(new Filter("日韩", 53));
         c.filters.add(new Filter("国内", 52));
