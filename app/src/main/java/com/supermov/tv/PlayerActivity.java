@@ -53,6 +53,14 @@ public class PlayerActivity extends Activity {
     /** 非空 = 播放已下载到本地的文件（不走百度取流） */
     private String localFile = "";
 
+    /**
+     * 详情页已经确定了具体文件（多集/多文件时用户手动选的那一集）。
+     * 有值时**不再按片名去网盘猜**——否则 20 集的剧永远只会播到同一个文件。
+     */
+    private long reqFsId = 0;
+    private String reqBpath = "";
+    private String reqFname = "";
+
     private BaiduPan.PlayFile playFile;
     private boolean usingM3u8 = false;
     private boolean retriedDlink = false;
@@ -71,6 +79,9 @@ public class PlayerActivity extends Activity {
         shareUrl = nz(getIntent().getStringExtra("url"));
         sharePwd = nz(getIntent().getStringExtra("pwd"));
         localFile = nz(getIntent().getStringExtra("file"));
+        reqFsId = getIntent().getLongExtra("fsId", 0);
+        reqBpath = nz(getIntent().getStringExtra("bpath"));
+        reqFname = nz(getIntent().getStringExtra("fname"));
 
         player = new ExoPlayer.Builder(this)
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(httpFactory()))
@@ -133,6 +144,38 @@ public class PlayerActivity extends Activity {
             finish();
             return;
         }
+
+        // 详情页已经选定了具体文件（多集/多文件时用户挑的那一集）-> 直接用，不再按片名去猜。
+        // 这条分支必须放在最前面：如果还走 resolvePlayable，20 集的剧永远只会播到同一个文件。
+        if (reqFsId > 0 && !reqBpath.isEmpty()) {
+            final BaiduPan.PlayFile pf = new BaiduPan.PlayFile();
+            pf.ok = true;
+            pf.fsId = reqFsId;
+            pf.path = reqBpath;
+            pf.name = reqFname.isEmpty() ? name : reqFname;
+            status("正在获取原画直链…（" + pf.name + "）");
+            new Thread(() -> {
+                try {
+                    String d = BaiduPan.dlink(pf.fsId, pf.path);
+                    if (d.isEmpty()) {
+                        playFile = pf;
+                        fallbackM3u8("原画直链获取失败");
+                        return;
+                    }
+                    playFile = pf;
+                    proxy = new LocalProxy();
+                    proxy.start();
+                    final String u = proxy.urlFor(d);
+                    status("原画播放：" + pf.name);
+                    main.post(() -> startPlay(u, 0, false));
+                } catch (Throwable e) {
+                    Log.d(TAG, "direct play err " + e);
+                    fail("取流异常：" + e.getClass().getSimpleName());
+                }
+            }, "player-direct").start();
+            return;
+        }
+
         status("正在定位影片…（" + name + "）");
         new Thread(() -> {
             try {

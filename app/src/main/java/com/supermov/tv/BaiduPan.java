@@ -398,6 +398,9 @@ public final class BaiduPan {
         public String path = "";
         public String name = "";
         public long size;
+        /** 相对「命中的那个目录」的子目录（如 "第二季"、"剧名/Season 1"）；直接在根下则为空。
+         *  多集/多文件夹时用来分组展示，也用来在本地还原同样的目录结构。 */
+        public String rel = "";
     }
 
     private static final String[] VIDEO_EXT = {
@@ -524,6 +527,232 @@ public final class BaiduPan {
             if (r != null) return r;
         }
         return null;
+    }
+
+    // ==================== 多文件 / 多级文件夹 ====================
+
+    /** 递归深度上限：剧集一般是 剧名/季/集 三层，留点余量。 */
+    private static final int MAX_DEPTH = 5;
+    /** 单次枚举的文件数上限，避免把接口拖垮、也避免列表长到没法用遥控器翻。 */
+    private static final int MAX_FILES = 300;
+
+    /** 一部片子对应的一批待选文件（可能很多集）。 */
+    public static class Resolved {
+        public boolean ok;
+        public String message = "";
+        /** 命中的那个目录/文件在网盘里的路径 */
+        public String anchorPath = "";
+        public final List<PlayFile> files = new ArrayList<>();
+    }
+
+    /**
+     * 「这部片名下的**全部**视频文件」（递归穿过子文件夹）。
+     *
+     * <p>为什么不复用 {@link #resolvePlayable}：它只返回体积最大的那一个。转存下来的
+     * 分享经常是一整个文件夹——多集剧、上下部、CD1/CD2，或再套一层「季」目录。
+     * 只挑一个的话用户既看不到其它文件、也没法选，播错集只能自己去网盘翻。</p>
+     *
+     * <p>命中规则的取舍：</p>
+     * <ul>
+     *   <li>命中的是<b>目录</b> → 把该目录下（含各级子目录）所有视频都收上来</li>
+     *   <li>命中的是<b>单个文件</b> → 收它自己 + 同目录下名字相近的兄弟（CD1/CD2、上下部），
+     *       避免把同目录里别的影片也一起带进来</li>
+     * </ul>
+     */
+    public static Resolved resolveAll(String rootDir, String keyword) {
+        Resolved out = new Resolved();
+        Http.desktopUa.set(true);
+        try {
+            String key = normName(keyword);
+            JSONObject pick = findAnchor(rootDir, key);
+            if (pick == null) {
+                out.message = key.isEmpty()
+                        ? "网盘目录里没有可播放的内容"
+                        : "网盘里没找到这部影片（可先点「转存」再试）";
+                return out;
+            }
+            out.anchorPath = pick.optString("path", "");
+            if (pick.optInt("isdir", 0) == 1) {
+                // 命中文件夹：里面所有视频都收上来（递归穿子目录，rel 记录层级）
+                collectVideos(out.anchorPath, "", out.files, 0);
+            } else {
+                // 命中单个文件：自己 + 同目录下名字相近的兄弟
+                String core = coreName(pick.optString("server_filename", ""));
+                String parent = parentOf(pick.optString("path", ""));
+                for (PlayFile f : listVideos(parent)) {
+                    String fc = coreName(f.name);
+                    if (f.fsId == pick.optLong("fs_id", 0)
+                            || (!core.isEmpty() && (fc.contains(core) || core.contains(fc)))) {
+                        out.files.add(f);
+                    }
+                }
+                if (out.files.isEmpty()) {
+                    PlayFile self = toFile(pick, "");
+                    if (self != null) out.files.add(self);
+                }
+            }
+            sortNaturally(out.files);
+            out.ok = !out.files.isEmpty();
+            if (!out.ok) out.message = "目录里没找到视频文件：" + pick.optString("server_filename", "");
+            android.util.Log.d("SupeMov", "resolveAll " + out.anchorPath + " files=" + out.files.size());
+            return out;
+        } catch (Throwable e) {
+            out.message = "枚举文件异常：" + e.getClass().getSimpleName();
+            return out;
+        }
+    }
+
+    /** 在 rootDir（含 目录(2)..(5) 顺延）里定位「这部电影」：先按片名匹配，匹配不到取刚转存的。 */
+    private static JSONObject findAnchor(String rootDir, String key) {
+        String[] dirs = {
+                rootDir,
+                trimSlash(rootDir) + " (2)", trimSlash(rootDir) + " (3)",
+                trimSlash(rootDir) + " (4)", trimSlash(rootDir) + " (5)"
+        };
+        for (String dir : dirs) {
+            JSONArray list = listDir(dir);
+            if (list == null) continue; // 目录不存在
+            JSONObject pick = null;
+            JSONObject newest = null;
+            long newestTime = -1;
+            for (int i = 0; i < list.length(); i++) {
+                JSONObject f = list.optJSONObject(i);
+                if (f == null || f.optLong("fs_id", 0) <= 0) continue;
+                long mt = f.optLong("server_mtime", 0);
+                if (mt > newestTime) {
+                    newestTime = mt;
+                    newest = f;
+                }
+                if (pick == null && !key.isEmpty()) {
+                    String nm = normName(f.optString("server_filename", ""));
+                    if (!nm.isEmpty() && (nm.contains(key) || key.contains(nm))) pick = f;
+                }
+            }
+            // 没找到同名项时，仅当目录里最新一项是「刚刚转存的」（10 分钟内）才认，
+            // 否则宁可报错也不能播错片子
+            if (pick == null && newest != null
+                    && System.currentTimeMillis() / 1000 - newestTime < 600) {
+                pick = newest;
+            }
+            if (pick != null) return pick;
+        }
+        return null;
+    }
+
+    /**
+     * 递归收集 dir 下的视频文件；rel 是相对「命中目录」的子路径（用于展示与本地还原目录结构）。
+     * 先收本层文件再下钻子目录 —— 这样列表里本层的集排在子文件夹的集前面。
+     */
+    private static void collectVideos(String dir, String rel, List<PlayFile> out, int depth) {
+        if (dir == null || dir.isEmpty() || depth > MAX_DEPTH || out.size() >= MAX_FILES) return;
+        JSONArray list = listDir(dir);
+        if (list == null) return;
+        List<JSONObject> subDirs = new ArrayList<>();
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject f = list.optJSONObject(i);
+            if (f == null || f.optLong("fs_id", 0) <= 0) continue;
+            if (f.optInt("isdir", 0) == 1) {
+                subDirs.add(f);
+                continue;
+            }
+            if (!isVideo(f.optString("server_filename", ""))) continue;
+            PlayFile p = toFile(f, rel);
+            if (p != null) out.add(p);
+        }
+        for (JSONObject d : subDirs) {
+            if (out.size() >= MAX_FILES) return;
+            String nm = d.optString("server_filename", "");
+            collectVideos(d.optString("path", ""), rel.isEmpty() ? nm : rel + "/" + nm, out, depth + 1);
+        }
+    }
+
+    /** 某一层目录下的视频文件（不下钻）。 */
+    private static List<PlayFile> listVideos(String dir) {
+        List<PlayFile> out = new ArrayList<>();
+        if (dir == null || dir.isEmpty()) return out;
+        JSONArray list = listDir(dir);
+        if (list == null) return out;
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject f = list.optJSONObject(i);
+            if (f == null || f.optLong("fs_id", 0) <= 0) continue;
+            if (f.optInt("isdir", 0) == 1) continue;
+            if (!isVideo(f.optString("server_filename", ""))) continue;
+            PlayFile p = toFile(f, "");
+            if (p != null) out.add(p);
+        }
+        return out;
+    }
+
+    private static PlayFile toFile(JSONObject f, String rel) {
+        if (f == null) return null;
+        PlayFile p = new PlayFile();
+        p.fsId = f.optLong("fs_id", 0);
+        p.path = f.optString("path", "");
+        p.name = f.optString("server_filename", "");
+        p.size = f.optLong("size", 0);
+        p.rel = rel == null ? "" : rel;
+        p.ok = p.fsId > 0 && !p.path.isEmpty();
+        return p.ok ? p : null;
+    }
+
+    private static boolean isVideo(String name) {
+        if (name == null || name.isEmpty()) return false;
+        String l = name.toLowerCase();
+        for (String ext : VIDEO_EXT) {
+            if (l.endsWith(ext)) return true;
+        }
+        return false;
+    }
+
+    /** 文件名的「主体」（去扩展名后归一化），用于判断是不是同一部片的兄弟文件。 */
+    private static String coreName(String fileName) {
+        if (fileName == null) return "";
+        String s = fileName;
+        int dot = s.lastIndexOf('.');
+        if (dot > 0 && s.length() - dot <= 6) s = s.substring(0, dot);
+        return normName(s);
+    }
+
+    private static String parentOf(String path) {
+        if (path == null) return "";
+        int i = path.lastIndexOf('/');
+        return i <= 0 ? "" : path.substring(0, i);
+    }
+
+    /** 自然序：让「第2集」排在「第10集」前面（纯字典序会反过来）。 */
+    public static void sortNaturally(List<PlayFile> files) {
+        if (files == null || files.size() < 2) return;
+        java.util.Collections.sort(files, (a, b) -> {
+            int c = naturalCompare(a.rel, b.rel);
+            return c != 0 ? c : naturalCompare(a.name, b.name);
+        });
+    }
+
+    private static int naturalCompare(String a, String b) {
+        String x = a == null ? "" : a;
+        String y = b == null ? "" : b;
+        int i = 0;
+        int j = 0;
+        while (i < x.length() && j < y.length()) {
+            char ca = x.charAt(i);
+            char cb = y.charAt(j);
+            if (Character.isDigit(ca) && Character.isDigit(cb)) {
+                int si = i;
+                int sj = j;
+                while (i < x.length() && Character.isDigit(x.charAt(i))) i++;
+                while (j < y.length() && Character.isDigit(y.charAt(j))) j++;
+                String na = x.substring(si, i).replaceFirst("^0+(?!$)", "");
+                String nb = y.substring(sj, j).replaceFirst("^0+(?!$)", "");
+                if (na.length() != nb.length()) return na.length() - nb.length();
+                int c = na.compareTo(nb);
+                if (c != 0) return c;
+            } else {
+                if (ca != cb) return ca - cb;
+                i++;
+                j++;
+            }
+        }
+        return (x.length() - i) - (y.length() - j);
     }
 
     /** 取原画直链 dlink（8 小时有效；必须配 UA=netdisk，由 LocalProxy 负责）。 */
