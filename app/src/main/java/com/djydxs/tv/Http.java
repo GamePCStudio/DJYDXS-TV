@@ -68,12 +68,16 @@ public final class Http {
             String respBody = readAll(is);
             Map<String, List<String>> headers = conn.getHeaderFields();
             CookieStore.storeFrom(url, headers);
+            android.util.Log.d("DJYDXS", "HTTP " + method + " " + code + " " + url
+                    + " | bodyLen=" + respBody.length()
+                    + " | loc=" + headerValue(headers, "location"));
             Resp r = new Resp();
             r.code = code;
             r.body = respBody;
             r.headers = headers;
             return r;
         } catch (Exception e) {
+            android.util.Log.d("DJYDXS", "HTTP-ERR " + method + " " + url + " :: " + e);
             Resp r = new Resp();
             r.code = 0;
             r.body = "";

@@ -158,6 +158,7 @@ public final class BaiduPan {
     /** 一键转存：分享链接(+提取码) -> targetDir。 */
     public static TransferResult transfer(String shareUrl, String pwd, String targetDir) {
         TransferResult out = new TransferResult();
+        android.util.Log.d("DJYDXS", "transfer: start url=" + shareUrl + " pwd=" + pwd + " dir=" + targetDir);
         if (!CookieStore.hasBaiduLogin()) {
             out.message = "未授权百度网盘，请先到 设置→百度网盘扫码";
             return out;
@@ -165,6 +166,7 @@ public final class BaiduPan {
         if (targetDir == null || !targetDir.startsWith("/")) targetDir = "/apps/DJYDXS";
         Http.desktopUa.set(true); // 整条链路用桌面 UA
         try {
+            android.util.Log.d("DJYDXS", "transfer: ensureDir " + targetDir);
             if (!ensureDir(targetDir)) {
                 out.message = "转存目录创建失败：" + targetDir;
                 return out;
@@ -188,6 +190,7 @@ public final class BaiduPan {
                                 + "&channel=chunlei&web=1&bdstoken=null&clienttype=0&app_id=250528",
                         vbody, vh, true);
                 String errno = errnoOf(vr.body);
+                android.util.Log.d("DJYDXS", "transfer: verify errno=" + errno + " body=" + vr.body.substring(0, Math.min(200, vr.body.length())));
                 if (vr.code != 200 || !"0".equals(errno)) {
                     out.message = "提取码错误或链接失效(" + errno + ")";
                     return out;
@@ -221,6 +224,10 @@ public final class BaiduPan {
                 out.message = "分享页访问失败(" + page.code + ")";
                 return out;
             }
+            android.util.Log.d("DJYDXS", "transfer: page len=" + page.body.length()
+                    + " hasYun=" + page.body.contains("yunData")
+                    + " hasFL=" + page.body.contains("fs_id")
+                    + " verify=" + page.body.contains("安全验证"));
             // 注意：页面模板里常驻"已失效"字样（分享者信息区），不能作为失效判据！
             // 失效与否由后面的 shareid/uk/file_list 数据提取决定。
             String html = page.body;
@@ -307,6 +314,7 @@ public final class BaiduPan {
                 } catch (Exception ignored) {
                 }
             }
+            android.util.Log.d("DJYDXS", "transfer: fsids=" + (fsids == null ? "null" : fsids.length) + " shareid=" + shareid + " uk=" + uk);
             if (fsids == null || fsids.length == 0) {
                 // 兜底：页面 file_list 不可用时，走 share/list 接口拉根目录
                 JSONArray rootList = listShareDir(shareid, uk, "/", shareUrl);
@@ -344,6 +352,7 @@ public final class BaiduPan {
                             + "&from=" + uk + "&bdstoken=" + bdstoken
                             + "&channel=chunlei&clienttype=0&web=1&app_id=250528",
                     body, hdrs, true);
+            android.util.Log.d("DJYDXS", "transfer: final errno=" + errno + " body=" + tr.body.substring(0, Math.min(200, tr.body.length())));
             String errno = errnoOf(tr.body);
             out.ok = "0".equals(errno);
             if (out.ok) {
