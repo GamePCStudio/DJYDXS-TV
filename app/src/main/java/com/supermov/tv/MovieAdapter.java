@@ -72,7 +72,10 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
     public void onBindViewHolder(@NonNull VH h, int pos) {
         Site.Movie m = items.get(pos);
         h.tvName.setText(m.name);
-        h.tvRemarks.setText(m.remarks == null ? "" : m.remarks);
+        String rem = m.remarks == null ? "" : m.remarks.trim();
+        h.tvRemarks.setText(rem);
+        // 备注为空时收起，行与行之间不留空行
+        h.tvRemarks.setVisibility(rem.isEmpty() ? View.GONE : View.VISIBLE);
         if (m.pic != null && !m.pic.isEmpty()) {
             h.ivPic.setTag(m.pic);
             ImageLoader.load(m.pic, h.ivPic);

@@ -3,12 +3,12 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:padding="5dp">
+    android:padding="3dp">
 
     <ImageView
         android:id="@+id/ivPic"
         android:layout_width="match_parent"
-        android:layout_height="240dp"
+        android:layout_height="150dp"
         android:scaleType="centerCrop"
         android:background="@drawable/bg_movie_normal" />
 
@@ -16,9 +16,9 @@
         android:id="@+id/tvName"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="3dp"
+        android:layout_marginTop="2dp"
         android:textColor="#FFFFFFFF"
-        android:textSize="10sp"
+        android:textSize="9sp"
         android:maxLines="1"
         android:ellipsize="end" />
 
@@ -28,6 +28,6 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="1dp"
         android:textColor="#FF9AA0A6"
-        android:textSize="8sp"
+        android:textSize="7sp"
         android:maxLines="1" />
 </LinearLayout>
