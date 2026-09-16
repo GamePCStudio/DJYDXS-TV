@@ -41,7 +41,7 @@ public final class Site {
         public int fid;
         public String name = "";
         public String pic = "";
-        public String remarks = ""; // 日期 · 片长
+        public String remarks = ""; // 年月日（角标只显示日期）
         public String content = "";
     }
 
@@ -411,16 +411,9 @@ public final class Site {
             Matcher mp = poster.matcher(post.isEmpty() ? html : post);
             if (mp.find()) d.movie.pic = normPic(mp.group(1));
         }
-        // 日期+片长
+        // 角标只保留 年月日（不附加片长）
         String date = extractDate(g1(RE_POSTED, html));
-        String runtime = g1(RE_RUNTIME, post.isEmpty() ? html : post);
-        StringBuilder rem = new StringBuilder();
-        if (!date.isEmpty()) rem.append(date);
-        if (!runtime.isEmpty()) {
-            if (rem.length() > 0) rem.append(" · ");
-            rem.append(runtime).append("分钟");
-        }
-        d.movie.remarks = rem.toString();
+        d.movie.remarks = date;
 
         // 下载源：只保留百度
         Matcher mb = RE_NTCJ.matcher(html);
@@ -628,25 +621,12 @@ public final class Site {
                     if (!p.isEmpty()) m.pic = p;
                 }
             }
-            // 补日期 · 片长：表格布局已写入日期（m.remarks 非空），这里用详情页兜底日期、
-            // 并补全片长；已有内容不重复追加，避免「日期 · 日期」。
-            String post = g1(RE_FIRST_POST, html);
+            // 角标只保留 年月日：详情页兜底补日期，不附加片长；已有日期则保留
             String date = extractDate(g1(RE_POSTED, html));
-            String runtime = g1(RE_RUNTIME, post.isEmpty() ? html : post);
-            String cur = (m.remarks == null) ? "" : m.remarks;
-            StringBuilder rem = new StringBuilder(cur);
-            boolean changed = false;
-            if (!date.isEmpty() && !cur.contains(date)) {
-                if (rem.length() > 0) rem.append(" · ");
-                rem.append(date);
-                changed = true;
+            if (!date.isEmpty()) {
+                String cur = (m.remarks == null) ? "" : m.remarks;
+                if (cur.isEmpty()) m.remarks = date;
             }
-            if (!runtime.isEmpty() && !cur.contains(runtime + "分钟")) {
-                if (rem.length() > 0) rem.append(" · ");
-                rem.append(runtime).append("分钟");
-                changed = true;
-            }
-            if (changed) m.remarks = rem.toString();
             return htmlHasBaiduShare(html);
         } catch (Exception e) {
             return false;

@@ -51,7 +51,7 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
     public void onBindViewHolder(@NonNull VH h, int pos) {
         Site.Movie m = items.get(pos);
         h.tvName.setText(m.name);
-        // 日期 · 片长 角标（图片内底部），无内容时隐藏
+        // 年月日 角标（图片内底部），无内容时隐藏
         String rem = m.remarks == null ? "" : m.remarks.trim();
         h.tvBadge.setText(rem);
         h.tvBadge.setVisibility(rem.isEmpty() ? View.GONE : View.VISIBLE);
