@@ -84,11 +84,16 @@ public class MainActivity extends Activity {
             catOptions.add(new OptionAdapter.Option(c.name));
         }
         catOptions.add(new OptionAdapter.Option("⚙ 设置"));
+        catOptions.add(new OptionAdapter.Option("⬇ 下载"));
         catAdapter.setItems(catOptions);
         catAdapter.setOnClick((o, pos) -> {
-            if (pos >= Site.categories().size()) {
+            int catCount = Site.categories().size();
+            if (pos == catCount) {
                 startActivity(new Intent(this, SettingsActivity.class));
-            } else {
+            } else if (pos == catCount + 1) {
+                // 下载队列：不压历史栈（它不是内容页，返回应直接回首页）
+                startActivity(new Intent(this, DownloadActivity.class));
+            } else if (pos >= 0 && pos < catCount) {
                 pushHistory(); // 返回键可回到上一个版块
                 searchKeyword = "";
                 currentFid = Site.categories().get(pos).fid;
@@ -152,6 +157,24 @@ public class MainActivity extends Activity {
         currentFid = Site.categories().get(0).fid;
         buildFilterRow(); // currentFid 就绪后重建过滤器行
         loadPage(1);
+
+        askNotificationPermissionOnce();
+    }
+
+    /**
+     * 提前把通知权限要到手（Android 13+）。
+     * 下载进度通知依赖它；没有它前台服务仍在跑，只是通知栏看不到进度。
+     */
+    private void askNotificationPermissionOnce() {
+        if (android.os.Build.VERSION.SDK_INT < 33) return;
+        try {
+            if (checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                return;
+            }
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 7001);
+        } catch (Throwable ignored) {
+        }
     }
 
     private void showSearchDialog() {

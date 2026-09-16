@@ -388,6 +388,215 @@ public final class BaiduPan {
         }
     }
 
+    // ---------- 播放取流（原画直链 / M3U8 转码流） ----------
+
+    /** 待播放的文件：fs_id + 网盘内完整路径（取 dlink 与 M3U8 都需要它）。 */
+    public static class PlayFile {
+        public boolean ok;
+        public String message = "";
+        public long fsId;
+        public String path = "";
+        public String name = "";
+        public long size;
+    }
+
+    private static final String[] VIDEO_EXT = {
+            ".mp4", ".mkv", ".avi", ".ts", ".m2ts", ".mov", ".wmv", ".flv", ".rmvb", ".rm", ".mpg", ".mpeg", ".m4v"
+    };
+
+    /** 列出自己网盘目录（api/list）。失败返回 null。 */
+    public static JSONArray listDir(String dir) {
+        Http.desktopUa.set(true);
+        String u = "https://pan.baidu.com/api/list?clienttype=0&app_id=250528&web=1"
+                + "&order=time&desc=1&num=200&page=1&dir=" + enc(dir);
+        Http.Resp r = Http.get(u);
+        try {
+            JSONObject o = new JSONObject(r.body);
+            if ("0".equals(String.valueOf(o.opt("errno")))) return o.optJSONArray("list");
+            android.util.Log.d("SupeMov", "listDir " + dir + " errno=" + o.opt("errno"));
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    /**
+     * 在网盘 rootDir 里找出「这部电影」对应的可播放文件：
+     * 先按片名匹配，匹配不到取最新的一项；若命中的是目录（转存常见形态）自动下钻
+     * 两层，取其中体积最大的视频文件。
+     */
+    public static PlayFile resolvePlayable(String rootDir, String keyword) {
+        PlayFile out = new PlayFile();
+        Http.desktopUa.set(true);
+        try {
+            // 转存目录可能因同名被顺延为 目录(2)..(5)，依次找一遍
+            String[] dirs = {
+                    rootDir,
+                    trimSlash(rootDir) + " (2)", trimSlash(rootDir) + " (3)",
+                    trimSlash(rootDir) + " (4)", trimSlash(rootDir) + " (5)"
+            };
+            String key = normName(keyword);
+            JSONObject pick = null;
+            for (String dir : dirs) {
+                JSONArray list = listDir(dir);
+                if (list == null) continue; // 目录不存在
+                JSONObject newest = null;
+                long newestTime = -1;
+                for (int i = 0; i < list.length(); i++) {
+                    JSONObject f = list.optJSONObject(i);
+                    if (f == null) continue;
+                    if (f.optLong("fs_id", 0) <= 0) continue;
+                    long mt = f.optLong("server_mtime", 0);
+                    if (mt > newestTime) {
+                        newestTime = mt;
+                        newest = f;
+                    }
+                    if (pick == null && !key.isEmpty()) {
+                        String nm = normName(f.optString("server_filename", ""));
+                        if (!nm.isEmpty() && (nm.contains(key) || key.contains(nm))) pick = f;
+                    }
+                }
+                // 没找到同名项时，仅当目录里最新一项是「刚刚转存的」（10 分钟内）才认，
+                // 否则宁可报错也不能播错片子
+                if (pick == null && newest != null
+                        && System.currentTimeMillis() / 1000 - newestTime < 600) {
+                    pick = newest;
+                }
+                if (pick != null) break;
+            }
+            if (pick == null) {
+                out.message = key.isEmpty()
+                        ? "网盘目录里没有可播放的内容"
+                        : "网盘里没找到这部影片（可先点「转存」再播放）";
+                return out;
+            }
+            // 命中的是目录 -> 下钻找视频文件
+            if (pick.optInt("isdir", 0) == 1) {
+                JSONObject vf = deepFindVideo(pick.optString("path", ""), 0);
+                if (vf == null) {
+                    out.message = "目录里没找到视频文件：" + pick.optString("server_filename", "");
+                    return out;
+                }
+                pick = vf;
+            }
+            out.fsId = pick.optLong("fs_id", 0);
+            out.path = pick.optString("path", "");
+            out.name = pick.optString("server_filename", "");
+            out.size = pick.optLong("size", 0);
+            out.ok = out.fsId > 0 && !out.path.isEmpty();
+            if (!out.ok) out.message = "未能定位可播放文件";
+            android.util.Log.d("SupeMov", "resolvePlayable -> " + out.path + " size=" + out.size);
+            return out;
+        } catch (Throwable e) {
+            out.message = "取流异常：" + e.getClass().getSimpleName();
+            return out;
+        }
+    }
+
+    /** 目录下钻（最多 2 层），返回体积最大的视频文件；找不到返回 null。 */
+    private static JSONObject deepFindVideo(String dir, int depth) {
+        if (dir == null || dir.isEmpty() || depth > 2) return null;
+        JSONArray list = listDir(dir);
+        if (list == null) return null;
+        JSONObject best = null;
+        List<JSONObject> subDirs = new ArrayList<>();
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject f = list.optJSONObject(i);
+            if (f == null) continue;
+            if (f.optInt("isdir", 0) == 1) {
+                subDirs.add(f);
+                continue;
+            }
+            String nm = f.optString("server_filename", "").toLowerCase();
+            boolean isVideo = false;
+            for (String ext : VIDEO_EXT) {
+                if (nm.endsWith(ext)) {
+                    isVideo = true;
+                    break;
+                }
+            }
+            if (!isVideo) continue;
+            if (best == null || f.optLong("size", 0) > best.optLong("size", 0)) best = f;
+        }
+        if (best != null) return best;
+        // 本层没有视频，继续下钻（剧集/合集常见的 季/集 两级结构）
+        for (JSONObject d : subDirs) {
+            JSONObject r = deepFindVideo(d.optString("path", ""), depth + 1);
+            if (r != null) return r;
+        }
+        return null;
+    }
+
+    /** 取原画直链 dlink（8 小时有效；必须配 UA=netdisk，由 LocalProxy 负责）。 */
+    public static String dlink(long fsId, String path) {
+        Http.desktopUa.set(true);
+        try {
+            String target = "[\"" + path + "\"]";
+            String u = "https://pan.baidu.com/api/filemetas?dlink=1"
+                    + "&fsids=" + enc("[" + fsId + "]")
+                    + "&target=" + enc(target)
+                    + "&clienttype=0&app_id=250528&web=1&channel=chunlei";
+            Http.Resp r = Http.get(u);
+            JSONObject o = new JSONObject(r.body);
+            String errno = String.valueOf(o.opt("errno"));
+            if (!"0".equals(errno)) {
+                android.util.Log.d("SupeMov", "dlink errno=" + errno);
+                return "";
+            }
+            JSONArray info = o.optJSONArray("info");
+            if (info == null || info.length() == 0) return "";
+            JSONObject i0 = info.optJSONObject(0);
+            if (i0 == null) return "";
+            String d = i0.optString("dlink", "");
+            if (d.isEmpty()) d = i0.optString("url", "");
+            android.util.Log.d("SupeMov", "dlink ok len=" + d.length());
+            return d;
+        } catch (Throwable e) {
+            return "";
+        }
+    }
+
+    /** M3U8 云端转码流（原画播不动时的兜底）。type 取 M3U8_AUTO_480 / _720 / _1080。 */
+    public static String streamingUrl(String path, String type) {
+        Http.desktopUa.set(true);
+        try {
+            String u = "https://pan.baidu.com/api/streaming?type=" + type
+                    + "&path=" + enc(path)
+                    + "&clienttype=0&app_id=250528&web=1&channel=chunlei&check_blue=1&vip=2";
+            Http.Resp r = Http.get(u);
+            JSONObject o = new JSONObject(r.body);
+            String[] keys = {"m3u8_url", "m3u8", "url", "dlink"};
+            for (String k : keys) {
+                String v = o.optString(k, "");
+                if (!v.isEmpty() && v.startsWith("http")) {
+                    android.util.Log.d("SupeMov", "streaming(" + type + ") key=" + k);
+                    return v;
+                }
+            }
+            android.util.Log.d("SupeMov", "streaming(" + type + ") errno=" + o.opt("errno")
+                    + " keys=" + o.keys());
+            return "";
+        } catch (Throwable e) {
+            return "";
+        }
+    }
+
+    /** 去掉末尾斜杠（拼 "目录 (2)" 这类顺延目录时用）。 */
+    private static String trimSlash(String p) {
+        if (p == null) return "";
+        return (p.endsWith("/") && p.length() > 1) ? p.substring(0, p.length() - 1) : p;
+    }
+
+    /** 片名归一化：只留中英文与数字，用于在网盘里认片。 */
+    private static String normName(String s) {
+        if (s == null) return "";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (Character.isLetterOrDigit(c)) sb.append(Character.toLowerCase(c));
+        }
+        return sb.toString();
+    }
+
     private static String transferMsg(String errno) {
         if ("0".equals(errno)) return "转存成功";
         if ("12".equals(errno)) return "目标目录已有同名文件";

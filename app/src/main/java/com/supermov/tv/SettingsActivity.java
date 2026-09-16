@@ -9,7 +9,9 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
-/** 设置页：百度网盘扫码 / 转存目录 / 授权状态 / 解除授权。 */
+import java.util.List;
+
+/** 设置页：百度网盘扫码 / 转存目录 / 下载目录 / 下载队列 / 授权状态 / 解除授权。 */
 public class SettingsActivity extends Activity {
 
     private LinearLayout group;
@@ -45,6 +47,17 @@ public class SettingsActivity extends Activity {
         group.addView(sectionLabel("转存目录"));
         group.addView(option("转存目录: " + current,
                 "点按修改（目录不存在会自动创建）", v -> showEditDirDialog()));
+
+        // ②.5 下载（落盘目录 + 队列入口）
+        group.addView(sectionLabel("下载"));
+        group.addView(option("下载目录: " + Settings.downloadDir(),
+                Storage.hasAllFiles(this)
+                        ? "点按修改（本机 / U盘 / 已挂载的 NAS 都能选）"
+                        : "点按修改；写入公共存储需先授予「所有文件访问」",
+                v -> showDownloadDirPicker()));
+        group.addView(option("下载队列",
+                "查看进度 / 暂停 / 断点续传 / 播放已下载文件",
+                v -> startActivity(new Intent(this, DownloadActivity.class))));
 
         // ③ 状态（真实会话校验异步更新）
         group.addView(sectionLabel("状态"));
@@ -100,6 +113,68 @@ public class SettingsActivity extends Activity {
         builder.setNegativeButton("取消", null);
         builder.show();
         input.requestFocus();
+    }
+
+    /** 下载落盘目录：列出所有可写位置（含 U 盘 / 已挂载 NAS），也可手动输入。 */
+    private void showDownloadDirPicker() {
+        final List<Storage.Target> ts = Storage.targets(this);
+        final String[] labels = new String[ts.size() + 1];
+        for (int i = 0; i < ts.size(); i++) {
+            labels[i] = ts.get(i).label + "\n" + ts.get(i).dir;
+        }
+        labels[ts.size()] = "✎ 手动输入路径…";
+
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(
+                this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("下载目录")
+                .setItems(labels, (d, which) -> {
+                    if (which == ts.size()) {
+                        showManualDownloadDir();
+                        return;
+                    }
+                    Storage.Target t = ts.get(which);
+                    if (t.needAllFiles && !Storage.hasAllFiles(this)) {
+                        Storage.requestAllFiles(this);
+                        Toast.makeText(this, "授予「所有文件访问」后重新选择即可", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    Settings.setDownloadDir(t.dir);
+                    Toast.makeText(this, "下载目录已设为\n" + t.dir, Toast.LENGTH_LONG).show();
+                    rebuild();
+                })
+                .create();
+        dlg.show();
+    }
+
+    private void showManualDownloadDir() {
+        final android.widget.EditText input = new android.widget.EditText(this);
+        input.setText(Settings.downloadDir());
+        input.setSelection(input.getText().length());
+        input.setTextSize(15);
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(
+                this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("下载目录（绝对路径）")
+                .setView(input)
+                .setPositiveButton("保存", (d, w) -> {
+                    String v = input.getText().toString().trim();
+                    if (v.isEmpty()) {
+                        Toast.makeText(this, "路径不能为空", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    if (Storage.needsPermission(this, v) && !Storage.hasAllFiles(this)) {
+                        Storage.requestAllFiles(this);
+                        Toast.makeText(this, "该位置需要「所有文件访问」权限，授权后重试",
+                                Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    Settings.setDownloadDir(v);
+                    Toast.makeText(this, "下载目录已设为 " + v, Toast.LENGTH_SHORT).show();
+                    rebuild();
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        dlg.show();
+        dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).requestFocus();
     }
 
     private void runDiag() {
