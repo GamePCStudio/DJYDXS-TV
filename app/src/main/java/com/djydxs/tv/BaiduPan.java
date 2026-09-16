@@ -213,14 +213,11 @@ public final class BaiduPan {
                 Http.get(shareUrl);
             }
 
-            // 2) 手动拼 Cookie —— 只带最小集 BDUSS+BDCLND（对齐 PC 实测可通组合）。
-            // 完整 cookieFor 里 STOKEN/杂项 cookie 会干扰百度分享的验证态判定。
-            String bduss = CookieStore.get("https://pan.baidu.com", "BDUSS");
-            StringBuilder ck = new StringBuilder("BDUSS=").append(bduss == null ? "" : bduss);
-            if (sekey != null && !sekey.isEmpty()) {
-                ck.append("; BDCLND=").append(sekey);
-            }
-            String finalCookie = ck.toString();
+            // 2) 打开分享页：只带 BDCLND，绝不带 BDUSS！
+            // 百度对"合法但已失效"的 BDUSS 会强制登录重定向（Auth Login Params Not Corret）；
+            // 无 BDUSS 时分享页正常返回数据（PC 实测）。BDUSS 只在 share/transfer 时用。
+            String finalCookie = (sekey != null && !sekey.isEmpty())
+                    ? "BDCLND=" + sekey : "";
             android.util.Log.d("DJYDXS", "transfer: cookie BDUSS.len=" + (bduss == null ? 0 : bduss.length())
                     + " BDCLND=" + (sekey == null || sekey.isEmpty() ? "EMPTY" : "set"));
 
@@ -358,6 +355,10 @@ public final class BaiduPan {
             hdrs.put("Cookie", finalCookie);
             hdrs.put("X-Requested-With", "XMLHttpRequest");
             hdrs.put("Origin", "https://pan.baidu.com");
+            String bdussT = CookieStore.get("https://pan.baidu.com", "BDUSS");
+            String ckT = (hdrs.get("Cookie") == null ? "" : hdrs.get("Cookie") + "; ")
+                    + "BDUSS=" + (bdussT == null ? "" : bdussT);
+            hdrs.put("Cookie", ckT);
             String body = "fsidlist=" + enc(fsarr.toString()) + "&path=" + enc(targetDir);
             Http.Resp tr = Http.request("POST",
                     "https://pan.baidu.com/share/transfer?shareid=" + shareid
@@ -416,8 +417,8 @@ public final class BaiduPan {
         // 最小集 Cookie（BDUSS+BDCLND）：全量 cookieFor 会带 STOKEN 等干扰验证态
         String bduss = CookieStore.get("https://pan.baidu.com", "BDUSS");
         String bdclnd = CookieStore.get("https://pan.baidu.com", "BDCLND");
-        StringBuilder ckl = new StringBuilder("BDUSS=").append(bduss == null ? "" : bduss);
-        if (bdclnd != null && !bdclnd.isEmpty()) ckl.append("; BDCLND=").append(bdclnd);
+        StringBuilder ckl = new StringBuilder();
+        if (bdclnd != null && !bdclnd.isEmpty()) ckl.append("BDCLND=").append(bdclnd);
         java.util.Map<String, String> lh = new java.util.HashMap<>();
         lh.put("Cookie", ckl.toString());
         lh.put("Referer", referer == null ? "https://pan.baidu.com/" : referer);

@@ -68,9 +68,14 @@ public final class Http {
             String respBody = readAll(is);
             Map<String, List<String>> headers = conn.getHeaderFields();
             CookieStore.storeFrom(url, headers);
+            String reqCookie = conn.getRequestProperty("Cookie");
+            String ckLog = reqCookie == null ? "none"
+                    : (reqCookie.length() + "ch: " + reqCookie.substring(0, Math.min(80, reqCookie.length())) + "…");
             android.util.Log.d("DJYDXS", "HTTP " + method + " " + code + " " + url
                     + " | bodyLen=" + respBody.length()
-                    + " | loc=" + headerValue(headers, "location"));
+                    + " | loc=" + headerValue(headers, "location")
+                    + " | ua=" + (Boolean.TRUE.equals(desktopUa.get()) ? "PC" : "MOB")
+                    + " | ck=" + ckLog);
             Resp r = new Resp();
             r.code = code;
             r.body = respBody;
