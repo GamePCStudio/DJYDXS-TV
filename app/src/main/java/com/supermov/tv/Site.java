@@ -554,11 +554,64 @@ public final class Site {
         return sb.toString();
     }
 
+    /** 数字 HTML 实体：十进制 &#NNN; 与十六进制 &#xHHHH;（论坛把标题里部分汉字转义成这种形式，如 行=&#x884C;）。 */
+    private static final Pattern RE_DEC_ENT = Pattern.compile("&#(\\d+);");
+    private static final Pattern RE_HEX_ENT = Pattern.compile("&#x([0-9a-fA-F]+);");
+
+    /** 码点转字符串（兼容 >0xFFFF 辅助平面字符，用代理对表示）。 */
+    private static String codePointToString(int code) {
+        if (code < 0 || code > 0x10FFFF) return null;
+        if (code <= 0xFFFF) return String.valueOf((char) code);
+        return new String(Character.toChars(code));
+    }
+
+    /** 解码十进制/十六进制数字实体（修复片名里被转义的汉字显示为 &#x884C; 这类乱码）。 */
+    private static String decodeNumericEntities(String s) {
+        if (s == null || s.indexOf("&#") < 0) return s;
+        Matcher md = RE_DEC_ENT.matcher(s);
+        if (md.find()) {
+            StringBuffer sb = new StringBuffer();
+            md.reset();
+            while (md.find()) {
+                int code = -1;
+                try { code = Integer.parseInt(md.group(1)); } catch (Exception ignored) {}
+                String rep = (code > 0 && code <= 0x10FFFF) ? codePointToString(code) : md.group(0);
+                md.appendReplacement(sb, Matcher.quoteReplacement(rep == null ? md.group(0) : rep));
+            }
+            md.appendTail(sb);
+            s = sb.toString();
+        }
+        Matcher mh = RE_HEX_ENT.matcher(s);
+        if (mh.find()) {
+            StringBuffer sb = new StringBuffer();
+            mh.reset();
+            while (mh.find()) {
+                int code = -1;
+                try { code = Integer.parseInt(mh.group(1), 16); } catch (Exception ignored) {}
+                String rep = (code > 0 && code <= 0x10FFFF) ? codePointToString(code) : mh.group(0);
+                mh.appendReplacement(sb, Matcher.quoteReplacement(rep == null ? mh.group(0) : rep));
+            }
+            mh.appendTail(sb);
+            s = sb.toString();
+        }
+        return s;
+    }
+
     public static String unescape(String s) {
         if (s == null) return "";
-        return s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
-                .replace("&quot;", "\"").replace("&#39;", "'").replace("&nbsp;", " ")
-                .replace("&#x27;", "'");
+        // 先处理常见命名实体（含 Discuz 常用标点），再处理数字实体
+        s = s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+                .replace("&quot;", "\"").replace("&apos;", "'")
+                .replace("&#39;", "'").replace("&#x27;", "'")
+                .replace("&nbsp;", " ").replace("&middot;", "·")
+                .replace("&hellip;", "…").replace("&copy;", "©").replace("&reg;", "®")
+                .replace("&trade;", "™").replace("&bull;", "•").replace("&times;", "×")
+                .replace("&mdash;", "—").replace("&ndash;", "–")
+                .replace("&laquo;", "«").replace("&raquo;", "»")
+                .replace("&ldquo;", "“").replace("&rdquo;", "”")
+                .replace("&lsquo;", "‘").replace("&rsquo;", "’")
+                .replace("&deg;", "°").replace("&plusmn;", "±");
+        return decodeNumericEntities(s);
     }
 
     /** 列表项海报缺失时补抓详情页拿海报（限量，避免拖慢首屏）。 */
