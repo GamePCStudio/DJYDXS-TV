@@ -218,8 +218,8 @@ public final class BaiduPan {
             // 无 BDUSS 时分享页正常返回数据（PC 实测）。BDUSS 只在 share/transfer 时用。
             String finalCookie = (sekey != null && !sekey.isEmpty())
                     ? "BDCLND=" + sekey : "";
-            android.util.Log.d("DJYDXS", "transfer: cookie BDUSS.len=" + (bduss == null ? 0 : bduss.length())
-                    + " BDCLND=" + (sekey == null || sekey.isEmpty() ? "EMPTY" : "set"));
+            android.util.Log.d("DJYDXS", "transfer: open-share cookie = "
+                    + (finalCookie.isEmpty() ? "EMPTY" : "BDCLND only (" + finalCookie.length() + "ch)"));
 
             // 3) 打开分享页（桌面 UA + BDCLND）
             java.util.Map<String, String> hdrs = new java.util.HashMap<>();
@@ -260,8 +260,7 @@ public final class BaiduPan {
                     String sekey2 = mr2.find() ? mr2.group(1) : "";
                     if (!sekey2.isEmpty()) {
                         CookieStore.put("https://pan.baidu.com/", "BDCLND", sekey2);
-                        String ck2 = "BDUSS=" + (bduss == null ? "" : bduss)
-                                + (sekey2 != null && !sekey2.isEmpty() ? "; BDCLND=" + sekey2 : "");
+                        String ck2 = "BDCLND=" + sekey2; // 分享页不带 BDUSS（会触发登录重定向）
                         java.util.Map<String, String> hdrs2 = new java.util.HashMap<>();
                         hdrs2.put("Cookie", ck2);
                         page = Http.request("GET", shareUrl, null, hdrs2, true);
