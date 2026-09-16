@@ -89,9 +89,11 @@ public class QrActivity extends Activity {
                         pool.execute(() -> {
                             String name = BaiduPan.userName();
                             Settings.setBaiduUser(name);
+                            final boolean sessOk = BaiduPan.sessionValid();
                             main.post(() -> {
-                                Toast.makeText(this, "授权成功：" + (name.isEmpty() ? "百度账号" : name),
-                                        Toast.LENGTH_LONG).show();
+                                Toast.makeText(this, sessOk
+                                        ? "授权成功：" + (name.isEmpty() ? "百度账号" : name)
+                                        : "已扫码但会话校验失败，请重试扫码", Toast.LENGTH_LONG).show();
                                 finish();
                             });
                         });

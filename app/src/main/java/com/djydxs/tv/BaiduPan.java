@@ -163,12 +163,18 @@ public final class BaiduPan {
             out.message = "未授权百度网盘，请先到 设置→百度网盘扫码";
             return out;
         }
+        Http.desktopUa.set(true);
+        if (!sessionValid()) {
+            android.util.Log.d("DJYDXS", "transfer: session INVALID (api/list errno!=0)");
+            out.message = "百度登录已失效，请到 设置→百度网盘扫码 重新授权";
+            return out;
+        }
         if (targetDir == null || !targetDir.startsWith("/")) targetDir = "/apps/DJYDXS";
         Http.desktopUa.set(true); // 整条链路用桌面 UA
         try {
             android.util.Log.d("DJYDXS", "transfer: ensureDir " + targetDir);
             if (!ensureDir(targetDir)) {
-                out.message = "转存目录创建失败：" + targetDir;
+                out.message = "转存目录创建失败(登录态可能失效)：" + targetDir;
                 return out;
             }
             String surl = resolveSurl(shareUrl);
@@ -427,6 +433,12 @@ public final class BaiduPan {
         } catch (Exception ignored) {
         }
         return null;
+    }
+
+    /** 会话是否真的有效：api/list 探测（本地有 BDUSS 不代表服务器侧会话还在）。 */
+    public static boolean sessionValid() {
+        Http.Resp r = Http.get("https://pan.baidu.com/api/list?clienttype=0&app_id=250528&web=1&dir=%2F");
+        return r.code == 200 && "0".equals(errnoOf(r.body));
     }
 
     private static boolean ensureDir(String path) {

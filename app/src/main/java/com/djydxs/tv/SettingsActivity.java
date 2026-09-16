@@ -53,10 +53,22 @@ public class SettingsActivity extends Activity {
                     }));
         }
 
-        // ③ 状态
+        // ③ 状态（真实会话校验异步更新）
         group.addView(sectionLabel("状态"));
-        group.addView(option("授权状态：" + (authed ? "已授权" : "未授权"),
-                "百度账号 Cookie 保存在本机", null));
+        final TextView statCard = option("授权状态：" + (authed ? "检测中…" : "未授权"),
+                "百度账号 Cookie 保存在本机", null);
+        group.addView(statCard);
+        if (authed) {
+            new Thread(() -> {
+                final boolean ok = BaiduPan.sessionValid();
+                runOnUiThread(() -> {
+                    statCard.setText("授权状态：" + (ok
+                            ? "已授权（会话有效）"
+                            : "已扫码但会话已失效 → 请重新扫码")
+                            + "\n百度账号 Cookie 保存在本机");
+                });
+            }).start();
+        }
         group.addView(option("最近转存：" + (Settings.lastTransfer().isEmpty() ? "无" : "有记录"),
                 "详情页转存后更新", null));
 
