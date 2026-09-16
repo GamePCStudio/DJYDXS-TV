@@ -100,9 +100,18 @@ public final class Site {
     private static final Pattern RE_FIRST_POST = Pattern.compile(
             "<td class=\"t_f\" id=\"postmessage_\\d+\">(.*?)</td>\\s*</tr>", Pattern.DOTALL);
     private static final Pattern RE_POSTED = Pattern.compile(
-            "<em id=\"authorposton\\d+\">[^<]*?(\\d{4}-\\d{1,2}-\\d{1,2})", Pattern.CASE_INSENSITIVE);
+            "<em id=\"authorposton\\d+\">(?:<span[^>]*>)?\\s*[^<]*?(\\d{4}-\\d{1,2}-\\d{1,2})",
+            Pattern.CASE_INSENSITIVE);
     private static final Pattern RE_RUNTIME = Pattern.compile("片\\s*长[^0-9]{0,8}(\\d{1,3})\\s*分钟");
     private static final Pattern RE_PAGES = Pattern.compile("共\\s*(\\d+)\\s*页", Pattern.CASE_INSENSITIVE);
+    // 表格布局每行：<tbody id="normalthread_x"> … <em>(发表于)? YYYY-M-D … </tbody>
+    // 允许日期被 <span> 包裹（与 PY _RE_ROW_DATE 一致），作为海报角标日期的可靠来源
+    private static final Pattern RE_TBODY = Pattern.compile(
+            "<tbody id=\"(?:normalthread|stickthread)_(\\d+)\">(.*?)</tbody>",
+            Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+    private static final Pattern RE_ROW_DATE = Pattern.compile(
+            "<em[^>]*>(?:<span[^>]*>)?\\s*(?:发表于\\s*)?(\\d{4}-\\d{1,2}-\\d{1,2})",
+            Pattern.CASE_INSENSITIVE);
     // 百度网盘分享链接（详情页正文兜底用 + 列表过滤用）
     private static final Pattern RE_BAIDU_URL = Pattern.compile(
             "https?://pan\\.baidu\\.com/s/[A-Za-z0-9_\\-]+(?:\\?pwd=[A-Za-z0-9]+)?",
@@ -241,7 +250,37 @@ public final class Site {
                 out.data.add(m);
             }
         }
+        // 与 PY 版 _parse_category 一致：海报墙卡片通常只标年份，完整日期来自表格布局
+        // 每行的「最后回复时间」<em>YYYY-M-D</em>。单独抓一份表格布局页抽日期，按 tid 合并
+        // 到海报条目（已含日期则保留，抽不到则交给详情页探测 RE_POSTED 兜底）。
+        if (!out.data.isEmpty()) {
+            java.util.Map<String, String> rowDates = parseRowDates(fid, page);
+            if (!rowDates.isEmpty()) {
+                for (Movie m : out.data) {
+                    if ((m.remarks == null || m.remarks.isEmpty()) && rowDates.containsKey(m.tid)) {
+                        m.remarks = rowDates.get(m.tid);
+                    }
+                }
+            }
+        }
         return out;
+    }
+
+    /** 抓表格布局页（forum-{fid}-{page}.html），按 tid 提取每行「最后回复时间」作为角标日期。 */
+    private static java.util.Map<String, String> parseRowDates(int fid, int page) {
+        java.util.Map<String, String> map = new java.util.HashMap<>();
+        try {
+            Http.Resp r = Http.get(BASE + "/forum-" + fid + "-" + page + ".html");
+            if (r.code != 200 || isLoginWall(r.body)) return map;
+            Matcher rm = RE_TBODY.matcher(r.body);
+            while (rm.find()) {
+                String tid = rm.group(1);
+                String d = g1(RE_ROW_DATE, rm.group(2));
+                if (!d.isEmpty()) map.put(tid, extractDate(d));
+            }
+        } catch (Exception ignored) {
+        }
+        return map;
     }
 
     public static Paged<List<Movie>> search(String kw, int page) {
@@ -589,19 +628,25 @@ public final class Site {
                     if (!p.isEmpty()) m.pic = p;
                 }
             }
-            // 补日期 · 片长
-            if (m.remarks == null || m.remarks.isEmpty()) {
-                String post = g1(RE_FIRST_POST, html);
-                String date = extractDate(g1(RE_POSTED, html));
-                String runtime = g1(RE_RUNTIME, post.isEmpty() ? html : post);
-                StringBuilder rem = new StringBuilder();
-                if (!date.isEmpty()) rem.append(date);
-                if (!runtime.isEmpty()) {
-                    if (rem.length() > 0) rem.append(" · ");
-                    rem.append(runtime).append("分钟");
-                }
-                if (rem.length() > 0) m.remarks = rem.toString();
+            // 补日期 · 片长：表格布局已写入日期（m.remarks 非空），这里用详情页兜底日期、
+            // 并补全片长；已有内容不重复追加，避免「日期 · 日期」。
+            String post = g1(RE_FIRST_POST, html);
+            String date = extractDate(g1(RE_POSTED, html));
+            String runtime = g1(RE_RUNTIME, post.isEmpty() ? html : post);
+            String cur = (m.remarks == null) ? "" : m.remarks;
+            StringBuilder rem = new StringBuilder(cur);
+            boolean changed = false;
+            if (!date.isEmpty() && !cur.contains(date)) {
+                if (rem.length() > 0) rem.append(" · ");
+                rem.append(date);
+                changed = true;
             }
+            if (!runtime.isEmpty() && !cur.contains(runtime + "分钟")) {
+                if (rem.length() > 0) rem.append(" · ");
+                rem.append(runtime).append("分钟");
+                changed = true;
+            }
+            if (changed) m.remarks = rem.toString();
             return htmlHasBaiduShare(html);
         } catch (Exception e) {
             return false;
