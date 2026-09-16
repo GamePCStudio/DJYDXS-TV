@@ -352,8 +352,8 @@ public final class BaiduPan {
                             + "&from=" + uk + "&bdstoken=" + bdstoken
                             + "&channel=chunlei&clienttype=0&web=1&app_id=250528",
                     body, hdrs, true);
-            android.util.Log.d("DJYDXS", "transfer: final errno=" + errno + " body=" + tr.body.substring(0, Math.min(200, tr.body.length())));
             String errno = errnoOf(tr.body);
+            android.util.Log.d("DJYDXS", "transfer: final errno=" + errno + " body=" + tr.body.substring(0, Math.min(200, tr.body.length())));
             out.ok = "0".equals(errno);
             if (out.ok) {
                 out.message = "转存成功 → " + targetDir;
