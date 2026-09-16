@@ -4,7 +4,7 @@
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:clipChildren="false"
-    android:padding="16dp">
+    android:padding="8dp">
 
     <!-- 分类行 + 搜索按钮：分类横向滚动，搜索按钮在“设置”后面 -->
     <LinearLayout
@@ -26,15 +26,15 @@
             android:id="@+id/btnSearch"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
+            android:layout_marginStart="8dp"
             android:background="@drawable/bg_search_btn"
-            android:paddingStart="18dp"
-            android:paddingEnd="18dp"
-            android:paddingTop="10dp"
-            android:paddingBottom="10dp"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:paddingTop="7dp"
+            android:paddingBottom="7dp"
             android:text="🔍 搜索"
             android:textColor="#FFFFFFFF"
-            android:textSize="15sp"
+            android:textSize="10.5sp"
             android:textStyle="bold"
             android:focusable="true"
             android:clickable="true" />
@@ -43,7 +43,7 @@
     <View
         android:layout_width="match_parent"
         android:layout_height="1dp"
-        android:layout_marginTop="10dp"
+        android:layout_marginTop="6dp"
         android:background="#FF2A3038" />
 
     <!-- 影片区：列表 + 居中空态提示 -->
@@ -51,7 +51,7 @@
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginTop="10dp"
+        android:layout_marginTop="6dp"
         android:clipChildren="false">
 
         <androidx.recyclerview.widget.RecyclerView
@@ -68,7 +68,7 @@
             android:layout_gravity="center"
             android:text="加载中…"
             android:textColor="#FF9AA0A6"
-            android:textSize="16sp"
+            android:textSize="13sp"
             android:visibility="gone" />
     </FrameLayout>
 </LinearLayout>

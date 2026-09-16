@@ -3,22 +3,22 @@
     android:layout_width="wrap_content"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:paddingStart="8dp"
-    android:paddingEnd="8dp"
-    android:paddingTop="6dp"
-    android:paddingBottom="10dp">
+    android:paddingStart="5dp"
+    android:paddingEnd="5dp"
+    android:paddingTop="3dp"
+    android:paddingBottom="5dp">
 
     <TextView
         android:id="@+id/tvOption"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:background="@drawable/bg_cat"
-        android:paddingStart="18dp"
-        android:paddingEnd="18dp"
-        android:paddingTop="9dp"
-        android:paddingBottom="9dp"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp"
         android:textColor="#FFC6CBD2"
-        android:textSize="15sp"
+        android:textSize="10.5sp"
         android:focusable="true"
         android:clickable="true"
         android:maxLines="1" />

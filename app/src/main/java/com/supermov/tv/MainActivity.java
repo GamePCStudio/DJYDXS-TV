@@ -41,6 +41,7 @@ public class MainActivity extends Activity {
     private int currentFid;
     private int currentPage = 1;
     private int totalPages = 1;
+    private int posterSpans = 5; // 海报列数（onCreate 里按屏幕高度自适应）
     private boolean loading = false;
     private String searchKeyword = ""; // 空 = 浏览版块；非空 = 搜索模式
 
@@ -77,8 +78,15 @@ public class MainActivity extends Activity {
         });
         rvCats.setAdapter(catAdapter);
 
-        // 影片列表
-        rvList.setLayoutManager(new GridLayoutManager(this, 5));
+        // 影片列表：列数按屏幕高度自适应，目标一屏 6~7 行海报
+        // 行高 ≈ 海报高(1.5×单元格宽) + 文字区约 36dp；由目标 6.5 行反推单元格宽
+        android.util.DisplayMetrics dm = new android.util.DisplayMetrics();
+        getWindowManager().getDefaultDisplay().getMetrics(dm);
+        float den = Math.max(0.1f, dm.density);
+        float availH = dm.heightPixels / den - 52f; // 扣除顶栏+页边距
+        float cellW = Math.max(52f, (availH / 6.5f - 36f) / 1.5f);
+        posterSpans = Math.max(4, Math.round((dm.widthPixels / den - 14f) / cellW));
+        rvList.setLayoutManager(new GridLayoutManager(this, posterSpans));
         movieAdapter = new MovieAdapter();
         movieAdapter.setOnClick(m -> confirmTransfer(m));
         rvList.setAdapter(movieAdapter);
@@ -89,7 +97,9 @@ public class MainActivity extends Activity {
                 LinearLayoutManager lm = (LinearLayoutManager) rv.getLayoutManager();
                 if (lm == null) return;
                 int last = lm.findLastVisibleItemPosition();
-                if (!loading && currentPage < totalPages && last >= movieAdapter.getItemCount() - 4) {
+                // 提前量随列数放大（一行就有 posterSpans 个条目）
+                if (!loading && currentPage < totalPages
+                        && last >= movieAdapter.getItemCount() - posterSpans * 2) {
                     loadPage(currentPage + 1);
                 }
             }
@@ -114,7 +124,7 @@ public class MainActivity extends Activity {
 
         final EditText input = new EditText(this);
         input.setHint("输入片名关键词");
-        input.setTextSize(16);
+        input.setTextSize(13);
         builder.setView(input);
 
         builder.setPositiveButton("搜索", (d, w) -> {

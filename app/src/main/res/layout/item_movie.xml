@@ -3,7 +3,7 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:padding="10dp">
+    android:padding="5dp">
 
     <ImageView
         android:id="@+id/ivPic"
@@ -16,18 +16,18 @@
         android:id="@+id/tvName"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
+        android:layout_marginTop="3dp"
         android:textColor="#FFFFFFFF"
-        android:textSize="15sp"
-        android:maxLines="2"
+        android:textSize="10sp"
+        android:maxLines="1"
         android:ellipsize="end" />
 
     <TextView
         android:id="@+id/tvRemarks"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
+        android:layout_marginTop="1dp"
         android:textColor="#FF9AA0A6"
-        android:textSize="12sp"
+        android:textSize="8sp"
         android:maxLines="1" />
 </LinearLayout>
