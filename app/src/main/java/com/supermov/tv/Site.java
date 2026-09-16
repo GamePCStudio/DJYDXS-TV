@@ -221,16 +221,13 @@ public final class Site {
             }
             m.name = cleanTitle(stripTags(g1(RE_HB_TITLE, body)));
             String sub = stripTags(g1(RE_HB_SUB, body));
-            // 从卡片（副标题/年份或任意位置）提取日期，单独放到底部角标显示，
-            // 不再只依赖详情页探测（RE_POSTED 不匹配时也能显示）
+            // 仅从副标题取日期；不要对整段 body 做 extractDate，否则会误匹配
+            // thread-<tid>-1-1.html 里的 tid（如 6062-1-1）当成日期。副标题若非完整日期
+            // （如仅年份 2026），remarks 留空，交给表格布局页 rowDates 按 tid 补真实日期。
             String date = extractDate(sub);
-            if (date.isEmpty()) date = extractDate(body);
             if (!date.isEmpty()) {
                 m.remarks = date;
                 // 副标题本身就是日期时不再并入片名，避免重复
-                if (extractDate(sub).isEmpty() && !sub.isEmpty() && !m.name.contains(sub)) {
-                    m.name = (m.name + " " + sub).trim();
-                }
             } else if (!sub.isEmpty() && !m.name.contains(sub)) {
                 m.name = (m.name + " " + sub).trim();
             }
@@ -257,7 +254,8 @@ public final class Site {
             java.util.Map<String, String> rowDates = parseRowDates(fid, page);
             if (!rowDates.isEmpty()) {
                 for (Movie m : out.data) {
-                    if ((m.remarks == null || m.remarks.isEmpty()) && rowDates.containsKey(m.tid)) {
+                    // 表格布局页按 tid 抽到的「最后回复时间」是可靠真实日期，优先采用（覆盖列表阶段的脏值）
+                    if (rowDates.containsKey(m.tid)) {
                         m.remarks = rowDates.get(m.tid);
                     }
                 }
@@ -621,12 +619,9 @@ public final class Site {
                     if (!p.isEmpty()) m.pic = p;
                 }
             }
-            // 角标只保留 年月日：详情页兜底补日期，不附加片长；已有日期则保留
+            // 角标只保留 年月日：详情页 RE_POSTED 取到的真实日期优先（覆盖列表阶段可能的脏值），不附加片长
             String date = extractDate(g1(RE_POSTED, html));
-            if (!date.isEmpty()) {
-                String cur = (m.remarks == null) ? "" : m.remarks;
-                if (cur.isEmpty()) m.remarks = date;
-            }
+            if (!date.isEmpty()) m.remarks = date;
             return htmlHasBaiduShare(html);
         } catch (Exception e) {
             return false;
