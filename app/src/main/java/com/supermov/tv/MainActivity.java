@@ -169,20 +169,21 @@ public class MainActivity extends Activity {
                 url = d.boxes.get(0).url;
                 pwd = d.boxes.get(0).pwd;
             }
-            final BaiduPan.TransferResult r;
+            BaiduPan.TransferResult rr;
             if (url.isEmpty()) {
-                r = new BaiduPan.TransferResult();
-                r.ok = false;
-                r.message = "该影片没有百度网盘分享链接";
+                rr = new BaiduPan.TransferResult();
+                rr.ok = false;
+                rr.message = "该影片没有百度网盘分享链接";
             } else {
                 try {
-                    r = BaiduPan.transfer(url, pwd, Settings.saveDir());
+                    rr = BaiduPan.transfer(url, pwd, Settings.saveDir());
                 } catch (Throwable e) {
-                    r = new BaiduPan.TransferResult();
-                    r.ok = false;
-                    r.message = "转存异常：" + e.getClass().getSimpleName();
+                    rr = new BaiduPan.TransferResult();
+                    rr.ok = false;
+                    rr.message = "转存异常：" + e.getClass().getSimpleName();
                 }
             }
+            final BaiduPan.TransferResult r = rr;
             main.post(() -> {
                 Settings.recordTransfer(Settings.saveDir(), r.ok);
                 Toast.makeText(this, (r.ok ? "✔ " : "✘ ") + r.message, Toast.LENGTH_LONG).show();
