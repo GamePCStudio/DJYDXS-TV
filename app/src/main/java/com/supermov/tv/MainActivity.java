@@ -97,7 +97,11 @@ public class MainActivity extends Activity {
 
         // 搜索按钮
         btnSearch.setOnClickListener(v -> showSearchDialog());
-        btnSearch.setOnFocusChangeListener((v, has) -> v.setAlpha(has ? 1f : 0.85f));
+        btnSearch.setOnFocusChangeListener((v, has) -> {
+            v.setAlpha(has ? 1f : 0.85f);
+            v.setScaleX(has ? 1.1f : 1f);
+            v.setScaleY(has ? 1.1f : 1f);
+        });
 
         // 默认加载第一个版块
         currentFid = Site.categories().get(0).fid;
@@ -197,6 +201,7 @@ public class MainActivity extends Activity {
         tvEmpty.setVisibility(View.VISIBLE);
         tvEmpty.setText("加载中…");
         pool.execute(() -> {
+            Site.lastLoadError = "";
             Site.Paged<List<Site.Movie>> res;
             if (kw != null && !kw.isEmpty()) {
                 res = Site.search(kw, page);
@@ -222,7 +227,15 @@ public class MainActivity extends Activity {
                 else movieAdapter.addItems(res.data);
                 boolean empty = movieAdapter.getItemCount() == 0;
                 tvEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
-                tvEmpty.setText(empty ? "没有内容" : "");
+                if (empty && "login".equals(Site.lastLoadError)) {
+                    tvEmpty.setText("论坛登录已过期，请到 设置 → 论坛登录 重新登录");
+                    Toast.makeText(this, "论坛登录已过期，请到 设置 → 论坛登录 重新登录", Toast.LENGTH_LONG).show();
+                } else if (empty && "flood".equals(Site.lastLoadError)) {
+                    tvEmpty.setText("搜索太频繁，请等 10 秒后再试");
+                    Toast.makeText(this, "搜索太频繁，请等 10 秒后再试", Toast.LENGTH_SHORT).show();
+                } else {
+                    tvEmpty.setText(empty ? "没有内容" : "");
+                }
             });
         });
     }

@@ -5,27 +5,21 @@
             <item>
                 <shape>
                     <solid android:color="#FF1E88E5" />
-                    <corners android:radius="20dp" />
+                    <corners android:radius="8dp" />
                 </shape>
             </item>
             <item>
                 <shape>
                     <stroke android:width="3dp" android:color="#FFFFFFFF" />
-                    <corners android:radius="20dp" />
+                    <corners android:radius="8dp" />
                 </shape>
             </item>
         </layer-list>
     </item>
-    <item android:state_selected="true">
-        <shape>
-            <solid android:color="#FF2A5F94" />
-            <corners android:radius="20dp" />
-        </shape>
-    </item>
     <item>
         <shape>
-            <solid android:color="#FF1A1F26" />
-            <corners android:radius="20dp" />
+            <solid android:color="#FF1E88E5" />
+            <corners android:radius="8dp" />
         </shape>
     </item>
 </selector>

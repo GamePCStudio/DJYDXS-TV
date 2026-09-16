@@ -3,6 +3,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
+    android:clipChildren="false"
     android:padding="16dp">
 
     <!-- 分类行 + 搜索按钮：分类横向滚动，搜索按钮在“设置”后面 -->
@@ -10,6 +11,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
+        android:clipChildren="false"
         android:gravity="center_vertical">
 
         <androidx.recyclerview.widget.RecyclerView
@@ -17,6 +19,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:clipChildren="false"
             android:clipToPadding="false" />
 
         <TextView
@@ -24,7 +27,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="12dp"
-            android:background="#FF1E88E5"
+            android:background="@drawable/bg_search_btn"
             android:paddingStart="18dp"
             android:paddingEnd="18dp"
             android:paddingTop="10dp"
@@ -48,12 +51,14 @@
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginTop="10dp">
+        android:layout_marginTop="10dp"
+        android:clipChildren="false">
 
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/rvMovies"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
+            android:clipChildren="false"
             android:clipToPadding="false" />
 
         <TextView

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 海报聚焦态：实底 + 外圈光晕 + 高亮描边（依次叠加，描边盖在实底上） -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape>
+            <solid android:color="#FF22262B" />
+            <corners android:radius="6dp" />
+        </shape>
+    </item>
+    <item>
+        <shape>
+            <stroke android:width="7dp" android:color="#3342A5F5" />
+            <corners android:radius="6dp" />
+        </shape>
+    </item>
+    <item>
+        <shape>
+            <stroke android:width="3dp" android:color="#FF42A5F5" />
+            <corners android:radius="6dp" />
+        </shape>
+    </item>
+</layer-list>

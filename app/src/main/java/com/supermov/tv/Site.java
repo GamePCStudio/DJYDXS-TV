@@ -107,11 +107,29 @@ public final class Site {
     private static final Pattern RE_BAIDU_URL = Pattern.compile(
             "https?://pan\\.baidu\\.com/s/[A-Za-z0-9_\\-]+(?:\\?pwd=[A-Za-z0-9]+)?",
             Pattern.CASE_INSENSITIVE);
+    // Discuz formhash（登录后页面里带，搜索请求需要）
+    private static final Pattern RE_FORMHASH_INPUT = Pattern.compile(
+            "name=\"formhash\"\\s+value=\"([a-f0-9]+)\"", Pattern.CASE_INSENSITIVE);
+    private static final Pattern RE_FORMHASH_URL = Pattern.compile("formhash=([a-f0-9]+)", Pattern.CASE_INSENSITIVE);
+
+    /** 最近一次加载/搜索的失败状态："login"=论坛登录过期, "flood"=搜索太频繁, 空串=正常。 */
+    public static volatile String lastLoadError = "";
+    private static volatile String formhash = "";
+
+    private static void extractFormhash(String html) {
+        if (html == null || html.isEmpty()) return;
+        Matcher m = RE_FORMHASH_INPUT.matcher(html);
+        if (!m.find()) m = RE_FORMHASH_URL.matcher(html);
+        if (m.find()) formhash = m.group(1);
+    }
 
     public static boolean isLoginWall(String html) {
-        return html != null && html.length() > 100
-                && html.contains("name=\"loginsubmit\"")
-                && html.contains("登录");
+        if (html == null || html.length() < 100) return false;
+        // Discuz 标准登录页
+        if (html.contains("name=\"loginsubmit\"")) return true;
+        // 站点 SMS 登录插件页（jzsjiale_sms）整站拦截时的落点，标题为“登录”
+        if (html.contains("<title>登录</title>")) return true;
+        return false;
     }
 
     /** 启动时注入内置论坛 Cookie（用户没有手动登录过时生效）。 */
@@ -145,9 +163,13 @@ public final class Site {
         if (r.code != 200 || isLoginWall(r.body)) {
             // 表格布局版块：先试默认页
             r = Http.get(BASE + "/forum-" + fid + "-" + page + ".html");
-            if (r.code != 200 || isLoginWall(r.body)) return out;
+            if (r.code != 200 || isLoginWall(r.body)) {
+                lastLoadError = "login";
+                return out;
+            }
         }
         String html = r.body;
+        extractFormhash(html);
         out.pageCount = pageCount(html);
 
         // 2026-09 新版海报墙（byg_*）：background-image 上直接带海报 URL
@@ -217,21 +239,44 @@ public final class Site {
         out.pageCount = 1;
         try {
             // 第 1 页：发起新搜索（10 秒防刷）；翻页：searchid 复用结果
-            // 实测：GET srchtxt 直接 200 返回结果页（302 只发生在无 Cookie 时）
-            String url;
+            // Discuz X5 对裸 GET 搜索会踢登录墙/拒绝，带 formhash 的 GET 优先，
+            // 再退回 POST（标准表单提交方式）。
+            String enc = java.net.URLEncoder.encode(kw, "UTF-8");
+            Http.Resp r;
+            String html;
             if (page == 1) {
-                url = BASE + "/search.php?mod=forum&srchtxt="
-                        + java.net.URLEncoder.encode(kw, "UTF-8") + "&searchsubmit=yes";
+                String fh = formhash;
+                String fhq = fh.isEmpty() ? "" : "&formhash=" + fh;
+                r = Http.get(BASE + "/search.php?mod=forum&srchtxt=" + enc
+                        + "&searchsubmit=yes" + fhq);
+                if (r.code != 200 || isLoginWall(r.body)) {
+                    // POST 兜底（Discuz 搜索表单的标准提交方式）
+                    r = Http.request("POST", BASE + "/search.php?mod=forum",
+                            "searchsubmit=yes&srchtxt=" + enc + "&srhfid=0" + fhq, null, true);
+                }
+                if (r.code != 200 || isLoginWall(r.body)) {
+                    lastLoadError = "login";
+                    return out;
+                }
+                html = r.body;
+                extractFormhash(html);
+                // Discuz 防刷：两次搜索间隔太短
+                if (html.contains("两次搜索间隔") || html.contains("搜索间隔") || html.contains("搜索太频繁")) {
+                    lastLoadError = "flood";
+                    return out;
+                }
             } else {
                 String sid = lastSearchSid;
                 if (sid == null || sid.isEmpty()) return out;
-                url = BASE + "/search.php?mod=forum&searchid=" + sid
+                r = Http.get(BASE + "/search.php?mod=forum&searchid=" + sid
                         + "&orderby=lastpost&ascdesc=desc&searchsubmit=yes&kw="
-                        + java.net.URLEncoder.encode(kw, "UTF-8") + "&page=" + page;
+                        + enc + "&page=" + page);
+                if (r.code != 200 || isLoginWall(r.body)) {
+                    lastLoadError = "login";
+                    return out;
+                }
+                html = r.body;
             }
-            Http.Resp r = Http.get(url);
-            if (r.code != 200 || isLoginWall(r.body)) return out;
-            String html = r.body;
             Matcher sidm = Pattern.compile("searchid=(\\d+)").matcher(html);
             if (sidm.find()) lastSearchSid = sidm.group(1);
 
@@ -274,6 +319,7 @@ public final class Site {
             if (pm.find()) {
                 try { out.pageCount = Math.max(1, Integer.parseInt(pm.group(1))); } catch (Exception ignored) {}
             }
+            if (!out.data.isEmpty()) lastLoadError = "";
             return out;
         } catch (Exception e) {
             return out;
@@ -292,6 +338,7 @@ public final class Site {
         d.movie.tid = tid;
         d.movie.fid = fid;
         d.movie.name = cleanTitle(stripTags(g1(RE_SUBJECT, html)));
+        extractFormhash(html);
 
         String post = g1(RE_FIRST_POST, html);
         if (!post.isEmpty()) {

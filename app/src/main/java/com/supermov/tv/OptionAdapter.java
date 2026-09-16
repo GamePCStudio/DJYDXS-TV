@@ -58,10 +58,10 @@ public class OptionAdapter extends RecyclerView.Adapter<OptionAdapter.VH> {
         h.itemView.setOnClickListener(v -> {
             if (listener != null) listener.onClick(o, h.getAdapterPosition());
         });
-        // 焦点高亮由 bg_cat/bg_option selector 处理，这里只做缩放反馈
+        // 焦点高亮由 bg_cat selector（蓝底白描边）处理，这里做放大反馈
         h.itemView.setOnFocusChangeListener((v, has) -> {
-            v.setScaleX(has ? 1.06f : 1f);
-            v.setScaleY(has ? 1.06f : 1f);
+            v.setScaleX(has ? 1.14f : 1f);
+            v.setScaleY(has ? 1.14f : 1f);
         });
     }
 

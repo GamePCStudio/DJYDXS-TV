@@ -82,8 +82,13 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
         h.itemView.setOnClickListener(v -> {
             if (listener != null) listener.onClick(m);
         });
+        // TV 焦点反馈：整体放大 + 海报高亮描边 + 标题变亮，远距离也看得清
         h.itemView.setOnFocusChangeListener((v, has) -> {
-            v.setAlpha(has ? 1f : 0.85f);
+            v.setScaleX(has ? 1.08f : 1f);
+            v.setScaleY(has ? 1.08f : 1f);
+            v.setAlpha(has ? 1f : 0.75f);
+            h.ivPic.setBackgroundResource(has ? R.drawable.bg_movie_focus : R.drawable.bg_movie_normal);
+            h.tvName.setTextColor(has ? 0xFF42A5F5 : 0xFFFFFFFF);
         });
     }
 
