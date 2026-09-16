@@ -51,7 +51,7 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
     public void onBindViewHolder(@NonNull VH h, int pos) {
         Site.Movie m = items.get(pos);
         h.tvName.setText(m.name);
-        h.tvRemarks.setText(m.remarks == null || m.remarks.isEmpty() ? "点击查看详情" : m.remarks);
+        h.tvRemarks.setText(m.remarks == null ? "" : m.remarks);
         if (m.pic != null && !m.pic.isEmpty()) {
             h.ivPic.setTag(m.pic);
             ImageLoader.load(m.pic, h.ivPic);

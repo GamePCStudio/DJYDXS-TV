@@ -169,7 +169,7 @@ public final class BaiduPan {
             out.message = "百度登录已失效，请到 设置→百度网盘扫码 重新授权";
             return out;
         }
-        if (targetDir == null || !targetDir.startsWith("/")) targetDir = "/apps/DJYDXS";
+        if (targetDir == null || !targetDir.startsWith("/")) targetDir = "/超级影库";
         Http.desktopUa.set(true); // 整条链路用桌面 UA
         try {
             android.util.Log.d("SupeMov", "transfer: ensureDir " + targetDir);
@@ -294,28 +294,13 @@ public final class BaiduPan {
                 try {
                     JSONArray fl = new JSONArray(flJson);
                     List<Long> ids = new ArrayList<>();
-                    String onlyDirPath = null;
                     for (int i = 0; i < fl.length(); i++) {
                         JSONObject f = fl.optJSONObject(i);
                         if (f == null) continue;
                         long id = f.optLong("fs_id", 0);
                         if (id <= 0) continue;
-                        // 根目录只有一个子目录 -> 进内层
-                        if (f.optInt("isdir", 0) == 1 && fl.length() == 1) {
-                            onlyDirPath = f.optString("path", "/");
-                            rootIsDir = true;
-                        } else {
-                            ids.add(id);
-                        }
-                    }
-                    if (rootIsDir && onlyDirPath != null) {
-                        JSONArray sub = listShareDir(shareid, uk, onlyDirPath, shareUrl);
-                        if (sub != null) {
-                            for (int i = 0; i < sub.length(); i++) {
-                                JSONObject f = sub.optJSONObject(i);
-                                if (f != null && f.optLong("fs_id", 0) > 0) ids.add(f.optLong("fs_id"));
-                            }
-                        }
+                        ids.add(id);
+                        // 目录项原样保留：转存目录项 = 连目录带内容一起复制（结构原样）
                     }
                     fsids = new long[ids.size()];
                     for (int i = 0; i < ids.size(); i++) fsids[i] = ids.get(i);

@@ -27,7 +27,7 @@ public final class Settings {
     }
 
     public static String saveDir() {
-        return p().getString(K_SAVE_DIR, "/apps/DJYDXS");
+        return p().getString(K_SAVE_DIR, "/超级影库");
     }
 
     public static void setSaveDir(String dir) {

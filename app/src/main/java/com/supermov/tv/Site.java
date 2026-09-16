@@ -55,10 +55,10 @@ public final class Site {
 
     private static final List<Category> CATS = new ArrayList<>();
     static {
-        CATS.add(new Category(112, "4KSDR.Remux"));
-        CATS.add(new Category(58,  "1080P高码版"));
+        CATS.add(new Category(112, "4K全景声"));
         CATS.add(new Category(37,  "1080P最新剧集"));
-        CATS.add(new Category(2,   "最新1080P电影"));
+        CATS.add(new Category(58,  "1080P蓝光"));
+        CATS.add(new Category(2,   "1080P杜比5.1"));
         // 已按要求移除：1080P.Remux / 4K剧集.115网盘 / 国语特效MKV / 转载资源区 / 资源补档
     }
 

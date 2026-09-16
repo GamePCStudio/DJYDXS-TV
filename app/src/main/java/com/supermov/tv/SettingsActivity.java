@@ -40,18 +40,10 @@ public class SettingsActivity extends Activity {
         group.addView(option(qrTitle, "用百度网盘APP扫码授权，用于一键转存", v ->
                 startActivity(new Intent(this, QrActivity.class))));
 
-        // ② 转存目录（预设 + 自定义当前值）
+        // ② 转存目录（可编辑）
         group.addView(sectionLabel("转存目录"));
-        String current = Settings.saveDir();
-        for (String dir : new String[]{"/apps/DJYDXS", "/apps/TVBox", "/影视资源", "/来自TVBox的转存"}) {
-            boolean cur = dir.equals(current);
-            group.addView(option((cur ? "● " : "○ ") + dir + (cur ? "  ← 当前" : ""),
-                    "转存目标目录（不存在会自动创建）", v -> {
-                        Settings.setSaveDir(dir);
-                        Toast.makeText(this, "转存目录已设为 " + dir, Toast.LENGTH_SHORT).show();
-                        rebuild();
-                    }));
-        }
+        group.addView(option("转存目录: " + current,
+                "点按修改（目录不存在会自动创建）", v -> showEditDirDialog()));
 
         // ③ 状态（真实会话校验异步更新）
         group.addView(sectionLabel("状态"));
@@ -89,6 +81,29 @@ public class SettingsActivity extends Activity {
                 rebuild();
             }));
         }
+    }
+
+    private void showEditDirDialog() {
+        android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(
+                this, android.R.style.Theme_DeviceDefault_Dialog);
+        builder.setTitle("转存目录");
+        final android.widget.EditText input = new android.widget.EditText(this);
+        input.setText(Settings.saveDir());
+        input.setSelection(input.getText().length());
+        input.setTextSize(16);
+        builder.setView(input);
+        builder.setPositiveButton("保存", (d, w) -> {
+            String v = input.getText().toString().trim();
+            if (!v.startsWith("/")) v = "/" + v;
+            v = v.replaceAll("/+$", "");
+            if (v.isEmpty()) v = "/超级影库";
+            Settings.setSaveDir(v);
+            Toast.makeText(this, "转存目录已设为 " + v, Toast.LENGTH_SHORT).show();
+            rebuild();
+        });
+        builder.setNegativeButton("取消", null);
+        builder.show();
+        input.requestFocus();
     }
 
     private void runDiag() {
