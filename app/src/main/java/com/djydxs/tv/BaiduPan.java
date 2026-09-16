@@ -207,13 +207,16 @@ public final class BaiduPan {
                 Http.get(shareUrl);
             }
 
-            // 2) 手动拼 Cookie（BDCLND 不能依赖 CookieHandler）
-            StringBuilder ck = new StringBuilder(cookie == null ? "" : cookie);
+            // 2) 手动拼 Cookie —— 只带最小集 BDUSS+BDCLND（对齐 PC 实测可通组合）。
+            // 完整 cookieFor 里 STOKEN/杂项 cookie 会干扰百度分享的验证态判定。
+            String bduss = CookieStore.get("https://pan.baidu.com", "BDUSS");
+            StringBuilder ck = new StringBuilder("BDUSS=").append(bduss == null ? "" : bduss);
             if (sekey != null && !sekey.isEmpty()) {
-                if (ck.length() > 0 && !ck.toString().endsWith("; ")) ck.append("; ");
-                ck.append("BDCLND=").append(sekey);
+                ck.append("; BDCLND=").append(sekey);
             }
             String finalCookie = ck.toString();
+            android.util.Log.d("DJYDXS", "transfer: cookie BDUSS.len=" + (bduss == null ? 0 : bduss.length())
+                    + " BDCLND=" + (sekey == null || sekey.isEmpty() ? "EMPTY" : "set"));
 
             // 3) 打开分享页（桌面 UA + BDCLND）
             java.util.Map<String, String> hdrs = new java.util.HashMap<>();
@@ -251,10 +254,13 @@ public final class BaiduPan {
                                     + "&channel=chunlei&web=1&bdstoken=null&clienttype=0&app_id=250528",
                             vbody2, null, true);
                     Matcher mr2 = Pattern.compile("randsk[^\\d]{0,8}([\\w%]+)").matcher(vr2.body);
-                    if (mr2.find()) {
-                        CookieStore.put("https://pan.baidu.com/", "BDCLND", mr2.group(1));
+                    String sekey2 = mr2.find() ? mr2.group(1) : "";
+                    if (!sekey2.isEmpty()) {
+                        CookieStore.put("https://pan.baidu.com/", "BDCLND", sekey2);
+                        String ck2 = "BDUSS=" + (bduss == null ? "" : bduss)
+                                + (sekey2 != null && !sekey2.isEmpty() ? "; BDCLND=" + sekey2 : "");
                         java.util.Map<String, String> hdrs2 = new java.util.HashMap<>();
-                        hdrs2.put("Cookie", CookieStore.cookieFor("https://pan.baidu.com/"));
+                        hdrs2.put("Cookie", ck2);
                         page = Http.request("GET", shareUrl, null, hdrs2, true);
                         html = page.body;
                         Matcher ms2 = pSid.matcher(html);
@@ -401,10 +407,19 @@ public final class BaiduPan {
     }
 
     private static JSONArray listShareDir(String shareid, String uk, String dir, String referer) {
-        Http.Resp r = Http.get("https://pan.baidu.com/share/list?shareid=" + shareid
+        // 最小集 Cookie（BDUSS+BDCLND）：全量 cookieFor 会带 STOKEN 等干扰验证态
+        String bduss = CookieStore.get("https://pan.baidu.com", "BDUSS");
+        String bdclnd = CookieStore.get("https://pan.baidu.com", "BDCLND");
+        StringBuilder ckl = new StringBuilder("BDUSS=").append(bduss == null ? "" : bduss);
+        if (bdclnd != null && !bdclnd.isEmpty()) ckl.append("; BDCLND=").append(bdclnd);
+        java.util.Map<String, String> lh = new java.util.HashMap<>();
+        lh.put("Cookie", ckl.toString());
+        lh.put("Referer", referer == null ? "https://pan.baidu.com/" : referer);
+        Http.Resp r = Http.request("GET", "https://pan.baidu.com/share/list?shareid=" + shareid
                 + "&uk=" + uk + "&root=" + ("/".equals(dir) || dir.isEmpty() ? "1" : "0")
-                + "&dir=" + enc(dir) + "&clienttype=0&web=1&channel=chunlei");
+                + "&dir=" + enc(dir) + "&clienttype=0&web=1&channel=chunlei", null, lh, true);
         try {
+            android.util.Log.d("DJYDXS", "share/list dir=" + dir + " body=" + r.body.substring(0, Math.min(180, r.body.length())));
             JSONObject o = new JSONObject(r.body);
             if ("0".equals(String.valueOf(o.opt("errno")))) {
                 return o.optJSONArray("list");
