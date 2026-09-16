@@ -32,7 +32,6 @@ public class MainActivity extends Activity {
 
     private RecyclerView rvCats;
     private RecyclerView rvList;
-    private TextView tvTitle;
     private TextView btnSearch;
     private TextView tvEmpty;
 
@@ -53,7 +52,6 @@ public class MainActivity extends Activity {
         Site.ensureForumCookie(); // 注入内置论坛 Cookie，解锁会员版块
         setContentView(R.layout.activity_list);
 
-        tvTitle = findViewById(R.id.titleView);
         btnSearch = findViewById(R.id.btnSearch);
         tvEmpty = findViewById(R.id.emptyView);
         rvCats = findViewById(R.id.recyclerView);
@@ -74,14 +72,13 @@ public class MainActivity extends Activity {
             } else {
                 searchKeyword = "";
                 currentFid = Site.categories().get(pos).fid;
-                tvTitle.setText(Site.categories().get(pos).name);
                 reload();
             }
         });
         rvCats.setAdapter(catAdapter);
 
         // 影片列表
-        rvList.setLayoutManager(new GridLayoutManager(this, 3));
+        rvList.setLayoutManager(new GridLayoutManager(this, 5));
         movieAdapter = new MovieAdapter();
         movieAdapter.setOnClick(m -> confirmTransfer(m));
         rvList.setAdapter(movieAdapter);
@@ -104,7 +101,6 @@ public class MainActivity extends Activity {
 
         // 默认加载第一个版块
         currentFid = Site.categories().get(0).fid;
-        tvTitle.setText(Site.categories().get(0).name);
         loadPage(1);
     }
 
@@ -129,7 +125,6 @@ public class MainActivity extends Activity {
 
     private void startSearch(String kw) {
         searchKeyword = kw;
-        tvTitle.setText("搜索: " + kw);
         reload();
     }
 

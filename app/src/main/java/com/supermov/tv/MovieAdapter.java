@@ -1,8 +1,10 @@
 package com.supermov.tv;
 
+import android.os.Build;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.widget.ImageView;
 import android.widget.TextView;
 
@@ -44,6 +46,25 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
     public VH onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
         View v = LayoutInflater.from(parent.getContext())
                 .inflate(R.layout.item_movie, parent, false);
+        // 强制海报为 2:3 竖版（宽:高 = 2:3），不变形；以列宽推算高度，适配各种密度
+        ImageView iv = v.findViewById(R.id.ivPic);
+        iv.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
+            @Override
+            public void onGlobalLayout() {
+                int w = iv.getWidth();
+                if (w <= 0) return;
+                int h = Math.round(w * 1.5f);
+                if (iv.getLayoutParams().height != h) {
+                    iv.getLayoutParams().height = h;
+                    iv.requestLayout();
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+                    iv.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                } else {
+                    iv.getViewTreeObserver().removeGlobalOnLayoutListener(this);
+                }
+            }
+        });
         return new VH(v);
     }
 

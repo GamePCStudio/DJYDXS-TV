@@ -5,22 +5,19 @@
     android:orientation="vertical"
     android:padding="16dp">
 
-    <!-- 标题行：标题 + 搜索按钮 -->
+    <!-- 分类行 + 搜索按钮：分类横向滚动，搜索按钮在“设置”后面 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center_vertical">
 
-        <TextView
-            android:id="@+id/titleView"
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/recyclerView"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:textColor="#FFFFFFFF"
-            android:textSize="22sp"
-            android:textStyle="bold"
-            android:singleLine="true" />
+            android:clipToPadding="false" />
 
         <TextView
             android:id="@+id/btnSearch"
@@ -39,14 +36,6 @@
             android:focusable="true"
             android:clickable="true" />
     </LinearLayout>
-
-    <!-- 分类行：横向滚动，固定一行高度 -->
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/recyclerView"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:clipToPadding="false" />
 
     <View
         android:layout_width="match_parent"
