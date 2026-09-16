@@ -33,7 +33,15 @@ public final class Site {
     public static class Category {
         public final int fid;
         public final String name;
+        public final List<Filter> filters = new ArrayList<>();
         public Category(int fid, String name) { this.fid = fid; this.name = name; }
+    }
+
+    /** 版块主题分类过滤器（Discuz filter=typeid&typeid=X；typeid=0 表示全部）。 */
+    public static class Filter {
+        public final String name;
+        public final int typeid;
+        public Filter(String name, int typeid) { this.name = name; this.typeid = typeid; }
     }
 
     public static class Movie {
@@ -58,11 +66,69 @@ public final class Site {
 
     private static final List<Category> CATS = new ArrayList<>();
     static {
-        CATS.add(new Category(112, "4K全景声"));
-        CATS.add(new Category(37,  "1080P最新剧集"));
-        CATS.add(new Category(58,  "1080P蓝光"));
-        CATS.add(new Category(2,   "1080P杜比5.1"));
+        // 各版块的过滤器（名称与 typeid 均来自论坛页面实测，各版块互不相同；
+        // 「限制级」按要求不显示，「全部」= typeid 0）
+        Category c = new Category(112, "4K全景声");
+        c.filters.add(new Filter("全部", 0));
+        c.filters.add(new Filter("国语", 312));
+        c.filters.add(new Filter("剧集", 321));
+        c.filters.add(new Filter("怀旧港片", 303));
+        c.filters.add(new Filter("老片新看", 304));
+        c.filters.add(new Filter("佳片有约", 305));
+        c.filters.add(new Filter("国内", 306));
+        c.filters.add(new Filter("日韩", 307));
+        c.filters.add(new Filter("欧美", 308));
+        c.filters.add(new Filter("其他", 309));
+        c.filters.add(new Filter("动画", 311));
+        c.filters.add(new Filter("TOP250", 313));
+        c.filters.add(new Filter("漫威", 317));
+        c.filters.add(new Filter("DC", 318));
+        c.filters.add(new Filter("纪录片", 343));
+        c.filters.add(new Filter("星影", 314));
+        c.filters.add(new Filter("WEB-DL", 322));
+        CATS.add(c);
+
+        c = new Category(37, "1080P最新剧集");
+        c.filters.add(new Filter("全部", 0));
+        c.filters.add(new Filter("国内", 183));
+        c.filters.add(new Filter("纪录片", 335));
+        CATS.add(c);
+
+        c = new Category(58, "1080P蓝光");
+        c.filters.add(new Filter("全部", 0));
+        c.filters.add(new Filter("怀旧港片", 228));
+        c.filters.add(new Filter("老片新看", 269));
+        c.filters.add(new Filter("佳片有约", 267));
+        c.filters.add(new Filter("国内", 231));
+        c.filters.add(new Filter("欧美", 229));
+        c.filters.add(new Filter("日韩", 230));
+        c.filters.add(new Filter("其他", 323));
+        c.filters.add(new Filter("动画", 319));
+        c.filters.add(new Filter("TOP250", 261));
+        c.filters.add(new Filter("纪录片", 337));
+        CATS.add(c);
+
+        c = new Category(2, "1080P杜比5.1");
+        c.filters.add(new Filter("全部", 0));
+        c.filters.add(new Filter("老片新看", 268));
+        c.filters.add(new Filter("佳片有约", 29));
+        c.filters.add(new Filter("怀旧港片", 226));
+        c.filters.add(new Filter("日韩", 53));
+        c.filters.add(new Filter("国内", 52));
+        c.filters.add(new Filter("欧美", 54));
+        c.filters.add(new Filter("其他", 199));
+        c.filters.add(new Filter("纪录片", 336));
+        c.filters.add(new Filter("动画", 162));
+        c.filters.add(new Filter("国语", 184));
+        c.filters.add(new Filter("TOP250", 88));
+        CATS.add(c);
         // 已按要求移除：1080P.Remux / 4K剧集.115网盘 / 国语特效MKV / 转载资源区 / 资源补档
+    }
+
+    /** 指定版块的过滤器列表（每版块不同；含「全部」）。 */
+    public static List<Filter> filtersFor(int fid) {
+        for (Category c : CATS) if (c.fid == fid) return c.filters;
+        return new ArrayList<>();
     }
 
     public static List<Category> categories() {
@@ -165,13 +231,23 @@ public final class Site {
 
     /** 版块列表（海报墙 + 表格兜底），返回条目与总页数。 */
     public static Paged<List<Movie>> category(int fid, int page) {
+        return category(fid, page, 0);
+    }
+
+    /** 版块列表（可带主题分类过滤 typeid，0=全部）。 */
+    public static Paged<List<Movie>> category(int fid, int page, int typeid) {
         Paged<List<Movie>> out = new Paged<>();
         out.data = new ArrayList<>();
         String url = BASE + "/forum.php?mod=forumdisplay&fid=" + fid + "&page=" + page + "&movmod=haibao";
+        if (typeid > 0) url += "&filter=typeid&typeid=" + typeid;
         Http.Resp r = Http.get(url);
         if (r.code != 200 || isLoginWall(r.body)) {
-            // 表格布局版块：先试默认页
-            r = Http.get(BASE + "/forum-" + fid + "-" + page + ".html");
+            // 表格布局版块兜底：无 typeid 用短地址；有 typeid 用完整参数（不带 movmod 走默认布局）
+            String fb = (typeid > 0)
+                    ? BASE + "/forum.php?mod=forumdisplay&fid=" + fid
+                      + "&filter=typeid&typeid=" + typeid + "&page=" + page
+                    : BASE + "/forum-" + fid + "-" + page + ".html";
+            r = Http.get(fb);
             if (r.code != 200 || isLoginWall(r.body)) {
                 lastLoadError = "login";
                 return out;
@@ -248,7 +324,7 @@ public final class Site {
         // 每行的「最后回复时间」<em>YYYY-M-D</em>。单独抓一份表格布局页抽日期，按 tid 合并
         // 到海报条目（已含日期则保留，抽不到则交给详情页探测 RE_POSTED 兜底）。
         if (!out.data.isEmpty()) {
-            java.util.Map<String, String> rowDates = parseRowDates(fid, page);
+            java.util.Map<String, String> rowDates = parseRowDates(fid, page, typeid);
             if (!rowDates.isEmpty()) {
                 for (Movie m : out.data) {
                     // 表格布局页按 tid 抽到的「最后回复时间」是可靠真实日期，优先采用（覆盖列表阶段的脏值）
@@ -261,11 +337,16 @@ public final class Site {
         return out;
     }
 
-    /** 抓表格布局页（forum-{fid}-{page}.html），按 tid 提取每行「最后回复时间」作为角标日期。 */
-    private static java.util.Map<String, String> parseRowDates(int fid, int page) {
+    /** 抓表格布局页，按 tid 提取每行「最后回复时间」作为角标日期。
+     *  带 typeid 时用完整参数 + movmod=liebiao 强制表格布局，保证过滤后的日期与条目对应。 */
+    private static java.util.Map<String, String> parseRowDates(int fid, int page, int typeid) {
         java.util.Map<String, String> map = new java.util.HashMap<>();
         try {
-            Http.Resp r = Http.get(BASE + "/forum-" + fid + "-" + page + ".html");
+            String u = (typeid > 0)
+                    ? BASE + "/forum.php?mod=forumdisplay&fid=" + fid
+                      + "&filter=typeid&typeid=" + typeid + "&page=" + page + "&movmod=liebiao"
+                    : BASE + "/forum-" + fid + "-" + page + ".html";
+            Http.Resp r = Http.get(u);
             if (r.code != 200 || isLoginWall(r.body)) return map;
             Matcher rm = RE_TBODY.matcher(r.body);
             while (rm.find()) {

@@ -46,6 +46,15 @@
         android:layout_marginTop="6dp"
         android:background="#FF2A3038" />
 
+    <!-- 过滤器行：各版块的主题分类（每版块不同，搜索模式隐藏） -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rvFilters"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:clipChildren="false"
+        android:clipToPadding="false" />
+
     <!-- 影片区：列表 + 居中空态提示 -->
     <FrameLayout
         android:layout_width="match_parent"
