@@ -73,5 +73,16 @@
             android:name=".QrActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden" />
+
+        <activity
+            android:name=".DownloadActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+
+        <!-- 下载前台服务：保活 + 通知栏进度（dataSync 类型，Android 14 起必须声明） -->
+        <service
+            android:name=".DlService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

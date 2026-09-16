@@ -102,7 +102,7 @@ public class PlayerActivity extends Activity {
             return;
         }
         status("本地播放：" + f.getName() + "（" + humanSize(f.length()) + "）");
-        MediaItem.Builder b = MediaItem.Builder().setUri(android.net.Uri.fromFile(f));
+        MediaItem.Builder b = new MediaItem.Builder().setUri(android.net.Uri.fromFile(f));
         player.setMediaItem(b.build());
         player.prepare();
         player.setPlayWhenReady(true);
@@ -174,7 +174,7 @@ public class PlayerActivity extends Activity {
 
     private void startPlay(String url, long pos, boolean m3u8) {
         if (finishing || player == null) return;
-        MediaItem.Builder b = MediaItem.Builder().setUri(url);
+        MediaItem.Builder b = new MediaItem.Builder().setUri(url);
         if (m3u8) b.setMimeType(MimeTypes.APPLICATION_M3U8);
         player.setMediaItem(b.build());
         player.prepare();
@@ -184,7 +184,7 @@ public class PlayerActivity extends Activity {
 
     private void handlePlaybackError(PlaybackException error) {
         if (finishing) return;
-        Log.d(TAG, "playback error code=" + error.getErrorCode() + " msg=" + error.getMessage());
+        Log.d(TAG, "playback error code=" + error.getErrorCodeName() + " msg=" + error.getMessage());
         final long pos = player.getCurrentPosition();
         if (!usingM3u8) {
             // 第一次失败：直链可能已过期（8h）或被风控掐断 -> 换一条新链再试
@@ -236,22 +236,41 @@ public class PlayerActivity extends Activity {
         }, "player-m3u8").start();
     }
 
+    /**
+     * 把 media3 的错误码翻成中文提示。
+     *
+     * 注意：media3 1.11.0 起 PlaybackException 已经**移除**了 getErrorCode()，
+     * 只能拿 getErrorCodeName()（形如 "ERROR_CODE_IO_BAD_HTTP_STATUS"）做字符串判断，
+     * 所以这里不要写 switch(错误码 int)。
+     */
     private String describe(PlaybackException e) {
-        switch (e.getErrorCode()) {
-            case PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS:
-                return "服务器拒绝访问（HTTP 错误，可能是直链过期或风控）";
-            case PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED:
-            case PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT:
-                return "网络连接失败/超时";
-            case PlaybackException.ERROR_CODE_DECODER_INIT_FAILED:
-            case PlaybackException.ERROR_CODE_DECODING_FAILED:
-                return "解码失败（电视盒子不支持该编码，如部分 4K/AV1）";
-            case PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED:
-            case PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED:
-                return "文件/清单解析失败";
-            default:
-                return e.getErrorCodeName();
+        String code = "";
+        try {
+            code = e.getErrorCodeName();
+        } catch (Throwable ignored) {
         }
+        if (code == null) code = "";
+        if (code.contains("IO_BAD_HTTP_STATUS") || code.contains("IO_NO_PERMISSION")) {
+            return "服务器拒绝访问（HTTP 错误，可能是直链过期或风控）";
+        }
+        if (code.contains("NETWORK_CONNECTION_FAILED") || code.contains("NETWORK_CONNECTION_TIMEOUT")
+                || code.contains("IO_UNSPECIFIED") || code.contains("TIMEOUT")) {
+            return "网络连接失败/超时";
+        }
+        if (code.contains("DECODER_INIT_FAILED") || code.contains("DECODING_FAILED")
+                || code.contains("DECODING_FORMAT_UNSUPPORTED")
+                || code.contains("DECODING_FORMAT_EXCEEDS_CAPABILITIES")) {
+            return "解码失败（电视盒子不支持该编码，如部分 4K/AV1）";
+        }
+        if (code.contains("PARSING_CONTAINER_MALFORMED") || code.contains("PARSING_MANIFEST_MALFORMED")) {
+            return "文件/清单解析失败";
+        }
+        if (code.contains("IO_FILE_NOT_FOUND")) {
+            return "文件不存在（直链可能已失效）";
+        }
+        if (!code.isEmpty()) return code;
+        String msg = e.getMessage();
+        return (msg == null || msg.isEmpty()) ? "播放错误" : msg;
     }
 
     // ---------- UI ----------
