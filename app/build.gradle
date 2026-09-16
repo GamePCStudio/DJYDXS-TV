@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace 'com.djydxs.tv'
+    namespace 'com.supermov.tv'
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.djydxs.tv"
+        applicationId "com.supermov.tv"
         minSdk 21
         targetSdk 34
         versionCode 3

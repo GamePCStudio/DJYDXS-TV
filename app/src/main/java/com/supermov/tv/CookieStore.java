@@ -1,4 +1,4 @@
-package com.djydxs.tv;
+package com.supermov.tv;
 
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -18,7 +18,7 @@ public final class CookieStore {
     public static void init(Context ctx) {
         if (prefs == null) {
             prefs = ctx.getApplicationContext()
-                    .getSharedPreferences("djydxs_cookies", Context.MODE_PRIVATE);
+                    .getSharedPreferences("supermov_cookies", Context.MODE_PRIVATE);
         }
     }
 

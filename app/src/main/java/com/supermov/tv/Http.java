@@ -1,4 +1,4 @@
-package com.djydxs.tv;
+package com.supermov.tv;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
@@ -71,7 +71,7 @@ public final class Http {
             String reqCookie = conn.getRequestProperty("Cookie");
             String ckLog = reqCookie == null ? "none"
                     : (reqCookie.length() + "ch: " + reqCookie.substring(0, Math.min(80, reqCookie.length())) + "…");
-            android.util.Log.d("DJYDXS", "HTTP " + method + " " + code + " " + url
+            android.util.Log.d("SupeMov", "HTTP " + method + " " + code + " " + url
                     + " | bodyLen=" + respBody.length()
                     + " | loc=" + headerValue(headers, "location")
                     + " | ua=" + (Boolean.TRUE.equals(desktopUa.get()) ? "PC" : "MOB")
@@ -82,7 +82,7 @@ public final class Http {
             r.headers = headers;
             return r;
         } catch (Exception e) {
-            android.util.Log.d("DJYDXS", "HTTP-ERR " + method + " " + url + " :: " + e);
+            android.util.Log.d("SupeMov", "HTTP-ERR " + method + " " + url + " :: " + e);
             Resp r = new Resp();
             r.code = 0;
             r.body = "";

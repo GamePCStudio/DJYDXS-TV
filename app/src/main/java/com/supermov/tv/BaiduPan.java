@@ -1,4 +1,4 @@
-package com.djydxs.tv;
+package com.supermov.tv;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -158,21 +158,21 @@ public final class BaiduPan {
     /** 一键转存：分享链接(+提取码) -> targetDir。 */
     public static TransferResult transfer(String shareUrl, String pwd, String targetDir) {
         TransferResult out = new TransferResult();
-        android.util.Log.d("DJYDXS", "transfer: start url=" + shareUrl + " pwd=" + pwd + " dir=" + targetDir);
+        android.util.Log.d("SupeMov", "transfer: start url=" + shareUrl + " pwd=" + pwd + " dir=" + targetDir);
         if (!CookieStore.hasBaiduLogin()) {
             out.message = "未授权百度网盘，请先到 设置→百度网盘扫码";
             return out;
         }
         Http.desktopUa.set(true);
         if (!sessionValid()) {
-            android.util.Log.d("DJYDXS", "transfer: session INVALID (api/list errno!=0)");
+            android.util.Log.d("SupeMov", "transfer: session INVALID (api/list errno!=0)");
             out.message = "百度登录已失效，请到 设置→百度网盘扫码 重新授权";
             return out;
         }
         if (targetDir == null || !targetDir.startsWith("/")) targetDir = "/apps/DJYDXS";
         Http.desktopUa.set(true); // 整条链路用桌面 UA
         try {
-            android.util.Log.d("DJYDXS", "transfer: ensureDir " + targetDir);
+            android.util.Log.d("SupeMov", "transfer: ensureDir " + targetDir);
             if (!ensureDir(targetDir)) {
                 out.message = "转存目录创建失败(登录态可能失效)：" + targetDir;
                 return out;
@@ -196,7 +196,7 @@ public final class BaiduPan {
                                 + "&channel=chunlei&web=1&bdstoken=null&clienttype=0&app_id=250528",
                         vbody, vh, true);
                 String errno = errnoOf(vr.body);
-                android.util.Log.d("DJYDXS", "transfer: verify errno=" + errno + " body=" + vr.body.substring(0, Math.min(200, vr.body.length())));
+                android.util.Log.d("SupeMov", "transfer: verify errno=" + errno + " body=" + vr.body.substring(0, Math.min(200, vr.body.length())));
                 if (vr.code != 200 || !"0".equals(errno)) {
                     out.message = "提取码错误或链接失效(" + errno + ")";
                     return out;
@@ -218,7 +218,7 @@ public final class BaiduPan {
             // 无 BDUSS 时分享页正常返回数据（PC 实测）。BDUSS 只在 share/transfer 时用。
             String finalCookie = (sekey != null && !sekey.isEmpty())
                     ? "BDCLND=" + sekey : "";
-            android.util.Log.d("DJYDXS", "transfer: open-share cookie = "
+            android.util.Log.d("SupeMov", "transfer: open-share cookie = "
                     + (finalCookie.isEmpty() ? "EMPTY" : "BDCLND only (" + finalCookie.length() + "ch)"));
 
             // 3) 打开分享页（桌面 UA + BDCLND）
@@ -230,7 +230,7 @@ public final class BaiduPan {
                 out.message = "分享页访问失败(" + page.code + ")";
                 return out;
             }
-            android.util.Log.d("DJYDXS", "transfer: page len=" + page.body.length()
+            android.util.Log.d("SupeMov", "transfer: page len=" + page.body.length()
                     + " hasYun=" + page.body.contains("yunData")
                     + " hasFL=" + page.body.contains("fs_id")
                     + " verify=" + page.body.contains("安全验证"));
@@ -322,7 +322,7 @@ public final class BaiduPan {
                 } catch (Exception ignored) {
                 }
             }
-            android.util.Log.d("DJYDXS", "transfer: fsids=" + (fsids == null ? "null" : fsids.length) + " shareid=" + shareid + " uk=" + uk);
+            android.util.Log.d("SupeMov", "transfer: fsids=" + (fsids == null ? "null" : fsids.length) + " shareid=" + shareid + " uk=" + uk);
             if (fsids == null || fsids.length == 0) {
                 // 兜底：页面 file_list 不可用时，走 share/list 接口拉根目录
                 JSONArray rootList = listShareDir(shareid, uk, "/", shareUrl);
@@ -365,16 +365,17 @@ public final class BaiduPan {
                             + "&channel=chunlei&clienttype=0&web=1&app_id=250528",
                     body, hdrs, true);
             String errno = errnoOf(tr.body);
-            android.util.Log.d("DJYDXS", "transfer: final errno=" + errno + " body=" + tr.body.substring(0, Math.min(200, tr.body.length())));
+            android.util.Log.d("SupeMov", "transfer: final errno=" + errno + " body=" + tr.body.substring(0, Math.min(200, tr.body.length())));
             out.ok = "0".equals(errno);
             if (out.ok) {
                 out.message = "转存成功 → " + targetDir;
                 return out;
             }
-            // errno=12 目标目录已有同名文件：自动改用带序号的新目录重试一次
+            // errno=12 目标目录已有同名文件：自动顺延到 目录(2) (3) … 最多试到 (5)
             if ("12".equals(errno)) {
-                String alt = targetDir.replaceAll("/$", "") + " (2)";
-                if (ensureDir(alt)) {
+                for (int n = 2; n <= 5; n++) {
+                    String alt = targetDir.replaceAll("/$", "") + " (" + n + ")";
+                    if (!ensureDir(alt)) continue;
                     String body2 = "fsidlist=" + enc(fsarr.toString()) + "&path=" + enc(alt);
                     Http.Resp tr2 = Http.request("POST",
                             "https://pan.baidu.com/share/transfer?shareid=" + shareid
@@ -384,13 +385,15 @@ public final class BaiduPan {
                     String errno2 = errnoOf(tr2.body);
                     if ("0".equals(errno2)) {
                         out.ok = true;
-                        out.message = "目标已有同名文件，已转存到新目录 → " + alt;
+                        out.message = "目标目录已有同名影片，已转存到 → " + alt;
                         return out;
                     }
-                    out.message = "目标已有同名文件，自动重试仍失败(errno=" + errno2 + ")";
-                    return out;
+                    if (!"12".equals(errno2)) {
+                        out.message = transferMsg(errno2);
+                        return out;
+                    }
                 }
-                out.message = "目标目录已有同名文件，请在网盘删除后重试";
+                out.message = "目标目录已存在同名影片，且 (2)~(5) 目录都被占用；请在网盘清理后重试";
                 return out;
             }
             out.message = transferMsg(errno);
@@ -425,7 +428,7 @@ public final class BaiduPan {
                 + "&uk=" + uk + "&root=" + ("/".equals(dir) || dir.isEmpty() ? "1" : "0")
                 + "&dir=" + enc(dir) + "&clienttype=0&web=1&channel=chunlei", null, lh, true);
         try {
-            android.util.Log.d("DJYDXS", "share/list dir=" + dir + " body=" + r.body.substring(0, Math.min(180, r.body.length())));
+            android.util.Log.d("SupeMov", "share/list dir=" + dir + " body=" + r.body.substring(0, Math.min(180, r.body.length())));
             JSONObject o = new JSONObject(r.body);
             if ("0".equals(String.valueOf(o.opt("errno")))) {
                 return o.optJSONArray("list");

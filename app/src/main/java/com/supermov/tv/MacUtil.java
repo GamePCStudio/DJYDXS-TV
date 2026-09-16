@@ -1,4 +1,4 @@
-package com.djydxs.tv;
+package com.supermov.tv;
 
 import java.net.InetAddress;
 import java.net.NetworkInterface;

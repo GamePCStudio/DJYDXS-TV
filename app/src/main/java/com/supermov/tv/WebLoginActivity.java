@@ -1,4 +1,4 @@
-package com.djydxs.tv;
+package com.supermov.tv;
 
 import android.os.Bundle;
 import android.view.KeyEvent;

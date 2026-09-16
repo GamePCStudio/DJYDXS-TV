@@ -1,4 +1,4 @@
-package com.djydxs.tv;
+package com.supermov.tv;
 
 import org.junit.Test;
 import static org.junit.Assert.*;

@@ -1,4 +1,4 @@
-package com.djydxs.tv;
+package com.supermov.tv;
 
 import android.app.Activity;
 import android.graphics.Bitmap;

@@ -1,4 +1,4 @@
-package com.djydxs.tv;
+package com.supermov.tv;
 
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -7,7 +7,7 @@ import org.json.JSONObject;
 
 /** 应用设置：百度授权状态 + 转存目录。 */
 public final class Settings {
-    private static final String FILE = "djydxs_settings";
+    private static final String FILE = "supermov_settings";
     private static final String K_SAVE_DIR = "save_dir";
     private static final String K_BAIDU_USER = "baidu_user";
     private static final String K_LAST_TRANSFER = "last_transfer";

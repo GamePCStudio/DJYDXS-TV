@@ -1,4 +1,4 @@
-package com.djydxs.tv;
+package com.supermov.tv;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -153,7 +153,7 @@ public final class Site {
             Movie m = new Movie();
             m.tid = ma.group(1);
             m.fid = fid;
-            m.name = unescape(ma.group(2)).trim();
+            m.name = cleanTitle(unescape(ma.group(2)));
             String pic = normPic(ma.group(3));
             if (!pic.isEmpty()) m.pic = pic;
             // title 缺失时退回 byg_pic_tit
@@ -181,7 +181,7 @@ public final class Site {
                 String p = normPic(mp.group(1));
                 if (!p.isEmpty()) m.pic = p;
             }
-            m.name = stripTags(g1(RE_HB_TITLE, body));
+            m.name = cleanTitle(stripTags(g1(RE_HB_TITLE, body)));
             String sub = stripTags(g1(RE_HB_SUB, body));
             if (!sub.isEmpty() && !m.name.contains(sub)) m.name = (m.name + " " + sub).trim();
             if (m.name.length() < 1) continue;
@@ -284,7 +284,7 @@ public final class Site {
 
         d.movie.tid = tid;
         d.movie.fid = fid;
-        d.movie.name = stripTags(g1(RE_SUBJECT, html));
+        d.movie.name = cleanTitle(stripTags(g1(RE_SUBJECT, html)));
 
         String post = g1(RE_FIRST_POST, html);
         if (!post.isEmpty()) {
@@ -308,7 +308,7 @@ public final class Site {
             if (mp.find()) d.movie.pic = normPic(mp.group(1));
         }
         // 日期+片长
-        String date = g1(RE_POSTED, html);
+        String date = extractDate(g1(RE_POSTED, html));
         String runtime = g1(RE_RUNTIME, post.isEmpty() ? html : post);
         StringBuilder rem = new StringBuilder();
         if (!date.isEmpty()) rem.append(date);
@@ -402,6 +402,38 @@ public final class Site {
 
     private static String optLower(JSONObject o, String k) {
         return optStr(o, k).toLowerCase();
+    }
+
+    /** 片名规范化：《兄弟连：薪火永续》4K.SDR.2026.2160p.WEB-DL 6.14G -> 兄弟连：薪火永续 */
+    public static String cleanTitle(String raw) {
+        String s = raw == null ? "" : raw.trim();
+        // 《...》优先
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("《([^》]+)》").matcher(s);
+        if (m.find()) return m.group(1).trim();
+        // 去掉技术参数尾巴：从第一个 4K/1080P/2160p/WEB-DL/BluRay/REMUX/HDR 起截断
+        java.util.regex.Matcher t = java.util.regex.Pattern.compile(
+                "[\\.\\s]*(4K|2160[pP]|1080[pP]|720[pP]|WEB-?DL|BluRay|Blu-ray|REMUX|HDR|DV杜比视界|杜比视界|SDR|HDR10|Atmos|DDP?5?\\.?1|MA|蓝光原盘|高码版).*$",
+                java.util.regex.Pattern.CASE_INSENSITIVE).matcher(s);
+        if (t.find()) s = s.substring(0, t.start()).trim();
+        // 去尾部体积
+        s = s.replaceAll("[\\s\\.]*\\d+(\\.\\d+)?[GMT]$", "").trim();
+        // 去多余分隔
+        s = s.replaceAll("^[《\\[]+|[》\\]]+$", "").trim();
+        return s;
+    }
+
+    /** 从任意文本提取日期并规范化为 年-月-日（去前导零）。 */
+    public static String extractDate(String s) {
+        if (s == null) return "";
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                "(\\d{4})-(\\d{1,2})-(\\d{1,2})").matcher(s);
+        if (!m.find()) return "";
+        try {
+            return Integer.parseInt(m.group(1)) + "-" + Integer.parseInt(m.group(2))
+                    + "-" + Integer.parseInt(m.group(3));
+        } catch (Exception e) {
+            return m.group(0);
+        }
     }
 
     public static String stripTags(String s) {

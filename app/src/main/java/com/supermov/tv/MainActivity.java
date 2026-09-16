@@ -1,4 +1,4 @@
-package com.djydxs.tv;
+package com.supermov.tv;
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -13,6 +13,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
+import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -80,15 +81,9 @@ public class MainActivity extends Activity {
         rvCats.setAdapter(catAdapter);
 
         // 影片列表
-        rvList.setLayoutManager(new LinearLayoutManager(this));
+        rvList.setLayoutManager(new GridLayoutManager(this, 2));
         movieAdapter = new MovieAdapter();
-        movieAdapter.setOnClick(m -> {
-            Intent it = new Intent(this, DetailActivity.class);
-            it.putExtra("fid", m.fid);
-            it.putExtra("tid", m.tid);
-            it.putExtra("name", m.name);
-            startActivity(it);
-        });
+        movieAdapter.setOnClick(m -> confirmTransfer(m));
         rvList.setAdapter(movieAdapter);
         rvList.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
@@ -143,6 +138,56 @@ public class MainActivity extends Activity {
         totalPages = 1;
         movieAdapter.setItems(new ArrayList<>());
         loadPage(1);
+    }
+
+    /** 点击海报：确认后直接转存该影片到设置目录。 */
+    private void confirmTransfer(Site.Movie m) {
+        if (!CookieStore.hasBaiduLogin()) {
+            Toast.makeText(this, "未授权百度网盘，请先到 设置→百度网盘扫码", Toast.LENGTH_LONG).show();
+            startActivity(new Intent(this, QrActivity.class));
+            return;
+        }
+        String dir = Settings.saveDir();
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("转存影片")
+                .setMessage("《" + m.name + "》\n转存到：" + dir)
+                .setPositiveButton("转存", (d, w) -> doQuickTransfer(m))
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void doQuickTransfer(Site.Movie m) {
+        Toast.makeText(this, "转存中…", Toast.LENGTH_SHORT).show();
+        final int fid = m.fid;
+        final String tid = m.tid;
+        final String name = m.name;
+        pool.execute(() -> {
+            // 解析分享链接
+            Site.Detail d = Site.detail(fid, tid);
+            String url = "", pwd = "";
+            if (d != null && !d.boxes.isEmpty()) {
+                url = d.boxes.get(0).url;
+                pwd = d.boxes.get(0).pwd;
+            }
+            final BaiduPan.TransferResult r;
+            if (url.isEmpty()) {
+                r = new BaiduPan.TransferResult();
+                r.ok = false;
+                r.message = "该影片没有百度网盘分享链接";
+            } else {
+                try {
+                    r = BaiduPan.transfer(url, pwd, Settings.saveDir());
+                } catch (Throwable e) {
+                    r = new BaiduPan.TransferResult();
+                    r.ok = false;
+                    r.message = "转存异常：" + e.getClass().getSimpleName();
+                }
+            }
+            main.post(() -> {
+                Settings.recordTransfer(Settings.saveDir(), r.ok);
+                Toast.makeText(this, (r.ok ? "✔ " : "✘ ") + r.message, Toast.LENGTH_LONG).show();
+            });
+        });
     }
 
     private void loadPage(int page) {
