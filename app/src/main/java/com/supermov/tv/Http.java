@@ -15,8 +15,10 @@ import java.util.Map;
  * 自动重定向模式会丢失中间跳的 Set-Cookie，导致第二跳鉴权失败 —— 必须手动跟。
  */
 public final class Http {
+    // 桌面 UA：论坛（Discuz）会按 UA 返回不同模板，移动端模板不含 authorposton 日期节点，
+    // 导致详情页 RE_POSTED 取不到影片日期（只显示片长）。与同源 PY 爬虫保持一致用桌面 UA。
     public static final String UA =
-            "Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
     public static class Resp {
         public int code;
