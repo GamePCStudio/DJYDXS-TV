@@ -212,9 +212,20 @@ public final class Site {
             }
             m.name = cleanTitle(stripTags(g1(RE_HB_TITLE, body)));
             String sub = stripTags(g1(RE_HB_SUB, body));
-            if (!sub.isEmpty() && !m.name.contains(sub)) m.name = (m.name + " " + sub).trim();
+            // 从卡片（副标题/年份或任意位置）提取日期，单独放到底部角标显示，
+            // 不再只依赖详情页探测（RE_POSTED 不匹配时也能显示）
+            String date = extractDate(sub);
+            if (date.isEmpty()) date = extractDate(body);
+            if (!date.isEmpty()) {
+                m.remarks = date;
+                // 副标题本身就是日期时不再并入片名，避免重复
+                if (extractDate(sub).isEmpty() && !sub.isEmpty() && !m.name.contains(sub)) {
+                    m.name = (m.name + " " + sub).trim();
+                }
+            } else if (!sub.isEmpty() && !m.name.contains(sub)) {
+                m.name = (m.name + " " + sub).trim();
+            }
             if (m.name.length() < 1) continue;
-            m.remarks = "";
             out.data.add(m);
             usedCards = true;
         }
