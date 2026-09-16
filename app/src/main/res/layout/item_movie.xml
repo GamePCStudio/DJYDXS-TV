@@ -3,14 +3,35 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:padding="3dp">
+    android:padding="6dp">
 
-    <ImageView
-        android:id="@+id/ivPic"
+    <FrameLayout
         android:layout_width="match_parent"
-        android:layout_height="150dp"
-        android:scaleType="centerCrop"
-        android:background="@drawable/bg_movie_normal" />
+        android:layout_height="wrap_content">
+
+        <com.supermov.tv.PosterView
+            android:id="@+id/ivPic"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:scaleType="centerCrop"
+            android:background="@drawable/bg_movie_normal" />
+
+        <!-- 图片内底部：日期 · 片长（渐变底衬） -->
+        <TextView
+            android:id="@+id/tvBadge"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:background="@drawable/bg_poster_badge"
+            android:paddingStart="5dp"
+            android:paddingEnd="5dp"
+            android:paddingTop="10dp"
+            android:paddingBottom="3dp"
+            android:textColor="#FFEEEEEE"
+            android:textSize="8sp"
+            android:maxLines="1"
+            android:ellipsize="end" />
+    </FrameLayout>
 
     <TextView
         android:id="@+id/tvName"
@@ -21,13 +42,4 @@
         android:textSize="9sp"
         android:maxLines="1"
         android:ellipsize="end" />
-
-    <TextView
-        android:id="@+id/tvRemarks"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="1dp"
-        android:textColor="#FF9AA0A6"
-        android:textSize="7sp"
-        android:maxLines="1" />
 </LinearLayout>

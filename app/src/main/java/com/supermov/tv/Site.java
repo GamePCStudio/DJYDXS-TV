@@ -534,29 +534,70 @@ public final class Site {
         try {
             Http.Resp r = Http.get(BASE + "/thread-" + tid + "-1-1.html");
             if (r.code != 200 || isLoginWall(r.body)) return false;
-            String html = r.body;
-            Matcher mb = RE_NTCJ.matcher(html);
-            if (mb.find()) {
-                try {
-                    Object o = new JSONTokener(mb.group(1)).nextValue();
-                    if (o instanceof JSONArray) {
-                        JSONArray arr = (JSONArray) o;
-                        for (int i = 0; i < arr.length(); i++) {
-                            JSONObject b = arr.optJSONObject(i);
-                            if (b == null) continue;
-                            if ("baidu".equals(optLower(b, "type")) && !optStr(b, "url").isEmpty()) return true;
-                        }
-                    }
-                } catch (Exception ignored) {
-                }
-            }
-            return RE_BAIDU_URL.matcher(html).find();
+            return htmlHasBaiduShare(r.body);
         } catch (Exception e) {
             return false;
         }
     }
 
-    /** 过滤列表：移除没有百度网盘分享链接的影片（并发探测详情页，避免逐个串行太慢）。 */
+    private static boolean htmlHasBaiduShare(String html) {
+        Matcher mb = RE_NTCJ.matcher(html);
+        if (mb.find()) {
+            try {
+                Object o = new JSONTokener(mb.group(1)).nextValue();
+                if (o instanceof JSONArray) {
+                    JSONArray arr = (JSONArray) o;
+                    for (int i = 0; i < arr.length(); i++) {
+                        JSONObject b = arr.optJSONObject(i);
+                        if (b == null) continue;
+                        if ("baidu".equals(optLower(b, "type")) && !optStr(b, "url").isEmpty()) return true;
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return RE_BAIDU_URL.matcher(html).find();
+    }
+
+    /** 探测一部影片：是否有百度分享，并顺带补全海报/日期/片长（详情页一次请求三用）。 */
+    private static boolean probeAndFill(Movie m) {
+        if (m.tid == null || m.tid.isEmpty()) return false;
+        try {
+            Http.Resp r = Http.get(BASE + "/thread-" + m.tid + "-1-1.html");
+            if (r.code != 200 || isLoginWall(r.body)) return false;
+            String html = r.body;
+            extractFormhash(html);
+            // 补海报
+            if (m.pic == null || m.pic.isEmpty()) {
+                String post = g1(RE_FIRST_POST, html);
+                String scope = post.isEmpty() ? html : post;
+                Matcher mi = RE_IMG_LAZY.matcher(scope);
+                if (!mi.find()) mi = RE_IMG.matcher(scope);
+                if (mi.find()) {
+                    String p = normPic(mi.group(1));
+                    if (!p.isEmpty()) m.pic = p;
+                }
+            }
+            // 补日期 · 片长
+            if (m.remarks == null || m.remarks.isEmpty()) {
+                String post = g1(RE_FIRST_POST, html);
+                String date = extractDate(g1(RE_POSTED, html));
+                String runtime = g1(RE_RUNTIME, post.isEmpty() ? html : post);
+                StringBuilder rem = new StringBuilder();
+                if (!date.isEmpty()) rem.append(date);
+                if (!runtime.isEmpty()) {
+                    if (rem.length() > 0) rem.append(" · ");
+                    rem.append(runtime).append("分钟");
+                }
+                if (rem.length() > 0) m.remarks = rem.toString();
+            }
+            return htmlHasBaiduShare(html);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 过滤列表：移除没有百度网盘分享链接的影片，同时补全海报/日期/片长（并发，避免逐个串行太慢）。 */
     public static void filterBaiduOnly(List<Movie> movies, int threads) {
         if (movies == null || movies.isEmpty()) return;
         int n = Math.max(1, Math.min(threads, movies.size()));
@@ -564,7 +605,7 @@ public final class Site {
         try {
             List<Future<Boolean>> fs = new ArrayList<>();
             for (final Movie m : movies) {
-                fs.add(ex.submit(() -> hasBaiduShare(m.tid)));
+                fs.add(ex.submit(() -> probeAndFill(m)));
             }
             List<Movie> keep = new ArrayList<>();
             for (int i = 0; i < movies.size(); i++) {
