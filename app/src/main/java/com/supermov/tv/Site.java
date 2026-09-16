@@ -220,6 +220,7 @@ public final class Site {
                 if (!p.isEmpty()) m.pic = p;
             }
             m.name = cleanTitle(stripTags(g1(RE_HB_TITLE, body)));
+            String sub = stripTags(g1(RE_HB_SUB, body));
             // 仅从副标题取完整日期（如 2026-9-15）作为角标；副标题若是孤立年份（2026）
             // 则不并入片名、也不放进角标，交给表格布局页 rowDates 按 tid 补真实日期。
             // 注意：绝不要把年份拼回片名（用户不需要片名带年份）。
