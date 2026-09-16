@@ -41,6 +41,7 @@ public class SettingsActivity extends Activity {
                 startActivity(new Intent(this, QrActivity.class))));
 
         // ② 转存目录（可编辑）
+        String current = Settings.saveDir();
         group.addView(sectionLabel("转存目录"));
         group.addView(option("转存目录: " + current,
                 "点按修改（目录不存在会自动创建）", v -> showEditDirDialog()));
