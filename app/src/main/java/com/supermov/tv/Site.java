@@ -7,6 +7,9 @@ import org.json.JSONTokener;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -100,6 +103,10 @@ public final class Site {
             "<em id=\"authorposton\\d+\">[^<]*?(\\d{4}-\\d{1,2}-\\d{1,2})", Pattern.CASE_INSENSITIVE);
     private static final Pattern RE_RUNTIME = Pattern.compile("片\\s*长[^0-9]{0,8}(\\d{1,3})\\s*分钟");
     private static final Pattern RE_PAGES = Pattern.compile("共\\s*(\\d+)\\s*页", Pattern.CASE_INSENSITIVE);
+    // 百度网盘分享链接（详情页正文兜底用 + 列表过滤用）
+    private static final Pattern RE_BAIDU_URL = Pattern.compile(
+            "https?://pan\\.baidu\\.com/s/[A-Za-z0-9_\\-]+(?:\\?pwd=[A-Za-z0-9]+)?",
+            Pattern.CASE_INSENSITIVE);
 
     public static boolean isLoginWall(String html) {
         return html != null && html.length() > 100
@@ -344,10 +351,7 @@ public final class Site {
         }
         // 兜底：正文正则挖百度链接
         if (d.boxes.isEmpty()) {
-            Pattern pb = Pattern.compile(
-                    "https?://pan\\.baidu\\.com/s/[A-Za-z0-9_\\-]+(?:\\?pwd=[A-Za-z0-9]+)?",
-                    Pattern.CASE_INSENSITIVE);
-            Matcher pm = pb.matcher(html);
+            Matcher pm = RE_BAIDU_URL.matcher(html);
             while (pm.find() && d.boxes.size() < 6) {
                 Box b = new Box();
                 b.type = "baidu";
@@ -475,5 +479,60 @@ public final class Site {
 
     public static List<Movie> emptyList() {
         return Collections.emptyList();
+    }
+
+    /** 该影片是否有百度网盘分享链接（抓详情页轻量判断：_NTCJ_BOXES 的 baidu 项 / 正文 pan.baidu.com 链接）。 */
+    public static boolean hasBaiduShare(String tid) {
+        if (tid == null || tid.isEmpty()) return false;
+        try {
+            Http.Resp r = Http.get(BASE + "/thread-" + tid + "-1-1.html");
+            if (r.code != 200 || isLoginWall(r.body)) return false;
+            String html = r.body;
+            Matcher mb = RE_NTCJ.matcher(html);
+            if (mb.find()) {
+                try {
+                    Object o = new JSONTokener(mb.group(1)).nextValue();
+                    if (o instanceof JSONArray) {
+                        JSONArray arr = (JSONArray) o;
+                        for (int i = 0; i < arr.length(); i++) {
+                            JSONObject b = arr.optJSONObject(i);
+                            if (b == null) continue;
+                            if ("baidu".equals(optLower(b, "type")) && !optStr(b, "url").isEmpty()) return true;
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+            return RE_BAIDU_URL.matcher(html).find();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 过滤列表：移除没有百度网盘分享链接的影片（并发探测详情页，避免逐个串行太慢）。 */
+    public static void filterBaiduOnly(List<Movie> movies, int threads) {
+        if (movies == null || movies.isEmpty()) return;
+        int n = Math.max(1, Math.min(threads, movies.size()));
+        ExecutorService ex = Executors.newFixedThreadPool(n);
+        try {
+            List<Future<Boolean>> fs = new ArrayList<>();
+            for (final Movie m : movies) {
+                fs.add(ex.submit(() -> hasBaiduShare(m.tid)));
+            }
+            List<Movie> keep = new ArrayList<>();
+            for (int i = 0; i < movies.size(); i++) {
+                boolean ok;
+                try {
+                    ok = fs.get(i).get();
+                } catch (Exception e) {
+                    ok = false;
+                }
+                if (ok) keep.add(movies.get(i));
+            }
+            movies.clear();
+            movies.addAll(keep);
+        } finally {
+            ex.shutdown();
+        }
     }
 }

@@ -203,6 +203,8 @@ public class MainActivity extends Activity {
             } else {
                 res = Site.category(fid, page);
             }
+            // 后台线程过滤：只保留有百度网盘分享链接的影片
+            Site.filterBaiduOnly(res.data, 8);
             main.post(() -> {
                 loading = false;
                 // 过期结果丢弃（用户已切换版块/搜索词）
