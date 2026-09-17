@@ -71,6 +71,14 @@ public final class DlDb extends SQLiteOpenHelper {
         }
     }
 
+    /** 清空整张任务表（不动已下好的文件）。 */
+    public void deleteAll() {
+        try {
+            getWritableDatabase().delete("dl", null, null);
+        } catch (Throwable ignored) {
+        }
+    }
+
     /** 只删「已完成」的任务行（不动已下好的文件）。 */
     public void clearFinished() {
         try {

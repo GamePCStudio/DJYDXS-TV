@@ -480,6 +480,89 @@ public final class Site {
 
     private static volatile String lastSearchSid = "";
 
+    /** 资料区起点：「◎IMDb链接」——按需求，从这一行开始不显示。 */
+    private static final Pattern RE_INFO_HEAD = Pattern.compile(
+            "^[ \\t\\u3000]*◎[ \\t\\u3000]*(?:IMDb|豆瓣)[ \\t\\u3000]*链[ \\t\\u3000]*接.*$",
+            Pattern.MULTILINE);
+    /** 资料区终点：「◎简　　介」——从这一行继续显示。 */
+    private static final Pattern RE_INFO_INTRO = Pattern.compile(
+            "^[ \\t\\u3000]*◎[ \\t\\u3000]*(?:剧情)?[ \\t\\u3000]*简[ \\t\\u3000]*介.*$",
+            Pattern.MULTILINE);
+
+    /**
+     * 首帖 HTML → 适合电视上阅读的纯文本。
+     *
+     * <p><b>换行</b>：论坛资料区是一个「◎字段」占一行的排版。旧实现用 {@code \s+}
+     * 把所有空白统一压成一个空格，整块资料连同简介被挤成一整段没有换行的长文，
+     * 电视上根本没法读。现在只压缩<b>行内</b>空白，换行严格按 {@code <br>} 还原，
+     * 连续空行最多留一个（当段落分隔）。</p>
+     *
+     * <p><b>砍中段</b>：按需求，{@code ◎IMDb链接} 到 {@code ◎简　　介} 之间的内容
+     * （豆瓣评分 / 豆瓣链接 / 片长 / 导演 / 主演长名单）不显示，只留基本资料 + 简介。</p>
+     */
+    static String cleanPost(String post) {
+        if (post == null || post.isEmpty()) return "";
+        String s = post
+                .replaceAll("(?is)<script[^>]*>.*?</script>", " ")
+                .replaceAll("(?is)<style[^>]*>.*?</style>", " ")
+                // ① 先吃掉 HTML 源码自身的换行与缩进 —— 它不是「显示换行」，
+                //    否则每个 <br> 后面都会多顶出一个空行，每个 ◎ 字段之间都是空的
+                .replaceAll("[ \\t\\r\\n]*\\n[ \\t\\r\\n]*", " ")
+                .replaceAll("(?i)<img[^>]*>", " ")
+                // ② 真正的换行只认 <br>（以及块级标签的收尾）
+                .replaceAll("(?i)<br\\s*/?\\s*>", "\n")
+                .replaceAll("(?i)</(?:p|div|tr|li|h[1-6])\\s*>", "\n")
+                .replaceAll("<[^>]+>", "");
+        s = unescape(s);
+        // Discuz 插件残留（如 [dztc_contact]…[/dztc_contact]）当正文显示出来很脏，去掉
+        s = s.replaceAll("\\[/?(?:dztc_\\w+|attach(?:img)?|free|hide|quote|code|media|flash|audio|video|url|img)\\]", " ");
+        s = tidyLines(s);
+        s = cutInfoMiddle(s);
+        if (s.length() > 2000) s = s.substring(0, 2000) + "…";
+        return s;
+    }
+
+    /** 逐行规整：行内连续空白压成一个空格、去掉行首尾半角空白；空行最多留一个。 */
+    static String tidyLines(String s) {
+        StringBuilder sb = new StringBuilder(s.length());
+        boolean gap = false;
+        for (String line : s.split("\n")) {
+            String t = line.replace('\u00A0', ' ').replace('\t', ' ');
+            t = t.replaceAll(" {2,}", " ");
+            t = t.replaceAll(" +\u3000", "\u3000");
+            t = t.replaceAll("\u3000 +", "\u3000");
+            t = t.trim(); // 只去半角空白，全角缩进（论坛的 　　）保留
+            // 整行只有全角空格 → 当空行（论坛用 　　<br> 当段间距），否则会连续空出好几行
+            if (t.replace("\u3000", " ").trim().isEmpty()) {
+                if (sb.length() > 0) gap = true;
+                continue;
+            }
+            if (gap) {
+                sb.append('\n');
+                gap = false;
+            }
+            sb.append(t).append('\n');
+        }
+        return sb.toString().trim();
+    }
+
+    /**
+     * 去掉「◎IMDb链接」→「◎简　　介」之间的资料区。
+     * 找不到「◎简　　介」时，从「◎IMDb链接」一路砍到末尾。
+     */
+    static String cutInfoMiddle(String s) {
+        Matcher head = RE_INFO_HEAD.matcher(s);
+        if (!head.find()) return s;
+        int from = head.start();
+        Matcher intro = RE_INFO_INTRO.matcher(s);
+        int to = intro.find(from) ? intro.start() : s.length();
+        if (to <= from) return s;
+        String cut = s.substring(0, from);
+        String keep = s.substring(to);
+        String merged = cut.isEmpty() ? keep : (cut + "\n" + keep);
+        return merged.replaceAll("\n{3,}", "\n\n").trim();
+    }
+
     /** 详情：标题/海报/简介/日期/片长 + 下载源（只保留百度）。 */
     public static Detail detail(int fid, String tid) {
         Detail d = new Detail();
@@ -493,14 +576,7 @@ public final class Site {
         extractFormhash(html);
 
         String post = g1(RE_FIRST_POST, html);
-        if (!post.isEmpty()) {
-            String raw = post.replaceAll("(?i)<img[^>]*>", " ")
-                    .replaceAll("(?i)<br\\s*/?>", "\n")
-                    .replaceAll("<[^>]+>", "");
-            raw = unescape(raw).replaceAll("\\s+", " ").trim();
-            if (raw.length() > 600) raw = raw.substring(0, 600);
-            d.movie.content = raw;
-        }
+        if (!post.isEmpty()) d.movie.content = cleanPost(post);
         // 海报：详情页优先懒加载属性（Discuz file=），再退回 src=
         if (!post.isEmpty()) {
             Matcher mi = RE_IMG_LAZY.matcher(post);

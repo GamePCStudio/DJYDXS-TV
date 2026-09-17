@@ -1,8 +1,11 @@
 package com.supermov.tv;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -159,22 +162,60 @@ public class MainActivity extends Activity {
         buildFilterRow(); // currentFid 就绪后重建过滤器行
         loadPage(1);
 
-        askNotificationPermissionOnce();
+        requestStartupPermissions();
     }
 
+    private static final int REQ_STARTUP = 7001;
+
     /**
-     * 提前把通知权限要到手（Android 13+）。
-     * 下载进度通知依赖它；没有它前台服务仍在跑，只是通知栏看不到进度。
+     * 启动时把该要的权限一次要到手。
+     *
+     * <ul>
+     *   <li><b>通知权限</b>（Android 13+）：下载进度通知依赖它；没有它前台服务照跑，只是通知栏看不到进度。</li>
+     *   <li><b>存储读写</b>（API ≤ 32 读 / ≤ 29 写）：下载落盘到 公共存储 / U盘 / NAS，以及播放已下载的本地文件。</li>
+     *   <li><b>所有文件访问</b>（Android 11+）：特殊权限，只能跳到系统页面授予，首次启动引导一次；
+     *       不授权也能正常用（下载落在应用专属目录，免权限）。</li>
+     * </ul>
      */
-    private void askNotificationPermissionOnce() {
-        if (android.os.Build.VERSION.SDK_INT < 33) return;
+    private void requestStartupPermissions() {
         try {
-            if (checkSelfPermission("android.permission.POST_NOTIFICATIONS")
-                    == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                return;
+            List<String> need = new ArrayList<>();
+            if (Build.VERSION.SDK_INT >= 33 && !granted("android.permission.POST_NOTIFICATIONS")) {
+                need.add("android.permission.POST_NOTIFICATIONS");
             }
-            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 7001);
+            if (Build.VERSION.SDK_INT <= 32 && !granted(Manifest.permission.READ_EXTERNAL_STORAGE)) {
+                need.add(Manifest.permission.READ_EXTERNAL_STORAGE);
+            }
+            if (Build.VERSION.SDK_INT <= 29 && !granted(Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
+                need.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+            }
+            if (!need.isEmpty()) {
+                requestPermissions(need.toArray(new String[0]), REQ_STARTUP);
+            }
         } catch (Throwable ignored) {
+        }
+
+        // 「所有文件访问」只能去系统设置页打开；只在首次启动引导，避免每次开都弹
+        if (Build.VERSION.SDK_INT >= 30 && !Storage.hasAllFiles(this) && !Settings.askedAllFiles()) {
+            Settings.setAskedAllFiles(true);
+            AlertDialog dlg = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
+                    .setTitle("存储权限")
+                    .setMessage("要把影片下载到 公共存储 / U盘 / 已挂载的 NAS，需要「所有文件访问」权限。\n\n"
+                            + "不授权也能正常用：下载会保存到应用专属目录（免权限）。\n"
+                            + "以后想改，可在 设置 → 下载目录 里再授权。")
+                    .setPositiveButton("去授权", (d, w) -> Storage.requestAllFiles(this))
+                    .setNegativeButton("以后再说", null)
+                    .create();
+            dlg.show();
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus();
+        }
+    }
+
+    private boolean granted(String perm) {
+        try {
+            return checkSelfPermission(perm) == PackageManager.PERMISSION_GRANTED;
+        } catch (Throwable e) {
+            return false;
         }
     }
 

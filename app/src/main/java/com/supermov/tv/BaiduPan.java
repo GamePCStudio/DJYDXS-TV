@@ -158,6 +158,28 @@ public final class BaiduPan {
         public String uk = "";
     }
 
+    /**
+     * 从 share/list（或页面 file_list）的 JSON 数组里取全部 fs_id。
+     *
+     * <p><b>目录项原样保留</b>：fsidlist 里放一个「文件夹」的 fs_id，百度会把该文件夹
+     * 连同里面的内容<b>递归复制</b>过去 —— 这正是「按原样转存」的关键。
+     * 若只下发文件夹里的散文件，网盘里就变成一片平铺，分享中原本的层级全丢了。</p>
+     */
+    private static long[] idsOf(JSONArray arr) {
+        List<Long> ids = new ArrayList<>();
+        if (arr != null) {
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject f = arr.optJSONObject(i);
+                if (f == null) continue;
+                long id = f.optLong("fs_id", 0);
+                if (id > 0 && !ids.contains(id)) ids.add(id);
+            }
+        }
+        long[] out = new long[ids.size()];
+        for (int i = 0; i < out.length; i++) out[i] = ids.get(i);
+        return out;
+    }
+
     /** 一键转存：分享链接(+提取码) -> targetDir。 */
     public static TransferResult transfer(String shareUrl, String pwd, String targetDir) {
         TransferResult out = new TransferResult();
@@ -293,71 +315,37 @@ public final class BaiduPan {
             if (mbt.find()) bdstoken = mbt.group(1);
             if (bdstoken.isEmpty()) bdstoken = getBdstoken();
 
-            // 5) file_list：独立 JSON 块 "file_list":[{...}]
-            long[] fsids = null;
-            boolean rootIsDir = false;
-            String flJson = extractFileListJson(html);
-            if (flJson != null) {
-                try {
-                    JSONArray fl = new JSONArray(flJson);
-                    List<Long> ids = new ArrayList<>();
-                    for (int i = 0; i < fl.length(); i++) {
-                        JSONObject f = fl.optJSONObject(i);
-                        if (f == null) continue;
-                        long id = f.optLong("fs_id", 0);
-                        if (id <= 0) continue;
-                        ids.add(id);
-                        // 目录项原样保留：转存目录项 = 连目录带内容一起复制（结构原样）
-                    }
-                    fsids = new long[ids.size()];
-                    for (int i = 0; i < ids.size(); i++) fsids[i] = ids.get(i);
-                } catch (Exception ignored) {
-                }
-            }
-            android.util.Log.d("SupeMov", "transfer: fsids=" + (fsids == null ? "null" : fsids.length) + " shareid=" + shareid + " uk=" + uk);
-            if (fsids == null || fsids.length == 0) {
-                // 兜底：页面 file_list 不可用时，走 share/list 接口拉根目录
-                JSONArray rootList = listShareDir(shareid, uk, "/", shareUrl);
-                List<Long> ids2 = new ArrayList<>();
-                if (rootList != null) {
-                    for (int i = 0; i < rootList.length(); i++) {
-                        JSONObject f = rootList.optJSONObject(i);
-                        if (f != null && f.optLong("fs_id", 0) > 0) ids2.add(f.optLong("fs_id"));
+            // 5) 下发哪些 fsid：**以「分享根目录的权威列表」为主源**。
+            //
+            //    为什么不用页面里的 file_list 当主源：它是渲染层的片段，多文件 / 多级目录时
+            //    会被截断（少集），而且有时会把文件夹**展开成散文件** —— 按它转存，网盘里就
+            //    变成「一堆文件平铺在转存目录下」，分享里原有的文件夹层级全丢了。
+            //
+            //    share/list 的根列表才是权威的：根条目里的「文件夹」项本身就代表
+            //    「连文件夹带内容一起递归复制」。所以**原样下发根条目** = 转存结果与分享
+            //    的结构完全一致 —— 转存目录下先出现同名文件夹，影片躺在文件夹里面。
+            long[] fsids = idsOf(listShareDir(shareid, uk, "/", shareUrl));
+            String srcTag = "share/list(root)";
+            if (fsids.length == 0) {
+                // 兜底：share/list 拿不到（风控 / 接口异常）才退回页面 file_list（可能被截断/展平）
+                srcTag = "page file_list(兜底)";
+                String flJson = extractFileListJson(html);
+                if (flJson != null) {
+                    try {
+                        fsids = idsOf(new JSONArray(flJson));
+                    } catch (Exception ignored) {
                     }
                 }
-                if (ids2.isEmpty()) {
-                    out.message = "没有文件[页长" + html.length()
-                            + " yun=" + html.contains("yunData")
-                            + " fl=" + html.contains("fs_id")
-                            + " 验证=" + html.contains("安全验证") + "]";
-                    return out;
-                }
-                fsids = new long[ids2.size()];
-                for (int i = 0; i < ids2.size(); i++) fsids[i] = ids2.get(i);
             }
-            // 用「分享根目录的完整列表」补齐页面里的 file_list。
-            // 页面 file_list 在多文件 / 多级目录时可能被截断，会导致转存**缺文件**（少集）；
-            // share/list 是权威列表，取并集后任何一个根条目都不会漏（目录条目本身即递归复制）。
-            try {
-                JSONArray rootAll = listShareDir(shareid, uk, "/", shareUrl);
-                if (rootAll != null && rootAll.length() > 0) {
-                    java.util.LinkedHashSet<Long> union = new java.util.LinkedHashSet<>();
-                    for (int i = 0; i < fsids.length; i++) union.add(fsids[i]);
-                    for (int i = 0; i < rootAll.length(); i++) {
-                        JSONObject f = rootAll.optJSONObject(i);
-                        if (f != null && f.optLong("fs_id", 0) > 0) union.add(f.optLong("fs_id", 0));
-                    }
-                    long[] merged = new long[union.size()];
-                    int mi = 0;
-                    for (long one : union) merged[mi++] = one;
-                    android.util.Log.d("SupeMov", "transfer: fsid union page=" + fsids.length
-                            + " shareRoot=" + rootAll.length() + " -> " + merged.length);
-                    fsids = merged;
-                }
-            } catch (Throwable e) {
-                android.util.Log.d("SupeMov", "transfer: fsid union skipped " + e);
+            android.util.Log.d("SupeMov", "transfer: fsids from " + srcTag + " = " + fsids.length
+                    + " shareid=" + shareid + " uk=" + uk);
+            if (fsids.length == 0) {
+                out.message = "没有文件[页长" + html.length()
+                        + " yun=" + html.contains("yunData")
+                        + " fl=" + html.contains("fs_id")
+                        + " 验证=" + html.contains("安全验证") + "]";
+                return out;
             }
-
             StringBuilder fsarr = new StringBuilder("[");
             for (int i = 0; i < fsids.length; i++) {
                 if (i > 0) fsarr.append(",");
@@ -572,6 +560,8 @@ public final class BaiduPan {
         public String message = "";
         /** 命中的那个目录/文件在网盘里的路径 */
         public String anchorPath = "";
+        /** 命中项的名字（网盘里的文件夹名 / 文件名）——本地落盘要按它建一层同名文件夹 */
+        public String anchorName = "";
         public final List<PlayFile> files = new ArrayList<>();
     }
 
@@ -602,9 +592,13 @@ public final class BaiduPan {
                 return out;
             }
             out.anchorPath = pick.optString("path", "");
+            out.anchorName = pick.optString("server_filename", "");
             if (pick.optInt("isdir", 0) == 1) {
-                // 命中文件夹：里面所有视频都收上来（递归穿子目录，rel 记录层级）
-                collectVideos(out.anchorPath, "", out.files, 0);
+                // 命中文件夹：里面所有视频都收上来（递归穿子目录）。
+                // rel 从**文件夹自己的名字**开始 —— 于是 rel 的语义统一为
+                // 「相对转存根目录的子目录」，下载时能原样建出 片名文件夹/季/ 这一层层级，
+                // 而不是把几百集平铺在下载根目录里。
+                collectVideos(out.anchorPath, out.anchorName, out.files, 0);
             } else {
                 // 命中单个文件：自己 + 同目录下名字相近的兄弟
                 String core = coreName(pick.optString("server_filename", ""));
@@ -624,7 +618,9 @@ public final class BaiduPan {
             sortNaturally(out.files);
             out.ok = !out.files.isEmpty();
             if (!out.ok) out.message = "目录里没找到视频文件：" + pick.optString("server_filename", "");
-            android.util.Log.d("SupeMov", "resolveAll " + out.anchorPath + " files=" + out.files.size());
+            android.util.Log.d("SupeMov", "resolveAll " + out.anchorPath
+                    + " files=" + out.files.size()
+                    + " relRoot=" + (out.anchorName.isEmpty() ? "(单文件,平铺)" : out.anchorName));
             return out;
         } catch (Throwable e) {
             out.message = "枚举文件异常：" + e.getClass().getSimpleName();

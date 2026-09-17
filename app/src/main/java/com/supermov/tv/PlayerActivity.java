@@ -6,7 +6,10 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.KeyEvent;
+import android.view.View;
 import android.view.WindowManager;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -44,6 +47,13 @@ public class PlayerActivity extends Activity {
 
     private PlayerView playerView;
     private TextView tvStatus;
+    private TextView tvPlayerHint;
+    private View boxSeek;
+    private ProgressBar pbSeek;
+    private ProgressBar pbBuffering;
+    private TextView tvSeekTip;
+    private TextView tvSeekCur;
+    private TextView tvSeekTotal;
     private ExoPlayer player;
     private LocalProxy proxy;
 
@@ -66,6 +76,57 @@ public class PlayerActivity extends Activity {
     private boolean retriedDlink = false;
     private boolean finishing = false;
 
+    // ---------- 播放器交互（v1.11）----------
+
+    /** 顶部文件名 / 底部按键提示：播放就绪 3 秒后自动隐藏，动遥控器再亮一次 */
+    private static final long CHROME_HIDE_DELAY = 3000L;
+    /** 中央快进/快退覆盖层的停留时间 */
+    private static final long SEEK_OVERLAY_HOLD = 2500L;
+    /**
+     * 连按时延迟一点才真正 seekTo：一串连按只跳一次。
+     * 否则每按一下都发一次 seek，LocalProxy 直链会被反复重连，画面疯狂缓冲。
+     */
+    private static final long SEEK_COMMIT_DELAY = 350L;
+    /** 左右键每按一次的时间步长 */
+    private static final long SEEK_STEP_MS = 10000L;
+    /** 遥控器「快进/快退」专用键的步长 */
+    private static final long SEEK_STEP_BIG_MS = 30000L;
+    /** 两次按键间隔小于它就算同一轮连按（位移叠加） */
+    private static final long SEEK_COMBINE_GAP = 1200L;
+
+    /** 播放真正就绪后才开始倒计时：取流阶段的「正在定位影片…」得让用户看见 */
+    private boolean chromeArmable = false;
+    private long seekBase = 0;
+    private int seekSteps = 0;
+    private long seekTarget = -1;
+    private boolean seekPending = false;
+    private long lastSeekKeyAt = 0;
+
+    private final Runnable hideChrome = new Runnable() {
+        @Override
+        public void run() {
+            fadeOut(tvStatus);
+            fadeOut(tvPlayerHint);
+        }
+    };
+
+    private final Runnable hideSeekOverlay = new Runnable() {
+        @Override
+        public void run() {
+            fadeOut(boxSeek);
+        }
+    };
+
+    /** 连按结束后才真正跳转 */
+    private final Runnable commitSeek = new Runnable() {
+        @Override
+        public void run() {
+            if (player == null || seekTarget < 0) return;
+            seekPending = false;
+            player.seekTo(seekTarget);
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -74,6 +135,18 @@ public class PlayerActivity extends Activity {
 
         playerView = findViewById(R.id.playerView);
         tvStatus = findViewById(R.id.tvPlayerStatus);
+        tvPlayerHint = findViewById(R.id.tvPlayerHint);
+        boxSeek = findViewById(R.id.boxPlayerSeek);
+        pbSeek = findViewById(R.id.pbPlayerSeek);
+        pbBuffering = findViewById(R.id.pbPlayerBuffering);
+        tvSeekTip = findViewById(R.id.tvPlayerSeekTip);
+        tvSeekCur = findViewById(R.id.tvPlayerSeekCur);
+        tvSeekTotal = findViewById(R.id.tvPlayerSeekTotal);
+
+        // 播放器 UI 全部自绘：关掉 media3 自带的控制条。
+        // 它在 TV 上会和左右键抢事件（方向键变成移动焦点而不是快进），
+        // 关掉后按键行为完全由 dispatchKeyEvent 接管，交互对齐 VLC。
+        playerView.setUseController(false);
 
         name = nz(getIntent().getStringExtra("name"));
         shareUrl = nz(getIntent().getStringExtra("url"));
@@ -94,6 +167,19 @@ public class PlayerActivity extends Activity {
             @Override
             public void onPlayerError(PlaybackException error) {
                 handlePlaybackError(error);
+            }
+
+            @Override
+            public void onPlaybackStateChanged(int state) {
+                if (pbBuffering != null) {
+                    pbBuffering.setVisibility(
+                            state == Player.STATE_BUFFERING ? View.VISIBLE : View.GONE);
+                }
+                if (state == Player.STATE_READY && !chromeArmable) {
+                    chromeArmable = true;
+                    main.removeCallbacks(hideChrome);
+                    main.postDelayed(hideChrome, CHROME_HIDE_DELAY);
+                }
             }
         });
         playerView.setPlayer(player);
@@ -316,17 +402,190 @@ public class PlayerActivity extends Activity {
         return (msg == null || msg.isEmpty()) ? "播放错误" : msg;
     }
 
+    // ---------- 播控（v1.11：VLC 式左右键快退/快进 + 3 秒自动隐藏）----------
+
+    /**
+     * 左右键 / 快进快退键 = 时间跳转，并在屏幕中央弹一条带进度条的提示。
+     *
+     * 连按（间隔小于 1.2 秒）会在同一基准位置上叠加：按 3 次 = 位移 30 秒。
+     * 真正的 seekTo 延迟 350ms 提交，所以一串连按只跳一次。
+     */
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent e) {
+        int code = e.getKeyCode();
+        boolean isRewind = (code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_MEDIA_REWIND);
+        boolean isForward = (code == KeyEvent.KEYCODE_DPAD_RIGHT || code == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD);
+        boolean isOk = (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER
+                || code == KeyEvent.KEYCODE_NUMPAD_ENTER || code == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);
+
+        if (!isRewind && !isForward && !isOk) {
+            // 其它键（返回/音量…）照旧透传，顺手把顶部底部提示亮 3 秒
+            if (e.getAction() == KeyEvent.ACTION_DOWN) pokeChrome();
+            return super.dispatchKeyEvent(e);
+        }
+
+        if (e.getAction() != KeyEvent.ACTION_DOWN) return true;   // 吞掉 UP，免得再响一次按键音
+        if (e.getRepeatCount() > 0) return true;                 // 长按的重复事件忽略：按一下就是一下
+
+        if (isRewind || isForward) {
+            long step = (code == KeyEvent.KEYCODE_MEDIA_REWIND || code == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD)
+                    ? SEEK_STEP_BIG_MS : SEEK_STEP_MS;
+            doSeek(step, isRewind);
+        } else {
+            togglePlayPause();
+        }
+        return true;
+    }
+
+    /** 按时间快退/快进；连续按在同一基准上叠加位移。 */
+    private void doSeek(long step, boolean backward) {
+        if (player == null) return;
+        int st = player.getPlaybackState();
+        if (st == Player.STATE_IDLE) {
+            // ENDED 也允许跳：看完按左键退回上一段，ExoPlayer 会自动继续播
+            toast("视频还没准备好");
+            return;
+        }
+        if (!player.isCurrentMediaItemSeekable()) {
+            toast("该流不支持快进/快退");
+            return;
+        }
+
+        long dur = player.getDuration();
+        if (dur == C.TIME_UNSET || dur <= 0) dur = -1;
+
+        long now = android.os.SystemClock.uptimeMillis();
+        if (now - lastSeekKeyAt > SEEK_COMBINE_GAP) {
+            // 新的一轮连按：以「当下播放位置」为基准
+            seekBase = Math.max(0L, player.getCurrentPosition());
+            seekSteps = 0;
+        }
+        lastSeekKeyAt = now;
+        seekSteps++;
+
+        long offset = seekSteps * step;
+        long target = seekBase + (backward ? -offset : offset);
+        if (target < 0) target = 0;
+        if (dur > 0 && target > dur) target = dur;
+
+        seekTarget = target;
+        seekPending = true;
+        main.removeCallbacks(commitSeek);
+        main.postDelayed(commitSeek, SEEK_COMMIT_DELAY);
+        showSeekOverlay((backward ? "快退 " : "快进 ") + (offset / 1000) + " 秒");
+    }
+
+    /**
+     * OK 键 = 播放/暂停（media3 自带控制条已关，这个键自己接管）。
+     *
+     * 用 getPlayWhenReady 而不是 isPlaying：缓冲中 isPlaying() 是 false，
+     * 拿它判断会变成「又点了一次播放」，缓冲阶段根本暂停不下来。
+     */
+    private void togglePlayPause() {
+        if (player == null) return;
+        boolean toPlay = !player.getPlayWhenReady();
+        player.setPlayWhenReady(toPlay);
+        seekPending = false;
+        showSeekOverlay(toPlay ? "播放" : "暂停");
+    }
+
+    /** 中央覆盖层：一行提示 + 进度条 + 当前/总时长，2.5 秒后自动淡出。 */
+    private void showSeekOverlay(String tip) {
+        if (boxSeek == null) return;
+        long dur = (player == null) ? C.TIME_UNSET : player.getDuration();
+        long pos;
+        if (seekPending && seekTarget >= 0) {
+            pos = seekTarget;
+        } else {
+            pos = (player == null) ? 0 : player.getCurrentPosition();
+        }
+        tvSeekTip.setText(tip);
+        tvSeekCur.setText(fmtTime(pos));
+        tvSeekTotal.setText(dur > 0 ? fmtTime(dur) : "--:--");
+        if (dur > 0) {
+            int p = (int) (pos * 1000L / dur);
+            pbSeek.setProgress(Math.max(0, Math.min(1000, p)));
+        } else {
+            pbSeek.setProgress(0);
+        }
+        fadeIn(boxSeek);
+        main.removeCallbacks(hideSeekOverlay);
+        main.postDelayed(hideSeekOverlay, SEEK_OVERLAY_HOLD);
+    }
+
+    /** 动遥控器时把顶部/底部提示重新亮出来（同样 3 秒后再消失）。 */
+    private void pokeChrome() {
+        if (!chromeArmable) return;
+        fadeIn(tvStatus);
+        fadeIn(tvPlayerHint);
+        main.removeCallbacks(hideChrome);
+        main.postDelayed(hideChrome, CHROME_HIDE_DELAY);
+    }
+
+    private void fadeIn(final View v) {
+        if (v == null) return;
+        v.animate().cancel();
+        if (v.getVisibility() == View.VISIBLE) {
+            v.setAlpha(1f);
+            return;
+        }
+        v.setAlpha(0f);
+        v.setVisibility(View.VISIBLE);
+        v.animate().alpha(1f).setDuration(180).start();
+    }
+
+    private void fadeOut(final View v) {
+        if (v == null || v.getVisibility() != View.VISIBLE) return;
+        v.animate().cancel();
+        v.animate().alpha(0f).setDuration(280).start();
+        main.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (v.getVisibility() == View.VISIBLE && v.getAlpha() < 0.05f) {
+                    v.setVisibility(View.GONE);
+                }
+            }
+        }, 320);
+    }
+
+    private void toast(String s) {
+        Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
+    }
+
+    /** 00:00 / 1:02:03 */
+    private String fmtTime(long ms) {
+        if (ms < 0) ms = 0;
+        long total = ms / 1000;
+        long h = total / 3600;
+        long m = (total % 3600) / 60;
+        long sec = total % 60;
+        if (h > 0) return String.format(java.util.Locale.CHINA, "%d:%02d:%02d", h, m, sec);
+        return String.format(java.util.Locale.CHINA, "%02d:%02d", m, sec);
+    }
+
     // ---------- UI ----------
 
     private void status(final String s) {
         Log.d(TAG, "status: " + s);
-        main.post(() -> tvStatus.setText(s));
+        main.post(() -> {
+            tvStatus.setText(s);
+            fadeIn(tvStatus);
+            if (chromeArmable) {
+                main.removeCallbacks(hideChrome);
+                main.postDelayed(hideChrome, CHROME_HIDE_DELAY);
+            }
+        });
     }
 
     private void fail(final String s) {
         Log.d(TAG, "fail: " + s);
         main.post(() -> {
             tvStatus.setText("✘ " + s);
+            fadeIn(tvStatus);
+            if (chromeArmable) {
+                main.removeCallbacks(hideChrome);
+                main.postDelayed(hideChrome, CHROME_HIDE_DELAY);
+            }
             Toast.makeText(this, s, Toast.LENGTH_LONG).show();
         });
     }
@@ -351,6 +610,9 @@ public class PlayerActivity extends Activity {
     @Override
     protected void onDestroy() {
         finishing = true;
+        main.removeCallbacks(hideChrome);
+        main.removeCallbacks(hideSeekOverlay);
+        main.removeCallbacks(commitSeek);
         try {
             if (player != null) {
                 playerView.setPlayer(null);

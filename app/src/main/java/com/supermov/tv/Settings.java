@@ -14,6 +14,7 @@ public final class Settings {
     private static final String K_DL_DIR = "download_dir";
     private static final String K_BAIDU_USER = "baidu_user";
     private static final String K_LAST_TRANSFER = "last_transfer";
+    private static final String K_ASKED_ALL_FILES = "asked_all_files";
 
     private static SharedPreferences p;
     /** 没设置过下载目录时的缺省值（App 专属外部目录，免权限可写）。 */
@@ -85,6 +86,15 @@ public final class Settings {
 
     public static void setLastTransfer(String text) {
         p().edit().putString(K_LAST_TRANSFER, text == null ? "" : text).apply();
+    }
+
+    /** 是否已经引导过「所有文件访问」授权（避免每次启动都弹）。 */
+    public static boolean askedAllFiles() {
+        return p().getBoolean(K_ASKED_ALL_FILES, false);
+    }
+
+    public static void setAskedAllFiles(boolean asked) {
+        p().edit().putBoolean(K_ASKED_ALL_FILES, asked).apply();
     }
 
     /** 把最近一次转存结果序列化成 "time|dir|ok" 形式。 */

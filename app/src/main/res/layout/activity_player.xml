@@ -9,6 +9,79 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- 缓冲中（media3 自带控制条已关闭，这里自己给一个转圈指示） -->
+    <ProgressBar
+        android:id="@+id/pbPlayerBuffering"
+        android:layout_width="52dp"
+        android:layout_height="52dp"
+        android:layout_gravity="center"
+        android:indeterminate="true"
+        android:indeterminateTint="#E6FFFFFF"
+        android:visibility="gone" />
+
+    <!-- 快进/快退 / 暂停提示：VLC 式的居中进度条，操作后 2.5 秒自动隐藏 -->
+    <LinearLayout
+        android:id="@+id/boxPlayerSeek"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="@drawable/player_overlay_bg"
+        android:orientation="vertical"
+        android:paddingStart="26dp"
+        android:paddingTop="18dp"
+        android:paddingEnd="26dp"
+        android:paddingBottom="16dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/tvPlayerSeekTip"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:text="快进 10 秒"
+            android:textColor="#FFFFFFFF"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <ProgressBar
+            android:id="@+id/pbPlayerSeek"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="440dp"
+            android:layout_height="8dp"
+            android:layout_marginTop="14dp"
+            android:max="1000"
+            android:progress="0"
+            android:progressDrawable="@drawable/player_seek_bar" />
+
+        <LinearLayout
+            android:layout_width="440dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/tvPlayerSeekCur"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="00:00"
+                android:textColor="#FFFFFFFF"
+                android:textSize="15sp" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <TextView
+                android:id="@+id/tvPlayerSeekTotal"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="00:00"
+                android:textColor="#B3FFFFFF"
+                android:textSize="15sp" />
+        </LinearLayout>
+    </LinearLayout>
+
     <TextView
         android:id="@+id/tvPlayerStatus"
         android:layout_width="wrap_content"
@@ -35,7 +108,7 @@
         android:paddingTop="8dp"
         android:paddingEnd="14dp"
         android:paddingBottom="8dp"
-        android:text="遥控器 OK = 暂停/播放 · 返回退出"
+        android:text="遥控器：左右 = 快退/快进 10 秒 · OK = 暂停/播放 · 返回退出"
         android:textColor="#CC9AA0A6"
         android:textSize="12sp" />
 </FrameLayout>

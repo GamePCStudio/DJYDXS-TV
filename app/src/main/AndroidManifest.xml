@@ -15,6 +15,9 @@
     <!-- 落盘到公共存储 / U盘 / 已挂载的 NAS：API<=29 用写外部存储，API30+ 用「所有文件访问」。
          App 专属外部目录（默认下载位置）不需要任何权限。 -->
     <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="29" />
     <uses-permission

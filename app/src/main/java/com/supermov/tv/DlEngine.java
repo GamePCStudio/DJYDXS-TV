@@ -300,6 +300,47 @@ public final class DlEngine {
         notifyChanged();
     }
 
+    /** 删除全部任务（已下好的正式文件保留）。 */
+    public long removeAll() {
+        return removeAll(false);
+    }
+
+    /**
+     * 删除全部任务：停掉正在下的、清空队列、删掉所有断点残留（.dlpart / .dlpart.json）。
+     *
+     * <p>默认口径与单个删除一致：**已下好的正式文件不动** —— 删影片文件是用户的决定，
+     * 不该由「清空列表」代劳。断点文件是预分配过 total 大小的，清掉能实打实释放空间。</p>
+     *
+     * @param alsoFiles true 时才把已下载完成的正式文件一并删掉（顺手清掉被删空的目录）
+     * @return 实际释放的字节数（断点预分配空间 + 被删的正式文件）
+     */
+    public long removeAll(boolean alsoFiles) {
+        // 先把正在下的标成暂停，否则 loop 收尾时会把取消当成「下载完成」
+        Dl c = current;
+        if (c != null && c.status == Dl.RUNNING) c.status = Dl.PAUSED;
+        cancel.set(true); // 让分片线程尽快退出
+
+        List<Dl> copy;
+        synchronized (tasks) {
+            copy = new ArrayList<>(tasks);
+            tasks.clear();
+        }
+        long freed = 0;
+        for (Dl t : copy) {
+            freed += cleanupPartBytes(t);
+            if (alsoFiles) freed += deleteOut(t);
+        }
+        if (db != null) {
+            try {
+                db.deleteAll();
+            } catch (Throwable ignored) {
+            }
+        }
+        note = "";
+        notifyChanged();
+        return freed;
+    }
+
     /** 清掉所有已完成的任务行。 */
     public void clearDone() {
         synchronized (tasks) {
@@ -806,10 +847,86 @@ public final class DlEngine {
 
     /** 清掉断点残留文件（不动正式文件）。 */
     private void cleanupPart(Dl t) {
+        cleanupPartBytes(t);
+    }
+
+    /**
+     * 清掉断点残留文件，返回释放的字节数。
+     *
+     * <p>体积按**文件实际占用**算，不用任务里的 total —— .dlpart 是
+     * {@code setLength(total)} 预分配出来的，没下完的任务实际占盘就是整个文件大小，
+     * 所以这个数字是真能释放出来的。</p>
+     */
+    private long cleanupPartBytes(Dl t) {
+        long freed = 0;
         try {
-            if (t.dir == null || t.fileName == null) return;
-            new File(t.dir, t.fileName + ".dlpart").delete();
-            new File(t.dir, t.fileName + ".dlpart.json").delete();
+            if (t.dir == null || t.fileName == null) return 0;
+            File part = new File(t.dir, t.fileName + ".dlpart");
+            if (part.isFile()) {
+                long len = part.length();
+                if (part.delete()) freed += len;
+            }
+            File meta = new File(t.dir, t.fileName + ".dlpart.json");
+            if (meta.isFile()) {
+                long len = meta.length();
+                if (meta.delete()) freed += len;
+            }
+        } catch (Throwable ignored) {
+        }
+        return freed;
+    }
+
+    /**
+     * 删掉已下载完成的正式文件，返回释放的字节数。
+     *
+     * <p>文件不存在（用户自己在文件管理器里删过了）不算错，静默跳过。</p>
+     */
+    private long deleteOut(Dl t) {
+        long freed = 0;
+        try {
+            if (t.dir == null || t.fileName == null || t.fileName.isEmpty()) return 0;
+            File out = new File(t.dir, t.fileName);
+            if (out.isFile()) {
+                long len = out.length();
+                if (out.delete()) freed += len;
+            }
+            pruneEmptyDirs(new File(t.dir));
+        } catch (Throwable ignored) {
+        }
+        return freed;
+    }
+
+    /**
+     * 从 dir 向上逐级删掉「空目录」。
+     *
+     * <p>落盘目录是按网盘结构 1:1 建的，删完文件会留下一串空壳（片名 / Season 1），
+     * 看着很脏。这里只在目录**确实为空**时才删，遇到非空立刻停手。</p>
+     *
+     * <p><b>删除边界</b>：向上找名为「超级影库」的下载根目录做锚点，只允许删到它为止。
+     * 找不到锚点（用户自定义了奇怪的落盘目录）时**最多只删文件所在的那一级**，
+     * 绝不继续上溯 —— 否则一串空目录删上去可能把 {@code /mnt/usb} 这种挂载点删掉。</p>
+     */
+    private void pruneEmptyDirs(File dir) {
+        try {
+            File anchor = null;
+            for (File f = dir; f != null; f = f.getParentFile()) {
+                if ("超级影库".equals(f.getName())) {
+                    anchor = f;
+                    break;
+                }
+            }
+            File cur = dir;
+            for (int up = 0; cur != null; up++) {
+                if (anchor == null && up >= 1) return;        // 没锚点：只删文件所在目录本身
+                if (anchor != null && up > 8) return;          // 有锚点：层数兜底
+                String[] kids = cur.list();
+                if (kids == null || kids.length > 0) return;   // 非空：停手
+                File parent = cur.getParentFile();
+                if (parent == null) return;
+                if (!cur.delete()) return;
+                if (anchor != null && cur.equals(anchor)) return; // 删到下载根目录收手
+                cur = parent;
+            }
         } catch (Throwable ignored) {
         }
     }

@@ -10,8 +10,11 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
 import android.widget.EditText;
 import android.widget.ImageView;
+import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -37,8 +40,8 @@ import java.util.concurrent.Executors;
  * <p><b>多文件与多级文件夹</b>：转存下来的分享经常是一整个文件夹，里面可能是多集剧、
  * 上下部、CD1/CD2，或再套一层「季」目录。所以这里不做「自动挑一个最大的」，
  * 而是把该片名下的**全部**视频递归枚举出来让用户挑：播放走单选，下载走多选（默认全选）。
- * 下载时**按网盘里的相对目录结构落盘**（{@code 目标目录/第二季/03.mkv}），
- * 这样不同文件夹里的同名文件不会互相覆盖。</p>
+ * 下载时**按网盘里的目录结构原样落盘**（{@code 目标目录/片名文件夹/第二季/03.mkv}）——
+ * 网盘里是什么层级，本地就是什么层级，不同文件夹里的同名集也不会互相覆盖。</p>
  */
 public class DetailActivity extends Activity {
 
@@ -66,6 +69,8 @@ public class DetailActivity extends Activity {
     private boolean transferring = false;
     /** 定位网盘文件是异步的，防止用户连按几次按钮并发拉一堆请求 */
     private boolean locating = false;
+    /** 命中项的文件夹名：列表里只显示它**里面**的相对路径，避免每行都重复一遍片名 */
+    private String anchorFolder = "";
 
     /** 拿到「该片名下全部视频文件」后的回调；files 为空时 err 给出原因。 */
     private interface FilesCb {
@@ -187,11 +192,13 @@ public class DetailActivity extends Activity {
         pool.execute(() -> {
             BaiduPan.Resolved rs = ensureResolved();
             final List<BaiduPan.PlayFile> fs = rs.files;
+            final String folder = rs.anchorName == null ? "" : rs.anchorName;
             final String err = fs.isEmpty()
                     ? (rs.message == null || rs.message.isEmpty() ? "网盘里没有找到视频文件" : rs.message)
                     : "";
             main.post(() -> {
                 locating = false;
+                anchorFolder = folder;
                 cb.on(fs, err);
             });
         });
@@ -270,6 +277,7 @@ public class DetailActivity extends Activity {
                 .setNegativeButton("取消", null)
                 .create();
         dlg.show();
+        tuneDialog(dlg);
     }
 
     /** 带上 fsId/path 直接播指定文件，避免播放页再按片名猜一次而播错集。 */
@@ -348,6 +356,7 @@ public class DetailActivity extends Activity {
             });
         });
         dlg.show();
+        tuneDialog(dlg);
     }
 
     private void refreshPickButton(DialogInterface d, boolean[] checked) {
@@ -389,6 +398,7 @@ public class DetailActivity extends Activity {
                 })
                 .create();
         dlg.show();
+        tuneDialog(dlg);
     }
 
     private void showManualDir(final List<BaiduPan.PlayFile> files) {
@@ -410,12 +420,17 @@ public class DetailActivity extends Activity {
                 .setNegativeButton("取消", null)
                 .create();
         dlg.show();
+        widen(dlg, 1.3f);
         dlg.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus();
     }
 
     /**
-     * 入队。**按网盘里的相对目录结构落盘**：{@code 目标目录/第二季/03.mkv}。
-     * 这样多文件夹下的同名文件不会互相覆盖，用户下完在本地也是分好文件夹的。
+     * 入队。**按网盘里的目录结构原样落盘**：{@code 目标目录/片名文件夹/第二季/03.mkv}。
+     *
+     * <p>{@code pf.rel} 的根是「转存根目录」（如 /超级影库），所以网盘里的
+     * {@code /超级影库/片名/第二季/03.mkv} 在本地就是
+     * {@code 下载目录/片名/第二季/03.mkv} —— 一层不少，原汁原味。
+     * 顺带好处：不同文件夹下的同名集不会互相覆盖。</p>
      */
     private void startDownload(final String dir, final List<BaiduPan.PlayFile> files) {
         tvTransferResult.setText("正在加入下载队列…");
@@ -462,7 +477,7 @@ public class DetailActivity extends Activity {
                 }
                 tvTransferResult.setText("✔ 已加入下载队列 " + n + " 个文件"
                         + (tb > 0 ? "，共 " + DlEngine.human(tb) : "")
-                        + "\n落盘目录：" + dir + list);
+                        + "\n按网盘原目录结构落盘到：" + dir + list);
                 toast("已开始下载 " + n + " 个文件");
                 startActivity(new Intent(this, DownloadActivity.class));
             });
@@ -597,6 +612,7 @@ public class DetailActivity extends Activity {
                 .setNegativeButton("稍后", null)
                 .create();
         dlg.show();
+        widen(dlg, 1.3f);
     }
 
     /** 校验发现缺文件：如实列出缺哪些，而不是一句「转存成功」糊过去。 */
@@ -620,6 +636,7 @@ public class DetailActivity extends Activity {
                 .setNegativeButton("知道了", null)
                 .create();
         dlg.show();
+        widen(dlg, 1.3f);
     }
 
     private void copyMissing(List<BaiduPan.PlayFile> miss) {
@@ -682,13 +699,90 @@ public class DetailActivity extends Activity {
         return withSize ? n + "|" + f.size : n;
     }
 
+    // ==================== 对话框统一调优 ====================
+    //
+    // 剧集与合集的文件名很长（片名 + 季 + 集 + 分辨率 + 音轨 + 压制组…），而系统默认的
+    // 列表对话框又窄又用中号字，一行放不下几个字，用户根本分不清是第几集。所以统一做两件事：
+    //   ① 宽度在「当前实际宽度」基础上**加大 30%**（上限屏宽的 94%，不越出屏幕）
+    //   ② 条目字号调小一档并允许折成两行 —— 同样的宽度能多装约 1/4 的字
+
+    /** 列表条目字号（sp）。系统默认约 16sp，调小一档能让长片名显示得更完整。 */
+    private static final float DIALOG_ITEM_SP = 13f;
+
+    /** 加宽 + 缩字号。必须在 {@code dlg.show()} 之后调用（ListView 要 show 时才建出来）。 */
+    private void tuneDialog(final AlertDialog dlg) {
+        widen(dlg, 1.3f);
+        shrinkItems(dlg);
+    }
+
+    /** 把窗口宽度在「当前实际宽度」基础上放大 factor 倍，上限为屏宽的 94%。 */
+    private void widen(final AlertDialog dlg, final float factor) {
+        final Window w = dlg.getWindow();
+        if (w == null) return;
+        // 布局完成前 getWidth() 还是 0，post 到下一轮再量
+        w.getDecorView().post(() -> {
+            int base = w.getDecorView().getWidth();
+            int screen = getResources().getDisplayMetrics().widthPixels;
+            int target = base > 0 ? (int) (base * factor) : (int) (screen * 0.85f);
+            int cap = (int) (screen * 0.94f);
+            if (target > cap) target = cap;
+            w.setLayout(target, ViewGroup.LayoutParams.WRAP_CONTENT);
+        });
+    }
+
+    /** 列表条目：缩小字号、允许两行、超出用省略号（长片名 / 长路径尽量显示完整）。 */
+    private void shrinkItems(AlertDialog dlg) {
+        ListView lv = dlg.getListView();
+        if (lv == null) return;
+        // 条目是回收复用的，后滚出来的孩子也要处理 -> 挂个层级监听
+        lv.setOnHierarchyChangeListener(new ViewGroup.OnHierarchyChangeListener() {
+            @Override
+            public void onChildViewAdded(View parent, View child) {
+                shrinkText(child);
+            }
+
+            @Override
+            public void onChildViewRemoved(View parent, View child) {
+            }
+        });
+        for (int i = 0; i < lv.getChildCount(); i++) shrinkText(lv.getChildAt(i));
+    }
+
+    private void shrinkText(View v) {
+        if (v instanceof TextView) {
+            TextView tv = (TextView) v;
+            tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, DIALOG_ITEM_SP);
+            tv.setSingleLine(false);
+            tv.setMaxLines(2);
+            tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        } else if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) shrinkText(g.getChildAt(i));
+        }
+    }
+
     // ==================== 工具 ====================
 
-    /** 列表项文案：相对目录 + 文件名 + 体积。 */
+    /**
+     * 列表项文案：相对目录 + 文件名 + 体积。
+     *
+     * <p>目录只显示「命中文件夹**里面**」的那几层 —— 片名文件夹本身在每一行重复一遍没有意义，
+     * 还会把真正有用的集数 / 文件名挤到右边被省略掉。</p>
+     */
     private String labelOf(BaiduPan.PlayFile pf) {
-        String rel = pf.rel == null || pf.rel.isEmpty() ? "" : pf.rel + " / ";
+        String rel = relForShow(pf);
+        rel = rel.isEmpty() ? "" : rel + " / ";
         String size = pf.size > 0 ? "   " + humanSize(pf.size) : "";
         return rel + pf.name + size;
+    }
+
+    /** 展示用的相对目录：去掉开头那一层「片名文件夹」。 */
+    private String relForShow(BaiduPan.PlayFile pf) {
+        String rel = pf.rel == null ? "" : pf.rel;
+        if (anchorFolder.isEmpty()) return rel;
+        if (rel.equals(anchorFolder)) return "";
+        if (rel.startsWith(anchorFolder + "/")) return rel.substring(anchorFolder.length() + 1);
+        return rel;
     }
 
     private String humanSize(long bytes) {

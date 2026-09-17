@@ -73,6 +73,22 @@
             android:text="🧹 清空已完成"
             android:textColor="#FFFFFFFF"
             android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/btnDlClearAll"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/bg_dl_btn"
+            android:clickable="true"
+            android:focusable="true"
+            android:paddingStart="16dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="8dp"
+            android:text="🗑 删除全部任务"
+            android:textColor="#FFFF8A80"
+            android:textSize="13sp" />
     </LinearLayout>
 
     <View
