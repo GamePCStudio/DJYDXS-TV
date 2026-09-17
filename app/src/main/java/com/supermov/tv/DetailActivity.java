@@ -12,6 +12,7 @@ import android.os.Looper;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.ListView;
@@ -294,6 +295,11 @@ public class DetailActivity extends Activity {
             toast("没有可用的百度网盘链接");
             return;
         }
+        playOnline(this::startOnlinePlay);
+    }
+
+    /** 真正开始在线播放：解析分享里的文件 → 单个直接播 / 多个先选一个。 */
+    private void startOnlinePlay() {
         withFiles((fs, err) -> {
             if (!err.isEmpty()) {
                 tvTransferResult.setText("✘ " + err);
@@ -306,6 +312,49 @@ public class DetailActivity extends Activity {
                 showPickSingle(fs);
             }
         });
+    }
+
+    /**
+     * 在线播放统一入口（v1.20）：先过一遍带宽提示，用户确认后再进播放页。
+     *
+     * <p>为什么要有这个提示：在线播放走的是网盘原画直链 + 本地代理，4K 全景声的原盘
+     * 码率能到 60~100 Mbps，家庭宽带 / 盒子的无线网卡吃不下就会一直缓冲。提前把
+     * 「卡了可以下载后播、或转存到 NAS」说清楚，比让用户在播放页干等好。</p>
+     *
+     * <p>勾了「不再提示」后写进设置，之后任何入口都不再弹。</p>
+     */
+    private void playOnline(final Runnable go) {
+        if (Settings.skipOnlineWarn()) {
+            go.run();
+            return;
+        }
+        showOnlineWarnDialog(go);
+    }
+
+    private void showOnlineWarnDialog(final Runnable go) {
+        // 复选框而不是第二个按钮：遥控器上左右一晃就可能误按，勾选框是显式的确认。
+        final CheckBox cb = new CheckBox(this);
+        int pad = (int) (getResources().getDisplayMetrics().density * 20);
+        cb.setPadding(pad, pad / 2, pad, 0);
+        cb.setTextSize(13f);
+        cb.setTextColor(0xFFE8EAED);
+        cb.setChecked(false);
+        cb.setText("不再提示");
+
+        AlertDialog dlg = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("在线播放提示")
+                .setMessage("在线播放需要较高带宽，带宽不足可能会卡顿，尤其是 4K 全景声影片。\n\n"
+                        + "如遇在线播放卡顿，请下载后播放，或者转存到 NAS 播放。")
+                .setView(cb)
+                .setPositiveButton("继续播放", (d, w) -> {
+                    if (cb.isChecked()) Settings.setSkipOnlineWarn(true);
+                    go.run();
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        dlg.show();
+        widen(dlg, 1.3f);
+        dlg.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus();
     }
 
     /** 多文件：单选一个来播。 */
@@ -765,10 +814,10 @@ public class DetailActivity extends Activity {
         AlertDialog dlg = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
                 .setTitle(title)
                 .setMessage(msg)
-                .setPositiveButton("▶ 在线播放", (d, w) -> {
+                .setPositiveButton("▶ 在线播放", (d, w) -> playOnline(() -> {
                     if (files.size() == 1) playFile(files.get(0));
                     else showPickSingle(files);
-                })
+                }))
                 .setNeutralButton("⬇ 下载", (d, w) -> {
                     if (files.size() == 1) showDirPicker(files);
                     else showPickMulti(files);

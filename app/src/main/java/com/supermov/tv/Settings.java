@@ -19,8 +19,8 @@ public final class Settings {
     private static final String K_ASKED_ALL_FILES = "asked_all_files";
 
     private static SharedPreferences p;
-    /** 没设置过下载目录时的缺省值（App 专属外部目录，免权限可写）。 */
-    private static String defaultDlDir = "";
+    /** Application Context：缺省下载目录要按当前权限状态现算，不能只在 init 时算一次。 */
+    private static Context appCtx;
 
     private Settings() {}
 
@@ -31,8 +31,8 @@ public final class Settings {
     public static void init(Context ctx) {
         if (p == null) {
             Context app = ctx.getApplicationContext();
+            appCtx = app;
             p = app.getSharedPreferences(FILE, Context.MODE_PRIVATE);
-            defaultDlDir = Storage.appDir(app);
         }
     }
 
@@ -44,14 +44,18 @@ public final class Settings {
         p().edit().putString(K_SAVE_DIR, dir).apply();
     }
 
-    /** 下载落盘目录（绝对路径）。 */
+    /**
+     * 下载落盘目录（绝对路径）。
+     *
+     * <p>没设置过时用缺省落点：v1.20 起是公共存储 {@code /sdcard/超级影库}（用盒子自带的
+     * 文件管理器 / Kodi 都能直接看到），没拿到「所有文件访问」权限时退回 App 专属目录。
+     * <b>每次都现算</b> —— 用户可能刚在设置里授了权，缓存住就还是老路径。</p>
+     */
     public static String downloadDir() {
-        String d = p().getString(K_DL_DIR, "");
-        if (d == null || d.isEmpty()) {
-            if (defaultDlDir == null || defaultDlDir.isEmpty()) return "/sdcard";
-            return defaultDlDir;
-        }
-        return d;
+        String d = p() == null ? "" : p().getString(K_DL_DIR, "");
+        if (d != null && !d.isEmpty()) return d;
+        if (appCtx != null) return Storage.defaultDir(appCtx);
+        return Storage.PUBLIC_ROOT;
     }
 
     public static void setDownloadDir(String dir) {
@@ -179,6 +183,25 @@ public final class Settings {
      */
     public static long dlLimitBps() {
         return dlLimitMbps() * 1000000L / 8;
+    }
+
+    // ---------- 在线播放带宽提示（v1.20）----------
+
+    private static final String K_SKIP_ONLINE_WARN = "skip_online_warn";
+
+    /** 是否已勾过「不再提示」：勾过之后详情页点在线播放不再弹带宽提示。 */
+    public static boolean skipOnlineWarn() {
+        if (p() == null) return false;
+        try {
+            return p().getBoolean(K_SKIP_ONLINE_WARN, false);
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    public static void setSkipOnlineWarn(boolean skip) {
+        if (p() == null) return;
+        p().edit().putBoolean(K_SKIP_ONLINE_WARN, skip).apply();
     }
 
     // ---------- 播放进度记忆（v1.15）----------

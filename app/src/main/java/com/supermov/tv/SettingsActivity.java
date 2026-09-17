@@ -11,7 +11,7 @@ import android.widget.Toast;
 
 import java.util.List;
 
-/** 设置页：百度网盘扫码 / 转存目录 / 下载目录 / 下载队列 / 授权状态 / 解除授权。 */
+/** 设置页：百度网盘扫码 / 转存目录 / 下载目录 / 后台下载限速 / 授权状态 / 解除授权。 */
 public class SettingsActivity extends Activity {
 
     private LinearLayout group;
@@ -52,12 +52,9 @@ public class SettingsActivity extends Activity {
         group.addView(sectionLabel("下载"));
         group.addView(option("下载目录: " + Settings.downloadDir(),
                 Storage.hasAllFiles(this)
-                        ? "点按修改（本机 / U盘 / 已挂载的 NAS 都能选）"
+                        ? "点按修改；会列出本机存储、已挂载的 U盘 / 移动硬盘 / NAS"
                         : "点按修改；写入公共存储需先授予「所有文件访问」",
                 v -> showDownloadDirPicker()));
-        group.addView(option("下载队列",
-                "查看进度 / 暂停 / 断点续传 / 播放已下载文件",
-                v -> startActivity(new Intent(this, DownloadActivity.class))));
         group.addView(option("后台下载限速: " + Settings.dlLimitMbps() + " Mbps",
                 "缺省 " + Settings.DL_LIMIT_DEFAULT + " Mbps，可设 "
                         + Settings.DL_LIMIT_MIN + " ~ " + Settings.DL_LIMIT_MAX + " Mbps\n"

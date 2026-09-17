@@ -20,7 +20,8 @@ import java.util.List;
  * <p>为什么这样做：Android 10 起分区存储让「直接写 /sdcard/xxx」必须拿
  * MANAGE_EXTERNAL_STORAGE（所有文件访问）；而 App 专属外部目录
  * {@code /sdcard/Android/data/<包名>/files/} 任何版本都免权限可写。
- * 所以默认落点是 App 专属目录（100% 能用），其余位置按需申请权限后再出现。</p>
+ * v1.20 起默认落点是公共存储 {@code /sdcard/超级影库}（需要权限），
+ * 没权限时退回 App 专属目录 —— 见 {@link #defaultDir}。</p>
  *
  * <p>NAS 不需要专门的 SMB 库：盒子通过自带文件管理器 / X-plore 之类把共享挂载后，
  * 会出现在 {@code /mnt} 或 {@code /storage} 下，和 U 盘一样直接就是普通路径，
@@ -93,37 +94,111 @@ public final class Storage {
         return new File(base, "超级影库").getAbsolutePath();
     }
 
-    /** 默认下载目录（用户没改过时用它）。 */
+    /** 公共存储下的缺省落点（本机内置存储）。 */
+    public static final String PUBLIC_ROOT = "/sdcard/超级影库";
+
+    /**
+     * 默认下载目录（用户没改过时用它）。
+     *
+     * <p>v1.20 起缺省落点改为公共存储 {@code /sdcard/超级影库} —— 下载完的片子用盒子
+     * 自带的文件管理器 / Kodi / X-plore 都能直接看到；代价是写它需要「所有文件访问」。
+     * <b>没拿到权限时仍退回 App 专属目录</b>，否则一上来每次下载都失败，用户连原因都看不到。</p>
+     */
     public static String defaultDir(Context c) {
+        if (hasAllFiles(c)) return PUBLIC_ROOT;
         return appDir(c);
     }
 
     /**
-     * 枚举候选落盘目录。有权限时会把 U 盘 / 移动硬盘 / 已挂载的网络共享一起列出来。
+     * 枚举候选落盘目录：本机存储 + 已挂载的移动存储 / 硬盘 + 扫到的挂载点。
+     *
+     * <p>分三路找，是为了一个都不漏：</p>
+     * <ol>
+     *   <li><b>本机存储</b>：固定项 {@code /sdcard/超级影库}；</li>
+     *   <li><b>移动存储 / 移动硬盘</b>：走 {@link android.os.storage.StorageManager} 拿系统
+     *       认可的存储卷（U 盘、SD 卡、USB 硬盘都在这里）。比扫目录可靠 —— 扫目录靠「能不能读」，
+     *       未授权时插着的盘直接看不见；这里能把「插着但还没授权」的盘也列出来让用户去授权；</li>
+     *   <li><b>兜底扫挂载点</b>：{@code /storage} 与 {@code /mnt} 下可写的目录（部分盒子把 NAS /
+     *       共享盘挂在非标位置，StorageManager 不认）。</li>
+     * </ol>
+     * <p>每一项都自动补上 {@code /超级影库} 子目录，与网盘侧的转存根目录同名。</p>
      */
     public static List<Target> targets(Context c) {
         LinkedHashSet<String> seen = new LinkedHashSet<>();
         List<Target> out = new ArrayList<>();
-
-        // ① 「本机 · 应用目录」不再作为选项列出（用户要求去掉）——它仍是「没设置过下载目录」
-        //    时的缺省落点（见 Settings.downloadDir 与 defaultDir），只是不摆在列表里让人选。
         boolean all = hasAllFiles(c);
 
-        // ② 公共存储
-        String movies = "/sdcard/Movies/超级影库";
-        if (all) {
-            if (seen.add(movies)) out.add(new Target("本机 · 公共存储 Movies", movies, false));
-        } else {
-            if (seen.add(movies)) out.add(new Target("本机 · 公共存储 Movies（需授权）", movies, true));
+        // ① 本机内置存储
+        addTarget(out, seen, "本机存储 · 内置", PUBLIC_ROOT, !all);
+
+        // ② 系统认可的存储卷（U盘 / SD卡 / 移动硬盘）
+        for (String v : volumes(c)) {
+            String name = new File(v).getName();
+            if (name == null || name.isEmpty()) name = v;
+            addTarget(out, seen, "外接存储 · " + name,
+                    new File(v, "超级影库").getAbsolutePath(), !all);
         }
 
-        // ③ 外接盘 / 已挂载的网络位置：有权限才扫，扫出来直接可选
-        if (all) {
-            scan(new File("/storage"), 2, out, seen);
-            scan(new File("/mnt"), 2, out, seen);
-        }
+        // ③ 兜底：扫挂载点（NAS / 共享盘常挂在 /mnt 下）。可写的才列，避免噪音。
+        scan(new File("/storage"), 2, out, seen);
+        scan(new File("/mnt"), 2, out, seen);
 
         return out;
+    }
+
+    /** 加一项：按落地路径去重；未授权时标题里标「需授权」，其余情况不啰嗦。 */
+    private static void addTarget(List<Target> out, LinkedHashSet<String> seen,
+                                  String label, String dir, boolean needAllFiles) {
+        if (dir == null || dir.isEmpty()) return;
+        if (!seen.add(dir)) return;
+        out.add(new Target(needAllFiles ? label + "（需授权）" : label, dir, needAllFiles));
+    }
+
+    /**
+     * 用 {@link android.os.storage.StorageManager} 列出系统认可的存储卷根路径。
+     *
+     * <p>比自己扫 {@code /storage} 可靠：扫目录只能靠「能不能读」，未授权时挂着的 U 盘
+     * 直接看不见；这里能拿到卷列表，把「插着但还没授权」的盘也显示出来。</p>
+     */
+    private static List<String> volumes(Context c) {
+        List<String> out = new ArrayList<>();
+        if (c == null || Build.VERSION.SDK_INT < 24) return out;
+        try {
+            android.os.storage.StorageManager sm = (android.os.storage.StorageManager)
+                    c.getSystemService(Context.STORAGE_SERVICE);
+            if (sm == null) return out;
+            for (android.os.storage.StorageVolume v : sm.getStorageVolumes()) {
+                String p = volumePath(v);
+                if (p == null || p.isEmpty()) continue;
+                if (p.equals("/sdcard") || p.startsWith("/storage/emulated")) continue;
+                out.add(p);
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    /**
+     * 取某个存储卷的挂载根路径。
+     *
+     * <p>{@code getDirectory()} 是 API 30 才有的公开方法；老版本只能反射 {@code getPath()}
+     * （hidden API，部分 ROM 会拦），两条都拿不到就放弃这个卷。</p>
+     */
+    private static String volumePath(android.os.storage.StorageVolume v) {
+        if (v == null) return null;
+        if (Build.VERSION.SDK_INT >= 30) {
+            try {
+                File d = v.getDirectory();
+                if (d != null) return d.getAbsolutePath();
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            Object r = v.getClass().getMethod("getPath").invoke(v);
+            if (r instanceof String) return (String) r;
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 
     /** 扫描可写挂载点。命中一层就够——挂载点本身就是共享/分区根目录。 */
