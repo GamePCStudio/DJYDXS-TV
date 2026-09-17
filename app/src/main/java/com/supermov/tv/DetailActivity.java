@@ -2,6 +2,8 @@ package com.supermov.tv;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.os.Bundle;
@@ -9,25 +11,27 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 import android.widget.EditText;
-import android.widget.LinearLayout;
+import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * 影片详情：简介 + 百度网盘线路 + 三个操作（在线播放 / 下载 / 转存）。
+ * 影片详情：海报 + 简介 + 三个操作（在线播放 / 下载 / 转存）。
  *
  * <p>三个入口**各自跳到自己的模块**：</p>
  * <ul>
  *   <li><b>▶ 在线播放</b> → {@link PlayerActivity}（原画直链 + 本地代理 + M3U8 兜底）</li>
  *   <li><b>⬇ 下载</b> → 选文件 → 选落盘目录 → 入队 → 跳 {@link DownloadActivity}</li>
- *   <li><b>⇪ 转存</b> → 转存到网盘，成功后直接给出「播放 / 下载」的下一步</li>
+ *   <li><b>⇪ 转存</b> → 先查网盘里有没有，没有才转存；转存后校验有没有缺文件</li>
  * </ul>
  *
  * <p><b>多文件与多级文件夹</b>：转存下来的分享经常是一整个文件夹，里面可能是多集剧、
@@ -41,10 +45,10 @@ public class DetailActivity extends Activity {
     private final ExecutorService pool = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
 
+    private ImageView ivPic;
     private TextView tvName;
     private TextView tvMeta;
     private TextView tvContent;
-    private LinearLayout boxGroup;
     private TextView btnPlay;
     private TextView btnDownload;
     private TextView btnTransfer;
@@ -53,6 +57,7 @@ public class DetailActivity extends Activity {
 
     private Site.Detail detail;
     private String movieName = "";
+    private String picUrl = "";
     private String shareUrl = "";
     private String sharePwd = "";
     private int fid;
@@ -72,10 +77,10 @@ public class DetailActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_detail);
 
+        ivPic = findViewById(R.id.ivDetailPic);
         tvName = findViewById(R.id.tvDetailName);
         tvMeta = findViewById(R.id.tvDetailMeta);
         tvContent = findViewById(R.id.tvDetailContent);
-        boxGroup = findViewById(R.id.boxLineGroup);
         btnPlay = findViewById(R.id.btnPlay);
         btnDownload = findViewById(R.id.btnDownload);
         btnTransfer = findViewById(R.id.btnTransfer);
@@ -85,7 +90,9 @@ public class DetailActivity extends Activity {
         fid = getIntent().getIntExtra("fid", 0);
         tid = nz(getIntent().getStringExtra("tid"));
         movieName = nz(getIntent().getStringExtra("name"));
+        picUrl = nz(getIntent().getStringExtra("pic"));
         if (!movieName.isEmpty()) tvName.setText(movieName);
+        loadPic();
 
         pool.execute(() -> {
             Site.Detail d = Site.detail(fid, tid);
@@ -95,6 +102,12 @@ public class DetailActivity extends Activity {
         btnPlay.setOnClickListener(v -> doPlay());
         btnDownload.setOnClickListener(v -> doDownload());
         btnTransfer.setOnClickListener(v -> doTransfer());
+    }
+
+    /** 海报：列表页已经带了 pic 就直接用；没有就等详情解析出来再补。 */
+    private void loadPic() {
+        if (ivPic == null || picUrl.isEmpty()) return;
+        ImageLoader.load(picUrl, ivPic);
     }
 
     private void bindDetail(Site.Detail d) {
@@ -111,29 +124,22 @@ public class DetailActivity extends Activity {
         }
         tvMeta.setText(d.movie.remarks);
         tvContent.setText(d.movie.content.isEmpty() ? "（无简介）" : d.movie.content);
+        // 列表页没给海报时，用详情页解析出来的
+        if (picUrl.isEmpty() && d.movie.pic != null && !d.movie.pic.isEmpty()) {
+            picUrl = d.movie.pic;
+            loadPic();
+        }
 
-        // 只保留百度线路（Site 已过滤），展示线路 + 底部三个操作
-        boxGroup.removeAllViews();
+        // 线路区块已按要求去掉：只取第一条链接用于播放/下载/转存，不再展示「播放线路」
         if (d.boxes.isEmpty()) {
-            TextView no = makeLine("无可用下载链接", false);
-            boxGroup.addView(no);
+            tvTransferResult.setText("该影片没有可用的百度网盘链接");
             setActionsVisible(false);
             return;
         }
         Site.Box first = d.boxes.get(0);
         shareUrl = first.url;
         sharePwd = first.pwd;
-        for (Site.Box b : d.boxes) {
-            String label = "百度网盘" + (b.pwd == null || b.pwd.isEmpty() ? "" : "（提取码 " + b.pwd + "）");
-            TextView line = makeLine(label, true);
-            line.setOnClickListener(v -> {
-                android.content.ClipboardManager cm =
-                        (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-                cm.setPrimaryClip(android.content.ClipData.newPlainText("url", b.url));
-                Toast.makeText(this, "链接已复制，可到百度网盘APP粘贴", Toast.LENGTH_LONG).show();
-            });
-            boxGroup.addView(line);
-        }
+
         setActionsVisible(true);
         // 电视遥控器：进页面就把焦点放到主操作上，否则满屏静态文字看不出能按哪儿
         btnPlay.post(() -> btnPlay.requestFocus());
@@ -166,26 +172,6 @@ public class DetailActivity extends Activity {
         } catch (Exception e) {
             return json;
         }
-    }
-
-    private TextView makeLine(String text, boolean clickable) {
-        TextView tv = new TextView(this);
-        tv.setText(text);
-        tv.setTextSize(15);
-        tv.setTextColor(0xFFEEEEEE);
-        tv.setPadding(dip(14), dip(10), dip(14), dip(10));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dip(8);
-        tv.setLayoutParams(lp);
-        tv.setBackground(getDrawable(android.R.color.darker_gray));
-        tv.getBackground().setAlpha(24);
-        tv.setFocusable(clickable);
-        tv.setClickable(clickable);
-        if (clickable) {
-            tv.setOnFocusChangeListener((v, has) -> v.setAlpha(has ? 1f : 0.8f));
-        }
-        return tv;
     }
 
     // ==================== 公共：先定位出「全部文件」 ====================
@@ -485,6 +471,16 @@ public class DetailActivity extends Activity {
 
     // ==================== ③ 转存 ====================
 
+    /**
+     * 转存。**先查后转**：
+     * <ol>
+     *   <li>网盘里已经有这部影片 → 直接提示「已经转存过了」，**绝不重复转一次**
+     *       （对已存在的文件再转，百度会回 errno=4/-10 之类，被误报成「网盘空间不足」）</li>
+     *   <li>确实没有 → 转存</li>
+     *   <li>转存后按分享清单做**完整性校验**：多集剧 / 多级文件夹最容易缺文件，
+     *       缺了就明确列出缺哪些，不给「转存成功」的假象</li>
+     * </ol>
+     */
     private void doTransfer() {
         if (transferring) return;
         if (shareUrl.isEmpty()) {
@@ -496,11 +492,28 @@ public class DetailActivity extends Activity {
             return;
         }
         transferring = true;
-        tvTransferResult.setText("转存中…");
+        tvTransferResult.setText("正在检查网盘里是否已有这部影片…");
         final String url = shareUrl;
         final String pwd = sharePwd;
         final String dir = Settings.saveDir();
         pool.execute(() -> {
+            // ① 先查：已经转存过就到此为止
+            BaiduPan.Resolved have = BaiduPan.resolveAll(dir, movieName);
+            if (!have.files.isEmpty()) {
+                final List<BaiduPan.PlayFile> fs = have.files;
+                final String where = have.anchorPath;
+                main.post(() -> {
+                    transferring = false;
+                    tvTransferResult.setText("✔ 网盘里已经有这部影片（" + fs.size() + " 个文件），无需重复转存"
+                            + "\n位置：" + where);
+                    toast("已转存过，无需重复转存");
+                    showAfterTransfer(fs, "已经转存过了", "网盘里已有 " + fs.size() + " 个视频文件，接下来？");
+                });
+                return;
+            }
+
+            // ② 确实没有 -> 转存
+            main.post(() -> tvTransferResult.setText("网盘里还没有，正在转存到 " + dir + " …"));
             BaiduPan.TransferResult r;
             try {
                 r = BaiduPan.transfer(url, pwd, dir);
@@ -510,34 +523,69 @@ public class DetailActivity extends Activity {
                 r.ok = false;
                 r.message = "转存异常：" + e.getClass().getSimpleName();
             }
+            Settings.recordTransfer(dir, r.ok);
             final BaiduPan.TransferResult fr = r;
+
+            if (!fr.ok) {
+                main.post(() -> {
+                    transferring = false;
+                    String t = new java.text.SimpleDateFormat("M-d HH:mm", java.util.Locale.CHINA)
+                            .format(new java.util.Date());
+                    tvTransferResult.setText("✘ " + fr.message + "   (" + t + ")");
+                    toast(fr.message);
+                });
+                return;
+            }
+
+            // ③ 转存后：枚举 + 按分享清单校验完整性
+            BaiduPan.Resolved rs = BaiduPan.resolveAll(dir, movieName);
+            List<BaiduPan.PlayFile> expect =
+                    BaiduPan.shareManifest(fr.shareid, fr.uk, url);
+            final List<BaiduPan.PlayFile> got = rs.files;
+            final List<BaiduPan.PlayFile> miss = expect.isEmpty()
+                    ? new ArrayList<BaiduPan.PlayFile>() : missingOf(expect, got);
+            final int expectN = expect.size();
+            final String where = rs.anchorPath.isEmpty() ? dir : rs.anchorPath;
+
             main.post(() -> {
                 transferring = false;
-                Settings.recordTransfer(dir, fr.ok);
                 String t = new java.text.SimpleDateFormat("M-d HH:mm", java.util.Locale.CHINA)
                         .format(new java.util.Date());
-                tvTransferResult.setText((fr.ok ? "✔ " : "✘ ") + fr.message + "   (" + t + ")");
-                toast(fr.message);
-                if (fr.ok) {
-                    // 转存成功 -> 立刻把文件列出来，直接给「播放 / 下载」的下一步
-                    withFiles((fs, err) -> {
-                        if (!err.isEmpty()) {
-                            tvTransferResult.setText("✔ 转存成功；但没找到视频文件：" + err);
-                            return;
-                        }
-                        showAfterTransfer(fs);
-                    });
+                if (got.isEmpty()) {
+                    tvTransferResult.setText("✘ 转存似乎成功，但网盘里没找到视频文件"
+                            + (rs.message.isEmpty() ? "" : "：" + rs.message) + "   (" + t + ")");
+                    toast("转存后没找到视频文件");
+                    return;
                 }
+                if (expectN <= 0) {
+                    // 分享清单拿不到（接口失败）-> 不做「不完整」的判断，避免误报
+                    tvTransferResult.setText("✔ 转存完成，网盘里找到 " + got.size() + " 个视频文件"
+                            + "\n位置：" + where + "   (" + t + ")");
+                    showAfterTransfer(got, "转存完成", "网盘里找到 " + got.size() + " 个视频文件，接下来？");
+                    return;
+                }
+                if (miss.isEmpty()) {
+                    tvTransferResult.setText("✔ 转存完成且完整：分享里 " + expectN + " 个视频文件，网盘里 " + got.size() + " 个，全都在"
+                            + "\n位置：" + where + "   (" + t + ")");
+                    toast("转存完成，文件齐全");
+                    showAfterTransfer(got, "转存完成（已校验，文件齐全）",
+                            "分享里 " + expectN + " 个视频文件，网盘里 " + got.size() + " 个，一个不缺。接下来？");
+                    return;
+                }
+                tvTransferResult.setText("⚠ 转存完成，但可能不完整：分享里 " + expectN + " 个视频文件，网盘里只有 "
+                        + got.size() + " 个，缺 " + miss.size() + " 个"
+                        + "\n位置：" + where + "   (" + t + ")");
+                showIncomplete(got, miss, expectN);
             });
         });
     }
 
-    /** 转存完成后的分流：直接告诉用户接下来能干什么。 */
-    private void showAfterTransfer(final List<BaiduPan.PlayFile> files) {
-        tvTransferResult.setText("✔ 转存完成，网盘里找到 " + files.size() + " 个视频文件");
+    // ==================== 转存完成后的分流 ====================
+
+    private void showAfterTransfer(final List<BaiduPan.PlayFile> files, String title, String msg) {
         AlertDialog dlg = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
-                .setTitle("转存完成")
-                .setMessage("已在网盘里找到 " + files.size() + " 个视频文件，接下来？")
+                .setTitle(title)
+                .setMessage(msg)
                 .setPositiveButton("▶ 在线播放", (d, w) -> {
                     if (files.size() == 1) playFile(files.get(0));
                     else showPickSingle(files);
@@ -549,6 +597,89 @@ public class DetailActivity extends Activity {
                 .setNegativeButton("稍后", null)
                 .create();
         dlg.show();
+    }
+
+    /** 校验发现缺文件：如实列出缺哪些，而不是一句「转存成功」糊过去。 */
+    private void showIncomplete(final List<BaiduPan.PlayFile> have,
+                                final List<BaiduPan.PlayFile> miss, int expectN) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("分享里有 ").append(expectN).append(" 个视频文件，网盘里只找到 ")
+                .append(have.size()).append(" 个，缺 ").append(miss.size()).append(" 个：\n");
+        for (int i = 0; i < miss.size() && i < 10; i++) {
+            sb.append("· ").append(labelOf(miss.get(i))).append("\n");
+        }
+        if (miss.size() > 10) sb.append("… 其余 ").append(miss.size() - 10).append(" 个\n");
+        sb.append("\n常见原因：该分享本身就不完整、百度对个别文件做了屏蔽，或转存时被限流。");
+
+        AlertDialog dlg = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("⚠ 转存可能不完整")
+                .setMessage(sb.toString())
+                .setPositiveButton("先看已有的", (d, w) -> showAfterTransfer(have,
+                        "转存完成（可能缺文件）", "网盘里现有 " + have.size() + " 个视频文件，接下来？"))
+                .setNeutralButton("复制缺失清单", (d, w) -> copyMissing(miss))
+                .setNegativeButton("知道了", null)
+                .create();
+        dlg.show();
+    }
+
+    private void copyMissing(List<BaiduPan.PlayFile> miss) {
+        StringBuilder sb = new StringBuilder();
+        for (BaiduPan.PlayFile f : miss) {
+            sb.append(f.rel == null || f.rel.isEmpty() ? "" : f.rel + "/").append(f.name).append("\n");
+        }
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        cm.setPrimaryClip(ClipData.newPlainText("missing", sb.toString()));
+        toast("缺失清单已复制（" + miss.size() + " 项）");
+    }
+
+    /**
+     * 分享清单 vs 网盘实际，返回「分享里有、网盘里没有」的那些。
+     *
+     * <p>两轮比对：先按「文件名 + 体积」精确匹配；剩下的再只按文件名匹配一次。
+     * 宁可少报也不误报 —— 体积字段缺失或口径不同时不会把好好的文件算成缺集。</p>
+     */
+    private static List<BaiduPan.PlayFile> missingOf(List<BaiduPan.PlayFile> expect,
+                                                     List<BaiduPan.PlayFile> actual) {
+        List<BaiduPan.PlayFile> rest = new ArrayList<>();
+        Map<String, Integer> byKey = count(actual, true);
+        for (BaiduPan.PlayFile f : expect) {
+            String k = key(f, true);
+            Integer n = byKey.get(k);
+            if (n != null && n > 0) {
+                byKey.put(k, n - 1);
+            } else {
+                rest.add(f);
+            }
+        }
+        if (rest.isEmpty()) return rest;
+
+        List<BaiduPan.PlayFile> miss = new ArrayList<>();
+        Map<String, Integer> byName = count(actual, false);
+        for (BaiduPan.PlayFile f : rest) {
+            String k = key(f, false);
+            Integer n = byName.get(k);
+            if (n != null && n > 0) {
+                byName.put(k, n - 1);
+            } else {
+                miss.add(f);
+            }
+        }
+        return miss;
+    }
+
+    private static Map<String, Integer> count(List<BaiduPan.PlayFile> list, boolean withSize) {
+        Map<String, Integer> m = new HashMap<>();
+        for (BaiduPan.PlayFile f : list) {
+            String k = key(f, withSize);
+            Integer n = m.get(k);
+            m.put(k, n == null ? 1 : n + 1);
+        }
+        return m;
+    }
+
+    private static String key(BaiduPan.PlayFile f, boolean withSize) {
+        String n = f.name == null ? "" : f.name.toLowerCase().replaceAll("\\s+", "");
+        return withSize ? n + "|" + f.size : n;
     }
 
     // ==================== 工具 ====================
@@ -610,10 +741,6 @@ public class DetailActivity extends Activity {
             if (used.add(dirPath + "/" + cand)) return cand;
         }
         return fileName;
-    }
-
-    private int dip(int v) {
-        return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
     }
 
     private static String nz(String s) {

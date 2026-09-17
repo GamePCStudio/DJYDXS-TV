@@ -10,47 +10,54 @@
         android:orientation="vertical"
         android:padding="24dp">
 
-        <TextView
-            android:id="@+id/tvDetailName"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textColor="#FFFFFFFF"
-            android:textSize="24sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/tvDetailMeta"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:textColor="#FF9AA0A6"
-            android:textSize="13sp" />
-
-        <TextView
-            android:id="@+id/tvDetailContent"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:textColor="#FFC6CBD2"
-            android:textSize="14sp"
-            android:maxLines="10"
-            android:ellipsize="end" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
-            android:text="播放线路"
-            android:textColor="#FF1E88E5"
-            android:textSize="16sp"
-            android:textStyle="bold" />
-
+        <!-- 海报 + 片名/信息/简介 -->
         <LinearLayout
-            android:id="@+id/boxLineGroup"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="vertical" />
+            android:orientation="horizontal">
+
+            <ImageView
+                android:id="@+id/ivDetailPic"
+                android:layout_width="150dp"
+                android:layout_height="212dp"
+                android:layout_marginEnd="20dp"
+                android:background="@drawable/bg_movie_normal"
+                android:contentDescription="影片海报"
+                android:scaleType="centerCrop" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/tvDetailName"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="24sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvDetailMeta"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:textColor="#FF9AA0A6"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/tvDetailContent"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:ellipsize="end"
+                    android:maxLines="12"
+                    android:textColor="#FFC6CBD2"
+                    android:textSize="14sp" />
+            </LinearLayout>
+        </LinearLayout>
 
         <TextView
             android:layout_width="wrap_content"

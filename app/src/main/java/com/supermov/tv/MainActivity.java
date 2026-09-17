@@ -272,6 +272,7 @@ public class MainActivity extends Activity {
         it.putExtra("fid", m.fid);
         it.putExtra("tid", m.tid);
         it.putExtra("name", m.name);
+        it.putExtra("pic", m.pic);
         startActivity(it);
     }
 

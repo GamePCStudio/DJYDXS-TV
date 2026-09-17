@@ -153,6 +153,9 @@ public final class BaiduPan {
     public static class TransferResult {
         public boolean ok;
         public String message;
+        /** 分享页解析出的 shareid / uk：转存成功后用来递归核对「分享清单是否被完整转存」。 */
+        public String shareid = "";
+        public String uk = "";
     }
 
     /** 一键转存：分享链接(+提取码) -> targetDir。 */
@@ -280,6 +283,10 @@ public final class BaiduPan {
                     return out;
                 }
             }
+            // 记下 shareid/uk：转存成功后 DetailActivity 要拿它对分享清单做完整性校验
+            out.shareid = shareid;
+            out.uk = uk;
+
             // bdstoken 优先从分享页 yunData 里提取（无登录态也带），失败才走 gettemplatevariable
             String bdstoken = "";
             Matcher mbt = Pattern.compile("bdstoken[^a-f0-9]{0,6}([a-f0-9]{32})").matcher(html);
@@ -328,6 +335,29 @@ public final class BaiduPan {
                 fsids = new long[ids2.size()];
                 for (int i = 0; i < ids2.size(); i++) fsids[i] = ids2.get(i);
             }
+            // 用「分享根目录的完整列表」补齐页面里的 file_list。
+            // 页面 file_list 在多文件 / 多级目录时可能被截断，会导致转存**缺文件**（少集）；
+            // share/list 是权威列表，取并集后任何一个根条目都不会漏（目录条目本身即递归复制）。
+            try {
+                JSONArray rootAll = listShareDir(shareid, uk, "/", shareUrl);
+                if (rootAll != null && rootAll.length() > 0) {
+                    java.util.LinkedHashSet<Long> union = new java.util.LinkedHashSet<>();
+                    for (int i = 0; i < fsids.length; i++) union.add(fsids[i]);
+                    for (int i = 0; i < rootAll.length(); i++) {
+                        JSONObject f = rootAll.optJSONObject(i);
+                        if (f != null && f.optLong("fs_id", 0) > 0) union.add(f.optLong("fs_id", 0));
+                    }
+                    long[] merged = new long[union.size()];
+                    int mi = 0;
+                    for (long one : union) merged[mi++] = one;
+                    android.util.Log.d("SupeMov", "transfer: fsid union page=" + fsids.length
+                            + " shareRoot=" + rootAll.length() + " -> " + merged.length);
+                    fsids = merged;
+                }
+            } catch (Throwable e) {
+                android.util.Log.d("SupeMov", "transfer: fsid union skipped " + e);
+            }
+
             StringBuilder fsarr = new StringBuilder("[");
             for (int i = 0; i < fsids.length; i++) {
                 if (i > 0) fsarr.append(",");
@@ -830,12 +860,70 @@ public final class BaiduPan {
         if ("0".equals(errno)) return "转存成功";
         if ("12".equals(errno)) return "目标目录已有同名文件";
         if ("105".equals(errno)) return "分享链接已损坏/失效";
-        if ("4".equals(errno)) return "网盘空间不足或非会员转存次数已超限";
+        if ("4".equals(errno)) return "转存被拒(errno=4)：可能是网盘空间不足、非会员转存次数超限，或该文件已在网盘里";
         if ("-6".equals(errno)) return "百度登录态失效，请重新扫码授权";
         if ("-70".equals(errno)) return "文件存在安全风险，百度拒绝转存";
         if ("-30".equals(errno)) return "文件已失效或被百度屏蔽";
         if ("-1".equals(errno) || errno == null || errno.isEmpty()) return "转存接口无响应(网络/风控)";
         return "转存失败 errno=" + errno;
+    }
+
+    /**
+     * 递归列出「分享里的全部视频文件」（名称 + 体积 + 相对分享根的路径）。
+     *
+     * <p>用途：转存后核对有没有**缺文件** —— 多集剧、多级文件夹最容易少转几集，
+     * 只回一句「转存成功」是不负责任的。shareid / uk 由 {@link #transfer} 放在
+     * {@link TransferResult} 里带回来。</p>
+     *
+     * <p>返回 <b>空表表示「拿不到清单」</b>（接口失败 / 风控 / 分享已失效），
+     * 外部必须按「无法校验」处理，绝不能当成「分享里没有文件」。</p>
+     */
+    public static List<PlayFile> shareManifest(String shareid, String uk, String referer) {
+        List<PlayFile> out = new ArrayList<>();
+        if (shareid == null || shareid.isEmpty() || uk == null || uk.isEmpty()) return out;
+        // 必须桌面 UA：移动 UA 会被导向 wap 分享页，share/list 会返回空
+        Http.desktopUa.set(true);
+        try {
+            walkShare(shareid, uk, referer, "/", "", out, 0);
+        } catch (Throwable e) {
+            android.util.Log.d("SupeMov", "shareManifest err " + e);
+        } finally {
+            Http.desktopUa.set(false);
+        }
+        android.util.Log.d("SupeMov", "shareManifest shareid=" + shareid + " videos=" + out.size());
+        return out;
+    }
+
+    private static void walkShare(String shareid, String uk, String referer, String dir,
+                                  String rel, List<PlayFile> out, int depth) {
+        if (dir == null || dir.isEmpty() || depth > MAX_DEPTH || out.size() >= MAX_FILES) return;
+        JSONArray list = listShareDir(shareid, uk, dir, referer);
+        if (list == null) return;
+        List<JSONObject> subDirs = new ArrayList<>();
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject f = list.optJSONObject(i);
+            if (f == null) continue;
+            String nm = f.optString("server_filename", "");
+            if (f.optInt("isdir", 0) == 1) {
+                subDirs.add(f);
+                continue;
+            }
+            if (!isVideo(nm)) continue;
+            PlayFile p = new PlayFile();
+            p.fsId = f.optLong("fs_id", 0);
+            p.name = nm;
+            p.size = f.optLong("size", 0);
+            p.path = f.optString("path", "");
+            p.rel = rel == null ? "" : rel;
+            p.ok = true;
+            out.add(p);
+        }
+        for (JSONObject d : subDirs) {
+            if (out.size() >= MAX_FILES) return;
+            String nm = d.optString("server_filename", "");
+            walkShare(shareid, uk, referer, d.optString("path", ""),
+                    rel == null || rel.isEmpty() ? nm : rel + "/" + nm, out, depth + 1);
+        }
     }
 
     private static JSONArray listShareDir(String shareid, String uk, String dir, String referer) {
