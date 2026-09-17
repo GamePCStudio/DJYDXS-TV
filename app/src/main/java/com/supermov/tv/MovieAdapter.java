@@ -19,8 +19,13 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
         void onClick(Site.Movie m);
     }
 
+    public interface OnLongClick {
+        void onLongClick(Site.Movie m);
+    }
+
     private final List<Site.Movie> items = new ArrayList<>();
     private OnClick listener;
+    private OnLongClick longListener;
 
     public void setItems(List<Site.Movie> list) {
         items.clear();
@@ -37,6 +42,11 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
 
     public void setOnClick(OnClick l) {
         listener = l;
+    }
+
+    /** 短按 = 进详情页；长按 = 快捷操作（直接转存），电视遥控器上按住 OK 键。 */
+    public void setOnLongClick(OnLongClick l) {
+        longListener = l;
     }
 
     @NonNull
@@ -63,6 +73,11 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
         }
         h.itemView.setOnClickListener(v -> {
             if (listener != null) listener.onClick(m);
+        });
+        h.itemView.setOnLongClickListener(v -> {
+            if (longListener == null) return false;
+            longListener.onLongClick(m);
+            return true;
         });
         // TV 焦点反馈：整体放大 + 海报高亮描边 + 标题变亮，远距离也看得清
         h.itemView.setOnFocusChangeListener((v, has) -> {

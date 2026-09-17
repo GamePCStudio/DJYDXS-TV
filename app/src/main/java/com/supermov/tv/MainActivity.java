@@ -128,7 +128,8 @@ public class MainActivity extends Activity {
         posterSpans = 7;
         rvList.setLayoutManager(new GridLayoutManager(this, posterSpans));
         movieAdapter = new MovieAdapter();
-        movieAdapter.setOnClick(m -> confirmTransfer(m));
+        movieAdapter.setOnClick(this::openDetail);
+        movieAdapter.setOnLongClick(this::confirmTransfer);
         rvList.setAdapter(movieAdapter);
         rvList.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
@@ -259,7 +260,22 @@ public class MainActivity extends Activity {
         loadPage(1);
     }
 
-    /** 点击海报：确认后直接转存该影片到设置目录。 */
+    /**
+     * 点击海报：进详情页。
+     *
+     * <p>「在线播放 / 下载 / 转存」三个入口都在 {@link DetailActivity} 里，
+     * 并且那里才处理得了「一个分享里多个文件 / 多层文件夹」的选择与分流。
+     * 之前这里直接弹「转存」对话框，导致点影片永远只有转存一条路。</p>
+     */
+    private void openDetail(Site.Movie m) {
+        Intent it = new Intent(this, DetailActivity.class);
+        it.putExtra("fid", m.fid);
+        it.putExtra("tid", m.tid);
+        it.putExtra("name", m.name);
+        startActivity(it);
+    }
+
+    /** 长按海报：快捷转存（保留原来的快速通道，不用先进详情页）。 */
     private void confirmTransfer(Site.Movie m) {
         if (!CookieStore.hasBaiduLogin()) {
             Toast.makeText(this, "未授权百度网盘，请先到 设置→百度网盘扫码", Toast.LENGTH_LONG).show();

@@ -135,6 +135,8 @@ public class DetailActivity extends Activity {
             boxGroup.addView(line);
         }
         setActionsVisible(true);
+        // 电视遥控器：进页面就把焦点放到主操作上，否则满屏静态文字看不出能按哪儿
+        btnPlay.post(() -> btnPlay.requestFocus());
         tvTransferDir.setText("网盘转存目录：" + Settings.saveDir()
                 + "\n下载落盘目录：" + Settings.downloadDir()
                 + "\n（均可在 设置 中修改）");
