@@ -27,7 +27,16 @@ public final class Http {
     }
 
     /** 转存链路切桌面 UA（移动 UA 会被百度导向 wap 分享页）。线程级开关。 */
-    public static final ThreadLocal<Boolean> desktopUa = ThreadLocal.withInitial(() -> false);
+    // 注意：不能用 ThreadLocal.withInitial()（API 26+ / Android 8.0）——
+    // N1 等 Android 7.1.2（API 25）设备上类初始化时会抛
+    // java.lang.NoSuchMethodError: No static method withInitial(...) 导致开机闪退。
+    // 改用匿名子类覆写 initialValue()，API 1 起就支持。
+    public static final ThreadLocal<Boolean> desktopUa = new ThreadLocal<Boolean>() {
+        @Override
+        protected Boolean initialValue() {
+            return Boolean.FALSE;
+        }
+    };
 
     private Http() {}
 
