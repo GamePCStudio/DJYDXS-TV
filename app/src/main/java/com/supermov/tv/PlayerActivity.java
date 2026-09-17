@@ -546,7 +546,8 @@ public class PlayerActivity extends Activity {
      * 左右键 / 快进快退键 = 时间跳转，并在屏幕中央弹一条带进度条的提示。
      *
      * 连按（间隔小于 1.2 秒）会在同一基准位置上叠加：按 3 次 = 位移 30 秒。
-     * 真正的 seekTo 延迟 350ms 提交，所以一串连按只跳一次。
+     * 真正的 seekTo 延迟 500ms 提交（SEEK_COMMIT_DELAY），所以一串连按只跳一次；
+     * 长按拖动则整个手势只在松手时提交一次。
      */
     @Override
     public boolean dispatchKeyEvent(KeyEvent e) {
@@ -573,9 +574,9 @@ public class PlayerActivity extends Activity {
         }
 
         // 抬手：如果刚才在长按拖动，这里才真正落到拖到的位置
-        if (e.getAction() == KeyEvent.ACTION_UP || e.getAction() == KeyEvent.ACTION_CANCEL) {
+        if (e.getAction() == KeyEvent.ACTION_UP) {
             main.removeCallbacks(holdArm);
-            if (dragging) endDrag(e.getAction() == KeyEvent.ACTION_UP);
+            if (dragging) endDrag(true);
             return true;                 // 吞掉 UP，免得再响一次按键音
         }
         if (e.getAction() != KeyEvent.ACTION_DOWN) return true;

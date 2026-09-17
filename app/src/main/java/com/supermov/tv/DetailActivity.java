@@ -599,10 +599,11 @@ public class DetailActivity extends Activity {
             }
 
             // ③ 转存后：枚举 + 按分享清单校验完整性（优先按转存接口给的落地路径精确取）
-            BaiduPan.Resolved rs = fr.toPaths.isEmpty()
+            BaiduPan.Resolved rs0 = fr.toPaths.isEmpty()
                     ? new BaiduPan.Resolved()
                     : BaiduPan.resolveAt(dir, fr.toPaths.get(0));
-            if (rs.files.isEmpty()) rs = BaiduPan.resolveAll(dir, movieName);
+            if (rs0.files.isEmpty()) rs0 = BaiduPan.resolveAll(dir, movieName);
+            final BaiduPan.Resolved rs = rs0;   // lambda 里要用，必须是 effectively final
             List<BaiduPan.PlayFile> expect =
                     BaiduPan.shareManifest(fr.shareid, fr.uk, url);
             final List<BaiduPan.PlayFile> got = rs.files;
