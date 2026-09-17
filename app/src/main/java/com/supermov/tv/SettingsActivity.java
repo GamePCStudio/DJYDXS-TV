@@ -58,6 +58,11 @@ public class SettingsActivity extends Activity {
         group.addView(option("下载队列",
                 "查看进度 / 暂停 / 断点续传 / 播放已下载文件",
                 v -> startActivity(new Intent(this, DownloadActivity.class))));
+        group.addView(option("后台下载限速: " + Settings.dlLimitMbps() + " Mbps",
+                "缺省 " + Settings.DL_LIMIT_DEFAULT + " Mbps，可设 "
+                        + Settings.DL_LIMIT_MIN + " ~ " + Settings.DL_LIMIT_MAX + " Mbps\n"
+                        + "下载管理页面内下载不限速；退出该页面后按此限速",
+                v -> showDlLimitDialog()));
 
         // ③ 状态（真实会话校验异步更新）
         group.addView(sectionLabel("状态"));
@@ -169,6 +174,71 @@ public class SettingsActivity extends Activity {
                     }
                     Settings.setDownloadDir(v);
                     Toast.makeText(this, "下载目录已设为 " + v, Toast.LENGTH_SHORT).show();
+                    rebuild();
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        dlg.show();
+        dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).requestFocus();
+    }
+
+    /**
+     * 后台下载限速：给几个常用档位让遥控器直接选，也能手动输入。
+     *
+     * <p>档位而不是滑动条：电视上遥控器左右划不准，列表点选更省事。</p>
+     */
+    private void showDlLimitDialog() {
+        final int[] presets = {5, 10, 15, 20, 25, 30, 40};
+        final int cur = Settings.dlLimitMbps();
+        final String[] labels = new String[presets.length + 1];
+        for (int i = 0; i < presets.length; i++) {
+            labels[i] = (presets[i] == cur ? "● " : "○ ") + presets[i] + " Mbps"
+                    + (presets[i] == Settings.DL_LIMIT_DEFAULT ? "（缺省）" : "");
+        }
+        labels[presets.length] = "✎ 手动输入…";
+
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(
+                this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("后台下载限速")
+                .setItems(labels, (d, which) -> {
+                    if (which == presets.length) {
+                        showManualDlLimit();
+                        return;
+                    }
+                    Settings.setDlLimitMbps(presets[which]);
+                    Toast.makeText(this, "后台下载限速已设为 " + Settings.dlLimitMbps() + " Mbps",
+                            Toast.LENGTH_SHORT).show();
+                    rebuild();
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        dlg.show();
+    }
+
+    private void showManualDlLimit() {
+        final android.widget.EditText input = new android.widget.EditText(this);
+        input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        input.setText(String.valueOf(Settings.dlLimitMbps()));
+        input.setSelection(input.getText().length());
+        input.setTextSize(16);
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(
+                this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("后台下载限速（Mbps）")
+                .setMessage("可填 " + Settings.DL_LIMIT_MIN + " ~ " + Settings.DL_LIMIT_MAX
+                        + "，缺省 " + Settings.DL_LIMIT_DEFAULT
+                        + "\n下载管理页面内下载不限速")
+                .setView(input)
+                .setPositiveButton("保存", (d, w) -> {
+                    int v;
+                    try {
+                        v = Integer.parseInt(input.getText().toString().trim());
+                    } catch (Throwable e) {
+                        Toast.makeText(this, "请输入数字", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    Settings.setDlLimitMbps(v);
+                    Toast.makeText(this, "后台下载限速已设为 " + Settings.dlLimitMbps() + " Mbps",
+                            Toast.LENGTH_SHORT).show();
                     rebuild();
                 })
                 .setNegativeButton("取消", null)

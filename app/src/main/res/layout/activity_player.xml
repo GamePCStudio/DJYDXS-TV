@@ -38,7 +38,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center_horizontal"
-            android:text="快进 10 秒"
+            android:text="快进 20 秒"
             android:textColor="#FFFFFFFF"
             android:textSize="20sp"
             android:textStyle="bold" />
@@ -89,6 +89,8 @@
         android:layout_gravity="top|start"
         android:layout_margin="18dp"
         android:background="#99000000"
+        android:ellipsize="middle"
+        android:maxLines="1"
         android:paddingStart="14dp"
         android:paddingTop="8dp"
         android:paddingEnd="14dp"
@@ -108,7 +110,7 @@
         android:paddingTop="8dp"
         android:paddingEnd="14dp"
         android:paddingBottom="8dp"
-        android:text="遥控器：左右 = 快退/快进 10 秒（长按 = 拖动进度）· OK = 暂停/播放 · 上 = 选字幕 · 下 = 选音轨 · 返回退出"
+        android:text="遥控器：左 = 后退 15 秒 · 右 = 前进 20 秒 · 按住不放 = 拖动进度（约 1 秒后加速）· OK = 暂停/播放 · 上 = 选字幕 · 下 = 选音轨 · 返回退出"
         android:textColor="#CC9AA0A6"
         android:textSize="12sp" />
 </FrameLayout>

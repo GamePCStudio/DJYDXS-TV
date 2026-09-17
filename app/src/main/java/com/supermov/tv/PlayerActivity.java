@@ -105,8 +105,10 @@ public class PlayerActivity extends Activity {
      * 还能把这一次待提交的 seek 取消掉，整段长按只真跳一次（松手那一刻）。</p>
      */
     private static final long SEEK_COMMIT_DELAY = 500L;
-    /** 左右键每按一次的时间步长 */
-    private static final long SEEK_STEP_MS = 10000L;
+    /** 右键（前进）：每按一次前跳 20 秒 */
+    private static final long SEEK_STEP_FWD_MS = 20000L;
+    /** 左键（后退）：每按一次回退 15 秒 */
+    private static final long SEEK_STEP_BACK_MS = 15000L;
     /** 遥控器「快进/快退」专用键的步长 */
     private static final long SEEK_STEP_BIG_MS = 30000L;
     /** 两次按键间隔小于它就算同一轮连按（位移叠加） */
@@ -124,9 +126,13 @@ public class PlayerActivity extends Activity {
 
     /** 按住超过它就算「长按」，升级成连续拖动 */
     private static final long HOLD_ARM_MS = 450L;
-    /** 拖动时进度条的刷新间隔 */
+    /** 拖动时进度条的刷新间隔（慢速段） */
     private static final long DRAG_TICK_MS = 100L;
-    /** 拖满整片大约需要多少个 tick（240 × 100ms ≈ 24 秒） */
+    /** 从「按下」算起按住到这一刻 -> 拖动提速 */
+    private static final long DRAG_BOOST_MS = 900L;
+    /** 提速后的刷新间隔：100ms -> 40ms，拖动速度约 ×2.5 */
+    private static final long DRAG_TICK_FAST_MS = 40L;
+    /** 拖满整片大约需要多少个 tick（慢速段 240 × 100ms ≈ 24 秒；900ms 提速后约 10 秒） */
     private static final long DRAG_TICKS_FULL = 240L;
     /** 拖动时每 tick 的最小步长，免得短片拖起来太黏 */
     private static final long DRAG_MIN_STEP_MS = 1500L;
@@ -148,10 +154,17 @@ public class PlayerActivity extends Activity {
     private long dragPos = 0;
     /** 上一次左右键的方向，长按成立时沿用它 */
     private boolean lastSeekBackward = false;
+    /**
+     * 本次左右键「按下」的时刻。提速阈值从按下那一刻算起，不能从 {@code beginDrag} 算起
+     * —— 那样 450ms 的拖动起步延迟会被叠加进去，用户按住 900ms 时其实还没提速。
+     */
+    private long holdStartAt = 0;
     /** 记忆的播放进度；-1 = 还没查过 */
     private long resumePos = -1;
     /** 是否要在出画后提示「继续上次进度」 */
     private boolean resumeNotice = false;
+    /** 顶部状态栏是否已经切到「常态 = 文件名」（首次就绪时切一次，之后只管保持） */
+    private boolean titleSettled = false;
 
     /** 按住不放 -> 升级成连续拖动 */
     private final Runnable holdArm = new Runnable() {
@@ -178,7 +191,9 @@ public class PlayerActivity extends Activity {
             if (dragPos > dur) dragPos = dur;
             showSeekOverlay(dragBackward ? "\u25c0\u25c0 \u5feb\u9000\u4e2d"
                     : "\u5feb\u8fdb\u4e2d \u25b6\u25b6", dragPos);
-            main.postDelayed(this, DRAG_TICK_MS);
+            // 按住满 DRAG_BOOST_MS 后提速：tick 间隔由 100ms 收紧到 40ms（步长不变 -> 速度约 ×2.5）
+            long held = android.os.SystemClock.uptimeMillis() - holdStartAt;
+            main.postDelayed(this, held >= DRAG_BOOST_MS ? DRAG_TICK_FAST_MS : DRAG_TICK_MS);
         }
     };
 
@@ -277,6 +292,12 @@ public class PlayerActivity extends Activity {
                         main.removeCallbacks(hideChrome);
                         main.postDelayed(hideChrome, CHROME_HIDE_DELAY);
                     }
+                    // 顶部回到「常态 = 片名/文件名」：续播提示只该出现在中央覆盖层里，
+                    // 否则用户一动遥控器把顶栏亮出来，看到的还是那句过期的进度话术
+                    if (!titleSettled) {
+                        titleSettled = true;
+                        showTitleBar();
+                    }
                 } else if (state == Player.STATE_ENDED) {
                     // 看完了：把进度记录清掉，下次从头开始
                     Settings.clearPos(progressKey());
@@ -312,7 +333,14 @@ public class PlayerActivity extends Activity {
     private void playLocalFile() {
         java.io.File f = new java.io.File(localFile);
         if (!f.exists() || f.length() <= 0) {
-            fail("本地文件不存在：" + localFile);
+            fail("本地文件不存在或为空：\n" + localFile);
+            return;
+        }
+        // 落在公共存储 / U盘 / NAS 上的文件，没有「所有文件访问」时读得到名字却读不到内容，
+        // 表现就是 ExoPlayer 立刻报错 —— 这里先拦一下，给出能操作的解法
+        if (!f.canRead()) {
+            fail("没有读取该文件的权限：\n" + localFile
+                    + "\n请到 设置 → 下载目录 授予「所有文件访问」后再播");
             return;
         }
         status("本地播放：" + f.getName() + "（" + humanSize(f.length()) + "）");
@@ -453,6 +481,12 @@ public class PlayerActivity extends Activity {
         if (finishing) return;
         Log.d(TAG, "playback error code=" + error.getErrorCodeName() + " msg=" + error.getMessage());
         final long pos = player.getCurrentPosition();
+        // 本地文件没有「换直链」和「降级转码流」两条路：这是文件读取或解码的问题，
+        // 老代码会掉进 fallbackM3u8 里报一句莫名其妙的「原画播放失败」，让人无从下手
+        if (!localFile.isEmpty()) {
+            fail("本地文件播放失败：" + describe(error) + localHint(error));
+            return;
+        }
         if (!usingM3u8) {
             // 第一次失败：直链可能已过期（8h）或被风控掐断 -> 换一条新链再试
             if (!retriedDlink && playFile != null && proxy != null) {
@@ -540,6 +574,23 @@ public class PlayerActivity extends Activity {
         return (msg == null || msg.isEmpty()) ? "播放错误" : msg;
     }
 
+    /** 本地文件失败时的补充排查提示（权限 / 编码），没有可用提示就返回空串。 */
+    private String localHint(PlaybackException e) {
+        String code = "";
+        try {
+            code = e.getErrorCodeName();
+        } catch (Throwable ignored) {
+        }
+        if (code == null) code = "";
+        if (code.contains("IO_NO_PERMISSION") || code.contains("IO_FILE_NOT_FOUND")) {
+            return "\n请到 设置 → 下载目录 授予「所有文件访问」后再试";
+        }
+        if (code.contains("DECODER") || code.contains("DECODING")) {
+            return "\n这台盒子解不了该编码，可换别的版本再下载";
+        }
+        return "";
+    }
+
     // ---------- 播控（v1.11：VLC 式左右键快退/快进 + 3 秒自动隐藏）----------
 
     /**
@@ -593,10 +644,15 @@ public class PlayerActivity extends Activity {
             return true;
         }
 
-        long step = (code == KeyEvent.KEYCODE_MEDIA_REWIND || code == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD)
-                ? SEEK_STEP_BIG_MS : SEEK_STEP_MS;
+        long step;
+        if (code == KeyEvent.KEYCODE_MEDIA_REWIND || code == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD) {
+            step = SEEK_STEP_BIG_MS;                                   // 遥控器专用快进/快退键
+        } else {
+            step = isRewind ? SEEK_STEP_BACK_MS : SEEK_STEP_FWD_MS;    // 左退 15 秒 / 右进 20 秒
+        }
+        holdStartAt = android.os.SystemClock.uptimeMillis();           // 提速阈值从「按下」算起
         doSeek(step, isRewind);
-        // 按住不放超过 450ms -> 升级成连续拖动（松手才落点）
+        // 按住不放超过 450ms -> 升级成连续拖动（松手才落点）；按住满 900ms 再提速
         main.removeCallbacks(holdArm);
         main.postDelayed(holdArm, HOLD_ARM_MS);
         return true;
@@ -720,20 +776,137 @@ public class PlayerActivity extends Activity {
         showSeekOverlay((isText ? "\u5b57\u5e55\uff1a" : "\u97f3\u8f68\uff1a") + label);
     }
 
-    /** 轨道的展示名：优先 label，其次语言代码，再兜底「字幕 N / 音轨 N」。 */
+    /**
+     * 轨道的展示名。
+     *
+     * <p>容器给的语言字段多是 ISO 码（{@code en} / {@code zh} / {@code cn}），直接显示等于
+     * 让用户读代码。这里统一翻成中文：{@code en}→英语、{@code zh}/{@code cn}→中文，其余
+     * 语种同理。已经自带可读 label 的（如「国语 5.1」「SDH」）保留原样，只在它本身没有
+     * 中文时补一个中文语种，免得把好好的名字覆盖掉。</p>
+     */
     private String trackLabel(Tracks.Group g, int idx, int type) {
         Format f = g.getTrackFormat(idx);
-        String s = (f == null) ? "" : f.label;
-        if (s == null || s.trim().isEmpty()) s = (f == null) ? "" : f.language;
-        if (s == null || s.trim().isEmpty()) {
-            s = (type == C.TRACK_TYPE_TEXT ? "\u5b57\u5e55 " : "\u97f3\u8f68 ") + (idx + 1);
+        String label = (f == null || f.label == null) ? "" : f.label.trim();
+        String lang = (f == null || f.language == null) ? "" : f.language.trim();
+
+        String s = zhLang(label);                       // label 本身就是语言标识
+        if (s.isEmpty() && !label.isEmpty()) {
+            String zh = zhLang(lang);
+            s = (zh.isEmpty() || hasHan(label)) ? label : (label + " \u00b7 " + zh);
         }
-        s = s.trim();
+        if (s.isEmpty()) {
+            String zh = zhLang(lang);
+            s = zh.isEmpty()
+                    ? ((type == C.TRACK_TYPE_TEXT ? "\u5b57\u5e55 " : "\u97f3\u8f68 ") + (idx + 1))
+                    : zh;
+        }
         if (f != null && type == C.TRACK_TYPE_AUDIO && f.channelCount > 0) {
             s = s + " \u00b7 " + f.channelCount + "ch";
         }
         if (s.length() > 26) s = s.substring(0, 26) + "\u2026";
         return s;
+    }
+
+    /**
+     * 语言标识 → 中文名；认不出来返回空串（调用方好据此判断「没翻出来」）。
+     *
+     * <p>三种写法都收：ISO 639-1 两字母（{@code en}）、ISO 639-2/B 三字母（{@code eng}）、
+     * 英文全名（{@code English}）；带地区的组合（{@code zh-Hans} / {@code pt-BR}）先按整串查，
+     * 查不到再退到主语言码。大小写与 {@code _}/{@code -} 分隔符都做了归一。</p>
+     */
+    private static String zhLang(String raw) {
+        if (raw == null) return "";
+        String k = raw.trim().toLowerCase(java.util.Locale.ROOT).replace('_', '-');
+        if (k.isEmpty()) return "";
+        String zh = LANG_ZH.get(k);
+        if (zh != null) return zh;
+        int cut = k.indexOf('-');
+        if (cut > 0) {
+            zh = LANG_ZH.get(k.substring(0, cut));
+            if (zh != null) return zh;
+        }
+        // 形如 "english (sdh)" / "chinese simplified"：取首段再查一次
+        cut = k.indexOf(' ');
+        if (cut > 0) {
+            zh = LANG_ZH.get(k.substring(0, cut));
+            if (zh != null) return zh;
+        }
+        return "";
+    }
+
+    /** 字串里是否已经有汉字（有的话就不用再补中文语种名了）。 */
+    private static boolean hasHan(String s) {
+        if (s == null) return false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c >= 0x4E00 && c <= 0x9FFF) return true;
+        }
+        return false;
+    }
+
+    /** 语言标识 → 中文名对照表（常见语种 + 简繁/粤语变体）。 */
+    private static final Map<String, String> LANG_ZH = langZhMap();
+
+    private static Map<String, String> langZhMap() {
+        Map<String, String> m = new HashMap<>();
+        // 中文：先放通用码，再放繁体/粤语这类更具体的变体（zhLang 先查整串，命中的就是它）
+        for (String k : new String[]{"zh", "cn", "chi", "zho", "chs", "chinese", "zh-cn", "zh-sg",
+                "zh-hans", "zh-hans-cn", "chinese simplified", "chinese (simplified)", "sc"}) {
+            m.put(k, "中文");
+        }
+        for (String k : new String[]{"zh-tw", "zh-hk", "zh-mo", "zh-hant", "cht", "chinese traditional",
+                "chinese (traditional)", "tc"}) {
+            m.put(k, "繁体中文");
+        }
+        m.put("yue", "粤语");
+        m.put("cantonese", "粤语");
+        m.put("cmn", "国语");
+        m.put("mandarin", "国语");
+        // 常见语种
+        for (String k : new String[]{"en", "eng", "english", "en-us", "en-gb"}) m.put(k, "英语");
+        for (String k : new String[]{"ja", "jp", "jpn", "japanese"}) m.put(k, "日语");
+        for (String k : new String[]{"ko", "kr", "kor", "korean"}) m.put(k, "韩语");
+        for (String k : new String[]{"fr", "fra", "fre", "french"}) m.put(k, "法语");
+        for (String k : new String[]{"de", "deu", "ger", "german"}) m.put(k, "德语");
+        for (String k : new String[]{"es", "spa", "spanish"}) m.put(k, "西班牙语");
+        for (String k : new String[]{"it", "ita", "italian"}) m.put(k, "意大利语");
+        for (String k : new String[]{"ru", "rus", "russian"}) m.put(k, "俄语");
+        for (String k : new String[]{"pt", "por", "portuguese"}) m.put(k, "葡萄牙语");
+        for (String k : new String[]{"ar", "ara", "arabic"}) m.put(k, "阿拉伯语");
+        for (String k : new String[]{"th", "tha", "thai"}) m.put(k, "泰语");
+        for (String k : new String[]{"vi", "vie", "vietnamese"}) m.put(k, "越南语");
+        for (String k : new String[]{"id", "ind", "indonesian"}) m.put(k, "印尼语");
+        for (String k : new String[]{"ms", "msa", "may", "malay"}) m.put(k, "马来语");
+        for (String k : new String[]{"hi", "hin", "hindi"}) m.put(k, "印地语");
+        for (String k : new String[]{"tr", "tur", "turkish"}) m.put(k, "土耳其语");
+        for (String k : new String[]{"pl", "pol", "polish"}) m.put(k, "波兰语");
+        for (String k : new String[]{"nl", "nld", "dut", "dutch"}) m.put(k, "荷兰语");
+        for (String k : new String[]{"sv", "swe", "swedish"}) m.put(k, "瑞典语");
+        for (String k : new String[]{"da", "dan", "danish"}) m.put(k, "丹麦语");
+        for (String k : new String[]{"no", "nor", "norwegian"}) m.put(k, "挪威语");
+        for (String k : new String[]{"fi", "fin", "finnish"}) m.put(k, "芬兰语");
+        for (String k : new String[]{"el", "gre", "ell", "greek"}) m.put(k, "希腊语");
+        for (String k : new String[]{"he", "heb", "hebrew"}) m.put(k, "希伯来语");
+        for (String k : new String[]{"cs", "ces", "cze", "czech"}) m.put(k, "捷克语");
+        for (String k : new String[]{"hu", "hun", "hungarian"}) m.put(k, "匈牙利语");
+        for (String k : new String[]{"uk", "ukr", "ukrainian"}) m.put(k, "乌克兰语");
+        for (String k : new String[]{"ro", "ron", "rum", "romanian"}) m.put(k, "罗马尼亚语");
+        for (String k : new String[]{"sk", "slk", "slo", "slovak"}) m.put(k, "斯洛伐克语");
+        for (String k : new String[]{"bg", "bul", "bulgarian"}) m.put(k, "保加利亚语");
+        for (String k : new String[]{"fa", "fas", "per", "persian"}) m.put(k, "波斯语");
+        for (String k : new String[]{"ta", "tam", "tamil"}) m.put(k, "泰米尔语");
+        for (String k : new String[]{"te", "tel", "telugu"}) m.put(k, "泰卢固语");
+        for (String k : new String[]{"hr", "hrv", "croatian"}) m.put(k, "克罗地亚语");
+        for (String k : new String[]{"sr", "srp", "serbian"}) m.put(k, "塞尔维亚语");
+        for (String k : new String[]{"sl", "slv", "slovenian"}) m.put(k, "斯洛文尼亚语");
+        for (String k : new String[]{"et", "est", "estonian"}) m.put(k, "爱沙尼亚语");
+        for (String k : new String[]{"lv", "lav", "latvian"}) m.put(k, "拉脱维亚语");
+        for (String k : new String[]{"lt", "lit", "lithuanian"}) m.put(k, "立陶宛语");
+        for (String k : new String[]{"is", "isl", "ice", "icelandic"}) m.put(k, "冰岛语");
+        for (String k : new String[]{"tl", "tgl", "fil", "filipino", "tagalog"}) m.put(k, "菲律宾语");
+        m.put("und", "未知语种");
+        m.put("unknown", "未知语种");
+        return m;
     }
 
     // ---------- 长按左右键：连续拖动进度 ----------
@@ -748,6 +921,9 @@ public class PlayerActivity extends Activity {
 
         dragging = true;
         dragBackward = backward;
+        // 兜底：没经过按键分支就进拖动时，把提速计时从这一刻算起，
+        // 免得 holdStartAt 还停在 0、被当成「早就按住很久」而一上来就满速。
+        if (holdStartAt <= 0) holdStartAt = android.os.SystemClock.uptimeMillis();
         // 起点沿用「刚按下的那一步」算出的目标位置，进度条就不会往回跳
         long base = (seekTarget >= 0) ? seekTarget : player.getCurrentPosition();
         if (base < 0) base = 0;
@@ -878,6 +1054,8 @@ public class PlayerActivity extends Activity {
         player.setPlayWhenReady(toPlay);
         seekPending = false;
         showSeekOverlay(toPlay ? "播放" : "暂停");
+        // 按 OK 后顶部一律显示影片文件名（中央覆盖层负责报「播放 / 暂停」）
+        showTitleBar();
     }
 
     /** 中央覆盖层：一行提示 + 进度条 + 当前/总时长，2.5 秒后自动淡出。 */
@@ -909,6 +1087,35 @@ public class PlayerActivity extends Activity {
         fadeIn(boxSeek);
         main.removeCallbacks(hideSeekOverlay);
         main.postDelayed(hideSeekOverlay, SEEK_OVERLAY_HOLD);
+    }
+
+    /**
+     * 把顶部状态栏复位成「常态内容」= 影片文件名。
+     *
+     * <p>顶栏的作用是让用户一眼认出「现在放的是哪一部、哪一集」，取流进度那几句只是过渡态。
+     * 播放就绪、以及每次按 OK 播放/暂停之后都调一次，保证顶栏不会停在过期话术上。</p>
+     */
+    private void showTitleBar() {
+        String n = displayName();
+        if (n == null || n.isEmpty()) return;
+        status(n);
+    }
+
+    /**
+     * 顶栏要显示的名字：优先**具体文件名**（多集剧能分清是哪一集、什么版本），
+     * 再退到详情页带过来的集名，最后才是片名。
+     */
+    private String displayName() {
+        if (!localFile.isEmpty()) {
+            try {
+                String n = new java.io.File(localFile).getName();
+                if (n != null && !n.isEmpty()) return n;
+            } catch (Throwable ignored) {
+            }
+        }
+        if (playFile != null && playFile.name != null && !playFile.name.isEmpty()) return playFile.name;
+        if (!reqFname.isEmpty()) return reqFname;
+        return name;
     }
 
     /** 动遥控器时把顶部/底部提示重新亮出来（同样 3 秒后再消失）。 */

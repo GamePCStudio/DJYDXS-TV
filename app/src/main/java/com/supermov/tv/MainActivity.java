@@ -441,10 +441,12 @@ public class MainActivity extends Activity {
                 for (Site.Movie m : before) {
                     if (m.tid != null && !alive.contains(m.tid)) drop.add(m.tid);
                 }
-                if (drop.isEmpty()) return;   // 一条都没摘掉，不用打扰主线程
                 main.post(() -> {
                     if (gen != loadGen) return;
-                    movieAdapter.dropTids(drop);
+                    if (!drop.isEmpty()) movieAdapter.dropTids(drop);
+                    // 探测顺带把海报 / 日期·片长补进了 Movie 对象（原地改的），
+                    // 必须重绑一次才会渲染出来 —— 否则角标要等下次进这个版块才出现
+                    movieAdapter.refreshAll();
                     if (movieAdapter.getItemCount() == 0) showEmpty();
                 });
             });

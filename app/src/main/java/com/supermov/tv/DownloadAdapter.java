@@ -71,8 +71,9 @@ public class DownloadAdapter extends RecyclerView.Adapter<DownloadAdapter.VH> {
             h.toggle.setVisibility(View.VISIBLE);
         }
 
-        // 只有下完的才能播本地
-        h.play.setVisibility(t.status == Dl.DONE ? View.VISIBLE : View.GONE);
+        // 播放按钮常显：没下完的按下去会给一句明确提示，
+        // 比「按钮时有时无」更让人明白发生了什么
+        h.play.setVisibility(View.VISIBLE);
         h.remove.setVisibility(View.VISIBLE);
 
         h.toggle.setOnClickListener(v -> action.onToggle(t));

@@ -104,12 +104,17 @@ public class DownloadActivity extends Activity implements DlEngine.Observer {
     protected void onResume() {
         super.onResume();
         DlEngine.get().addObserver(this);
+        // 下载管理页在前台 = 用户正盯着进度看，此时不限速
+        DlEngine.get().setRateLimit(0);
         refresh();
     }
 
     @Override
     protected void onPause() {
         DlEngine.get().removeObserver(this);
+        // 离开本页（去浏览海报页 / 回桌面 / 退出程序）后按设置恢复后台限速
+        Settings.init(this);
+        DlEngine.get().setRateLimit(Settings.dlLimitBps());
         super.onPause();
     }
 
@@ -147,16 +152,74 @@ public class DownloadActivity extends Activity implements DlEngine.Observer {
         tvSummary.setText(sb.toString());
     }
 
+    /**
+     * 播放已下载的影片。
+     *
+     * <p>没下完的一律不播：断点文件（{@code .dlpart}）也被预分配成了完整长度，但内容是空洞，
+     * 播出来只会黑屏 / 花屏 —— 不如直接说清楚「还没下完」。</p>
+     *
+     * <p>下完了却找不到文件的，先把「记录路径」和「按文件名在当前下载目录里找一遍」两条路
+     * 都走一下（用户可能中途换过下载目录、或自己挪过文件夹）。</p>
+     */
     private void playLocal(Dl t) {
-        File f = new File(t.path());
-        if (!f.exists() || f.length() <= 0) {
-            Toast.makeText(this, "文件不存在：" + t.path(), Toast.LENGTH_LONG).show();
+        if (t.status != Dl.DONE) {
+            Toast.makeText(this, "影片没有下载完成（" + t.percent() + "%），下载完成后才能播放",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        File f = resolveLocalFile(t);
+        if (f == null) {
+            Toast.makeText(this, "找不到已下载的文件：\n" + t.path(), Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!f.canRead()) {
+            Toast.makeText(this, "没有读取该文件的权限，请到 设置 → 下载目录 授予「所有文件访问」",
+                    Toast.LENGTH_LONG).show();
             return;
         }
         Intent it = new Intent(this, PlayerActivity.class);
         it.putExtra("file", f.getAbsolutePath());
         it.putExtra("name", t.name);
         startActivity(it);
+    }
+
+    /** 定位已下载的影片文件：先按记录路径，找不到再按文件名到当前下载目录里找一遍。 */
+    private File resolveLocalFile(Dl t) {
+        try {
+            File f = new File(t.path());
+            if (f.isFile() && f.length() > 0) return f;
+        } catch (Throwable ignored) {
+        }
+        try {
+            String name = t.fileName;
+            if (name == null || name.isEmpty()) return null;
+            File found = findByName(new File(Settings.downloadDir()), name, 0);
+            if (found != null) return found;
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /** 在 dir 下（最多钻 4 层）按文件名找。同层先扫完再进子目录，命中更符合直觉。 */
+    private static File findByName(File dir, String name, int depth) {
+        if (dir == null || depth > 4) return null;
+        File[] kids;
+        try {
+            kids = dir.listFiles();
+        } catch (Throwable e) {
+            return null;
+        }
+        if (kids == null) return null;
+        for (File f : kids) {
+            if (f.isFile() && name.equals(f.getName()) && f.length() > 0) return f;
+        }
+        for (File f : kids) {
+            if (f.isDirectory()) {
+                File r = findByName(f, name, depth + 1);
+                if (r != null) return r;
+            }
+        }
+        return null;
     }
 
     private void confirmRemove(final Dl t) {

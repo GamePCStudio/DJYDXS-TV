@@ -335,6 +335,18 @@ public class DetailActivity extends Activity {
 
     // ==================== ② 下载 ====================
 
+    /**
+     * 「下载」入口。
+     *
+     * <p><b>先查队列再下载</b>：同一部片重复入队既占空间、又把下载速度摊薄，
+     * 所以两级判重 ——</p>
+     * <ol>
+     *   <li>按帖子 tid 快速判重（不必解析分享链接，点了就出结果）：这部影片已在队列里
+     *       就直接给「打开下载管理 / 仍要重下 / 取消」三个选择；</li>
+     *   <li>选完文件后再按 {@code fsId} / 网盘路径精确判重（同一个帖子里可能只下过其中几集），
+     *       已在队列的自动跳过，只把剩下的排进去。</li>
+     * </ol>
+     */
     private void doDownload() {
         if (!CookieStore.hasBaiduLogin()) {
             needAuth();
@@ -344,18 +356,120 @@ public class DetailActivity extends Activity {
             toast("没有可用的百度网盘链接");
             return;
         }
+        // ① 快速判重：这部影片已经在队列里
+        List<Dl> same = queuedOfTid(tid);
+        if (!same.isEmpty()) {
+            showAlreadyQueued(same);
+            return;
+        }
         withFiles((fs, err) -> {
             if (!err.isEmpty()) {
                 tvTransferResult.setText("✘ " + err);
                 toast(err);
                 return;
             }
-            if (fs.size() == 1) {
-                showDirPicker(fs);
+            // ② 精确判重：同一帖子里可能已经下过其中几集
+            QueueCheck qc = splitQueued(fs);
+            if (qc.dup > 0) {
+                tvTransferResult.setText("已有 " + qc.dup + " 个文件在下载队列中，已跳过（不重复添加）");
+            }
+            if (qc.fresh.isEmpty()) {
+                toast("这些文件都已经在下载队列里了");
+                startActivity(new Intent(this, DownloadActivity.class));
+                return;
+            }
+            if (qc.fresh.size() == 1) {
+                showDirPicker(qc.fresh);
             } else {
-                showPickMulti(fs);
+                showPickMulti(qc.fresh);
             }
         });
+    }
+
+    /** 队列里属于同一个帖子（= 同一部影片）的任务。 */
+    private static List<Dl> queuedOfTid(String tid) {
+        List<Dl> out = new ArrayList<>();
+        if (tid == null || tid.isEmpty()) return out;
+        for (Dl t : DlEngine.get().snapshot()) {
+            if (t != null && tid.equals(t.tid)) out.add(t);
+        }
+        return out;
+    }
+
+    /** 点下载时发现已在队列：给一条「去下载管理」的路，而不是默默重复入队。 */
+    private void showAlreadyQueued(List<Dl> same) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("《").append(movieName).append("》已经在下载队列里了：\n\n");
+        int n = 0;
+        for (Dl t : same) {
+            if (n++ >= 6) {
+                sb.append("… 等共 ").append(same.size()).append(" 个文件\n");
+                break;
+            }
+            sb.append("· ").append(t.fileName).append("　").append(t.statusText()).append("\n");
+        }
+        sb.append("\n不会重复添加下载任务。");
+
+        tvTransferResult.setText("ℹ 已在下载队列中（" + same.size() + " 个文件）");
+        AlertDialog dlg = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("已在下载队列")
+                .setMessage(sb.toString())
+                .setPositiveButton("打开下载管理", (d, w) ->
+                        startActivity(new Intent(this, DownloadActivity.class)))
+                .setNeutralButton("仍要重下", (d, w) -> withFiles((fs, err) -> {
+                    if (!err.isEmpty()) {
+                        tvTransferResult.setText("✘ " + err);
+                        toast(err);
+                        return;
+                    }
+                    if (fs.size() == 1) showDirPicker(fs);
+                    else showPickMulti(fs);
+                }))
+                .setNegativeButton("取消", null)
+                .create();
+        dlg.show();
+        widen(dlg, 1.3f);
+        dlg.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus();
+    }
+
+    /** 查重结果：还没入队的文件 + 已经在队列里的个数。 */
+    private static final class QueueCheck {
+        final List<BaiduPan.PlayFile> fresh;
+        final int dup;
+
+        QueueCheck(List<BaiduPan.PlayFile> fresh, int dup) {
+            this.fresh = fresh;
+            this.dup = dup;
+        }
+    }
+
+    /**
+     * 把候选文件分成「还没入队的」和「已经在队列里的」。
+     *
+     * <p>身份判定按 {@code fsId} 优先、退到网盘完整路径 —— 同一个转存文件这两样是稳定的，
+     * 而文件名可能被改过、体积可能被重压，都不适合当身份用。</p>
+     */
+    private static QueueCheck splitQueued(List<BaiduPan.PlayFile> files) {
+        List<Dl> queue = DlEngine.get().snapshot();
+        List<BaiduPan.PlayFile> fresh = new ArrayList<>();
+        int dup = 0;
+        for (BaiduPan.PlayFile pf : files) {
+            if (pf == null) continue;
+            if (queued(queue, pf)) dup++;
+            else fresh.add(pf);
+        }
+        return new QueueCheck(fresh, dup);
+    }
+
+    /** 队列里是不是已经有这个网盘文件。 */
+    private static boolean queued(List<Dl> queue, BaiduPan.PlayFile pf) {
+        for (Dl t : queue) {
+            if (t == null) continue;
+            if (t.fsId > 0 && pf.fsId > 0 && t.fsId == pf.fsId) return true;
+            if (t.bpath != null && !t.bpath.isEmpty()
+                    && pf.path != null && !pf.path.isEmpty() && t.bpath.equals(pf.path)) return true;
+        }
+        return false;
     }
 
     /** 多文件：多选（默认全选，遥控器上少按几次），选完再挑落盘目录。 */

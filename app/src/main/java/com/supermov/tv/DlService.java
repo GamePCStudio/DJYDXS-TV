@@ -188,6 +188,25 @@ public class DlService extends Service implements DlEngine.Observer {
         super.onDestroy();
     }
 
+    /**
+     * 从最近任务里划掉 App 时**不要**跟着停下载。
+     *
+     * <p>{@code stopWithTask} 默认就是 false，但有些 ROM 会把「划卡片」当成停服务的信号，
+     * 这里主动再唤一次做兜底：队列里还有活才重启，空队列就安静收工。</p>
+     */
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        try {
+            if (DlEngine.get().busy()) {
+                Log.d(TAG, "task removed but downloads alive -> keep service");
+                startService(new Intent(this, DlService.class));
+            }
+        } catch (Throwable e) {
+            Log.d(TAG, "restart after task removed fail " + e);
+        }
+        super.onTaskRemoved(rootIntent);
+    }
+
     @Override
     public IBinder onBind(Intent intent) {
         return null;

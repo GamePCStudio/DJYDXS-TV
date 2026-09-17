@@ -139,6 +139,48 @@ public final class Settings {
         return p().getString(K_LAST_PATH, "");
     }
 
+    // ---------- 后台下载限速（v1.18）----------
+
+    private static final String K_DL_LIMIT = "dl_limit_mbps";
+    /** 后台下载限速缺省值（Mbps） */
+    public static final int DL_LIMIT_DEFAULT = 20;
+    /** 后台下载限速上限（Mbps） */
+    public static final int DL_LIMIT_MAX = 40;
+    /** 后台下载限速下限（Mbps） */
+    public static final int DL_LIMIT_MIN = 1;
+
+    /**
+     * 后台下载限速（Mbps）。
+     *
+     * <p><b>只管后台</b>：下载管理页在前台时是不限速的（用户正看着进度，不该掐他带宽）；
+     * 一旦离开那个页面 —— 去浏览海报、回桌面、或者退出程序后的后台下载 —— 就按这个值限速。</p>
+     */
+    public static int dlLimitMbps() {
+        if (p() == null) return DL_LIMIT_DEFAULT;
+        int v = p().getInt(K_DL_LIMIT, DL_LIMIT_DEFAULT);
+        if (v < DL_LIMIT_MIN) v = DL_LIMIT_MIN;
+        if (v > DL_LIMIT_MAX) v = DL_LIMIT_MAX;
+        return v;
+    }
+
+    public static void setDlLimitMbps(int mbps) {
+        int v = mbps;
+        if (v < DL_LIMIT_MIN) v = DL_LIMIT_MIN;
+        if (v > DL_LIMIT_MAX) v = DL_LIMIT_MAX;
+        if (p() == null) return;
+        p().edit().putInt(K_DL_LIMIT, v).apply();
+    }
+
+    /**
+     * 后台限速换算成「字节/秒」给限速器用。
+     *
+     * <p>单位换算别弄反：设置里填的是 {@code Mbps}（比特），下载器按字节读写，
+     * {@code 1MB/s = 8Mbps} → {@code B/s = Mbps × 1000000 ÷ 8}。</p>
+     */
+    public static long dlLimitBps() {
+        return dlLimitMbps() * 1000000L / 8;
+    }
+
     // ---------- 播放进度记忆（v1.15）----------
 
     /** 进度记录的 key 前缀，便于整体淘汰 */

@@ -66,6 +66,21 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
         listener = l;
     }
 
+    /**
+     * 重新绑定当前所有条目。
+     *
+     * <p>后台探测是**原地改** {@link Site.Movie}（补海报、补「日期 · 片长」角标），
+     * {@link #setItems} 只拷了引用、不会收到任何通知 —— 不重绑的话，补好的角标
+     * 要等下次进这个版块才看得见。</p>
+     *
+     * <p>用 {@code notifyItemRangeChanged} 而不是 {@code notifyDataSetChanged}：
+     * 前者不移除/新增条目，电视上的焦点和滚动位置都能保住。</p>
+     */
+    public void refreshAll() {
+        if (items.isEmpty()) return;
+        notifyItemRangeChanged(0, items.size());
+    }
+
     /** 短按 = 进详情页；长按 = 快捷操作（直接转存），电视遥控器上按住 OK 键。 */
     public void setOnLongClick(OnLongClick l) {
         longListener = l;

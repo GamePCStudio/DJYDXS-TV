@@ -105,10 +105,8 @@ public final class Storage {
         LinkedHashSet<String> seen = new LinkedHashSet<>();
         List<Target> out = new ArrayList<>();
 
-        // ① App 专属目录：永远可用，作为默认
-        String app = appDir(c);
-        if (seen.add(app)) out.add(new Target("本机 · 应用目录（免权限，推荐）", app, false));
-
+        // ① 「本机 · 应用目录」不再作为选项列出（用户要求去掉）——它仍是「没设置过下载目录」
+        //    时的缺省落点（见 Settings.downloadDir 与 defaultDir），只是不摆在列表里让人选。
         boolean all = hasAllFiles(c);
 
         // ② 公共存储

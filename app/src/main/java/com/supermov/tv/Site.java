@@ -912,19 +912,45 @@ public final class Site {
     }
 
     /**
-     * 探测结果缓存：tid -> 有没有百度分享。
+     * 一次探测的结果：有没有百度分享 + 顺带探到的海报 / 角标（日期 · 片长）。
+     *
+     * <p><b>为什么必须连 remarks / pic 一起缓存</b>：列表页自己拿不到这两样 ——
+     * 新版海报墙（byg_*）的卡片里只有海报和片名，没有日期；片长更是只有详情页才有。
+     * 早期版本只缓存一个 boolean，命中缓存就 {@code return}，等于**第二次进同一个
+     * 版块时角标全空**（看着就像「日期和分钟数又不见了」）。</p>
+     */
+    private static final class ProbeRec {
+        final boolean has;
+        final String remarks;
+        final String pic;
+
+        ProbeRec(boolean has, String remarks, String pic) {
+            this.has = has;
+            this.remarks = remarks == null ? "" : remarks;
+            this.pic = pic == null ? "" : pic;
+        }
+    }
+
+    /**
+     * 探测结果缓存：tid -> 探测结论（能否播放 + 海报 + 日期·片长）。
      *
      * <p>列表页每翻一页都要探测 36 个帖子（约 4.7MB），而用户来回切版块时同一批帖子会被
      * 反复探测（实测一次会话里同一页探测了 5 遍）。缓存后回访不再发请求，也不用等。</p>
      */
-    private static final java.util.Map<String, Boolean> BAIDU_PROBE =
+    private static final java.util.Map<String, ProbeRec> BAIDU_PROBE =
             new java.util.concurrent.ConcurrentHashMap<>();
 
     /** 探测一部影片：是否有百度分享，并顺带补全海报/日期/片长（详情页一次请求三用）。 */
     private static boolean probeAndFill(Movie m) {
         if (m.tid == null || m.tid.isEmpty()) return false;
-        Boolean cached = BAIDU_PROBE.get(m.tid);
-        if (cached != null) return cached;   // 探过就不再来一遍（海报/日期列表页已经有）
+        ProbeRec cached = BAIDU_PROBE.get(m.tid);
+        if (cached != null) {
+            // 命中缓存同样要把上次探到的海报 / 角标回填：列表页没有这两样，
+            // 不回填就会出现「同一个版块进第二遍，日期和片长全没了」
+            if (m.remarks == null || m.remarks.isEmpty()) m.remarks = cached.remarks;
+            if ((m.pic == null || m.pic.isEmpty()) && !cached.pic.isEmpty()) m.pic = cached.pic;
+            return cached.has;
+        }
         try {
             Http.Resp r = Http.get(BASE + "/thread-" + m.tid + "-1-1.html");
             if (r.code != 200 || isLoginWall(r.body)) return false;
@@ -945,7 +971,7 @@ public final class Site {
             m.remarks = buildRemarks(m.remarks, html);
             boolean has = htmlHasBaiduShare(html);
             if (BAIDU_PROBE.size() > 4000) BAIDU_PROBE.clear();
-            BAIDU_PROBE.put(m.tid, has);
+            BAIDU_PROBE.put(m.tid, new ProbeRec(has, m.remarks, m.pic));
             return has;
         } catch (Exception e) {
             return false;   // 网络抖动：不写缓存，下次还探

@@ -82,6 +82,18 @@ public final class DlEngine {
     private final AtomicBoolean inited = new AtomicBoolean(false);
     private volatile long lastPersist;
 
+    /**
+     * 后台下载限速（**字节/秒**）；{@code <= 0} = 不限速。
+     *
+     * <p>口径：下载管理页在前台时置 0（用户正看着进度，别掐带宽）；离开页面、以及
+     * 冷启动进后台时置 {@link Settings#dlLimitBps()}。设置里给用户看的是 Mbps。</p>
+     */
+    private volatile long rateLimitBps = 0;
+    /** 限速窗口：多个分片线程共用一份额度，必须加锁 */
+    private final Object rateLock = new Object();
+    private long rateWindowStart = 0;
+    private long rateWindowBytes = 0;
+
     private DlEngine() {
     }
 
@@ -107,7 +119,11 @@ public final class DlEngine {
             }
         }
         persistAll();
-        Log.d(TAG, "dl init tasks=" + tasks.size());
+        // 冷启动 / 服务重启后先按「后台下载限速」起步：这时没有人在看下载页，
+        // 等用户真的进了下载管理页，onResume 会把限速放开
+        Settings.init(c);
+        rateLimitBps = Settings.dlLimitBps();
+        Log.d(TAG, "dl init tasks=" + tasks.size() + " rateLimit=" + rateLimitBps);
     }
 
     /** 启动 worker（幂等）。 */
@@ -357,6 +373,65 @@ public final class DlEngine {
         notifyChanged();
     }
 
+    // ==================== 后台限速 ====================
+
+    /**
+     * 设置下载限速（**字节/秒**，{@code <=0} = 不限速）。
+     *
+     * <p>下载管理页 onResume 里放开（传 0）、onPause 里按设置恢复。改值时把窗口清零，
+     * 免得旧窗口里攒的字节让新速率起跑就判「已经超额」。</p>
+     */
+    public void setRateLimit(long bytesPerSec) {
+        long v = bytesPerSec < 0 ? 0 : bytesPerSec;
+        if (rateLimitBps == v) return;
+        rateLimitBps = v;
+        synchronized (rateLock) {
+            rateWindowStart = 0;
+            rateWindowBytes = 0;
+        }
+    }
+
+    /** 当前限速（字节/秒，0 = 不限速）。 */
+    public long rateLimit() {
+        return rateLimitBps;
+    }
+
+    /**
+     * 全局限速闸门：把**多分片合计**的吞吐压在 rateLimitBps 以内。
+     *
+     * <p>做法是按累计字节算出「这些数据本该花多久」，超前了就把差值睡掉。比「每个线程各限
+     * 1/4」更准 —— 某个分片先下完时，剩下的分片能自动把整条额度用满。</p>
+     *
+     * <p>单次最多睡 300ms：暂停 / 取消要能及时响应，而且睡久了也只是把额度往后滚。</p>
+     */
+    private void throttle(int bytes) {
+        long limit = rateLimitBps;
+        if (limit <= 0 || bytes <= 0) return;
+        synchronized (rateLock) {
+            long now = System.currentTimeMillis();
+            if (rateWindowStart == 0) {
+                rateWindowStart = now;
+                rateWindowBytes = 0;
+            }
+            rateWindowBytes += bytes;
+            long shouldSpend = rateWindowBytes * 1000L / limit;   // 本该花掉的毫秒数
+            long elapsed = now - rateWindowStart;
+            if (shouldSpend > elapsed) {
+                long sleep = shouldSpend - elapsed;
+                if (sleep > 300) sleep = 300;
+                try {
+                    Thread.sleep(sleep);
+                } catch (InterruptedException ignored) {
+                }
+            }
+            // 窗口滚动，别让累计值无限长（也顺手抹平瞬时抖动）
+            if (System.currentTimeMillis() - rateWindowStart > 5000) {
+                rateWindowStart = System.currentTimeMillis();
+                rateWindowBytes = 0;
+            }
+        }
+    }
+
     /** 服务被销毁时调用：让当前任务停在可续传的状态。 */
     public void pauseCurrent() {
         Dl c = current;
@@ -548,7 +623,7 @@ public final class DlEngine {
                 t.done = bytes;
                 note = "下载中 " + (total > 0 ? (bytes * 100 / total) : 0) + "%"
                         + " · " + human(bytes) + "/" + human(total)
-                        + " · " + human((long) speed) + "/s"
+                        + " · " + mbps(speed)
                         + (segs > 1 ? " · " + segs + " 连接" : "");
                 if (now - lastPersist > 2000) {
                     lastPersist = now;
@@ -652,6 +727,7 @@ public final class DlEngine {
                 int n;
                 while ((n = in.read(buf)) > 0) {
                     if (cancel.get()) return;
+                    throttle(n);            // 后台限速（下载管理页在前台时是空操作）
                     synchronized (lock) {
                         raf.seek(pos);
                         raf.write(buf, 0, n);
@@ -961,6 +1037,19 @@ public final class DlEngine {
         if (m == null || m.isEmpty()) return e.getClass().getSimpleName();
         if (m.length() > 90) m = m.substring(0, 90);
         return m;
+    }
+
+    /**
+     * 下载速率：**字节/秒 → Mbps**。
+     *
+     * <p>换算别弄反：{@code MB/s} 是字节、{@code Mbps} 是比特，{@code 1MB/s = 8Mbps}。
+     * 网络口径按十进制算（1Mbps = 1,000,000 bit/s），所以是 {@code B/s × 8 ÷ 1e6}。</p>
+     */
+    public static String mbps(double bytesPerSec) {
+        if (bytesPerSec <= 0) return "0.0Mbps";
+        double v = bytesPerSec * 8.0 / 1000000.0;
+        if (v >= 100) return String.format(java.util.Locale.CHINA, "%.0fMbps", v);
+        return String.format(java.util.Locale.CHINA, "%.1fMbps", v);
     }
 
     /** 人类可读体积。 */
