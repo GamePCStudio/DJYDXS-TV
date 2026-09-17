@@ -40,14 +40,6 @@
                     android:textStyle="bold" />
 
                 <TextView
-                    android:id="@+id/tvDetailMeta"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:textColor="#FF9AA0A6"
-                    android:textSize="13sp" />
-
-                <TextView
                     android:id="@+id/tvDetailContent"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -55,6 +47,18 @@
                     android:ellipsize="end"
                     android:lineSpacingExtra="2dp"
                     android:maxLines="20"
+                    android:textColor="#FFC6CBD2"
+                    android:textSize="14sp" />
+
+                <!-- ◎上映日期 往下的整块正文（◎IMDb评分 → 简介 → 片尾说明）：屏幕上最多 8 行。
+                     8 是折行后的行数，所以只能靠 maxLines 限；按需求超出直接截掉（带省略号）。 -->
+                <TextView
+                    android:id="@+id/tvDetailIntro"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:lineSpacingExtra="2dp"
+                    android:maxLines="8"
                     android:textColor="#FFC6CBD2"
                     android:textSize="14sp" />
             </LinearLayout>

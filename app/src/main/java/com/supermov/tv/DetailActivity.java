@@ -50,8 +50,8 @@ public class DetailActivity extends Activity {
 
     private ImageView ivPic;
     private TextView tvName;
-    private TextView tvMeta;
     private TextView tvContent;
+    private TextView tvIntro;
     private TextView btnPlay;
     private TextView btnDownload;
     private TextView btnTransfer;
@@ -84,8 +84,8 @@ public class DetailActivity extends Activity {
 
         ivPic = findViewById(R.id.ivDetailPic);
         tvName = findViewById(R.id.tvDetailName);
-        tvMeta = findViewById(R.id.tvDetailMeta);
         tvContent = findViewById(R.id.tvDetailContent);
+        tvIntro = findViewById(R.id.tvDetailIntro);
         btnPlay = findViewById(R.id.btnPlay);
         btnDownload = findViewById(R.id.btnDownload);
         btnTransfer = findViewById(R.id.btnTransfer);
@@ -96,7 +96,7 @@ public class DetailActivity extends Activity {
         tid = nz(getIntent().getStringExtra("tid"));
         movieName = nz(getIntent().getStringExtra("name"));
         picUrl = nz(getIntent().getStringExtra("pic"));
-        if (!movieName.isEmpty()) tvName.setText(movieName);
+        if (!movieName.isEmpty()) setTitle(movieName, "");
         loadPic();
 
         pool.execute(() -> {
@@ -123,12 +123,20 @@ public class DetailActivity extends Activity {
             setActionsVisible(false);
             return;
         }
-        if (d.movie.name != null && !d.movie.name.isEmpty()) {
-            movieName = d.movie.name;
-            tvName.setText(d.movie.name);
+        if (d.movie.name != null && !d.movie.name.isEmpty()) movieName = d.movie.name;
+        // 片名与「日期 · 片长」并到同一行（原来是上下两行，白占一行纵向空间）
+        setTitle(movieName, d.movie.remarks);
+        // 资料区（到「◎上映日期」为止）与它下面的整块正文分两个 TextView：
+        // 后者在布局里锁死 maxLines=8 —— 8 是屏幕折行后的行数，只能在布局层限，文本层裁不了
+        String[] parts = Site.splitAtUpcoming(d.movie.content);
+        tvContent.setText(parts[0].isEmpty() ? "（无简介）" : parts[0]);
+        if (parts.length > 1 && !parts[1].isEmpty()) {
+            tvIntro.setText(parts[1]);
+            tvIntro.setVisibility(View.VISIBLE);
+        } else {
+            tvIntro.setText("");
+            tvIntro.setVisibility(View.GONE);
         }
-        tvMeta.setText(d.movie.remarks);
-        tvContent.setText(d.movie.content.isEmpty() ? "（无简介）" : d.movie.content);
         // 列表页没给海报时，用详情页解析出来的
         if (picUrl.isEmpty() && d.movie.pic != null && !d.movie.pic.isEmpty()) {
             picUrl = d.movie.pic;
@@ -210,6 +218,14 @@ public class DetailActivity extends Activity {
         BaiduPan.Resolved rs = BaiduPan.resolveAll(rootDir, movieName);
         if (!rs.files.isEmpty()) return rs;
 
+        // 名字没搜到 ≠ 没转存过：分享里的文件夹可能被改过名。这时用「上次转存这部片」
+        // 记下的落地路径精确回查（片名对不上就返回空，绝不会串到别的片子）
+        String rem = rememberedPath();
+        if (!rem.isEmpty()) {
+            BaiduPan.Resolved at = BaiduPan.resolveAt(rootDir, rem);
+            if (!at.files.isEmpty()) return at;
+        }
+
         // 刚手动转过存（15 秒内）-> 不再自动重转一次，否则只会拿到 errno=12「已有同名文件」，
         // 把真正的原因（分享里没有视频文件之类）盖掉
         if (recentlyTransferred()) return rs;
@@ -223,22 +239,47 @@ public class DetailActivity extends Activity {
             tr.ok = false;
             tr.message = "转存异常：" + e.getClass().getSimpleName();
         }
-        Settings.recordTransfer(rootDir, tr.ok);
+        String toPath = tr.toPaths.isEmpty() ? "" : tr.toPaths.get(0);
+        Settings.recordTransfer(rootDir, tr.ok, movieName, toPath);
 
+        // 转存接口把「实际落地路径」告诉了我们 -> 直接按它精确取，不再靠片名去猜
+        // （分享里的文件夹名和片名经常不一样）
+        if (tr.ok && !toPath.isEmpty()) {
+            BaiduPan.Resolved exact = BaiduPan.resolveAt(rootDir, toPath);
+            if (!exact.files.isEmpty()) return exact;
+        }
         BaiduPan.Resolved again = BaiduPan.resolveAll(rootDir, movieName);
         if (!again.files.isEmpty()) return again;
         if (!tr.ok && (again.message == null || again.message.isEmpty())) again.message = tr.message;
         return again;
     }
 
-    /** 最近 15 秒内成功转存过？（读 Settings 里已持久化的那次结果，不用再开一个字段） */
+    /**
+     * 最近 15 秒内成功转存过**这部片**？
+     *
+     * <p>必须连片名一起比：以前只看时间窗，于是「刚转存完 A，马上点 B」时 B 也被当成
+     * 「刚刚转过存」而跳过转存，最后拿到的是 A 的文件。</p>
+     */
     private boolean recentlyTransferred() {
         try {
+            String t = Settings.lastTransferTitle();
+            if (t == null || t.isEmpty() || !t.equals(movieName)) return false;
             org.json.JSONObject o = new org.json.JSONObject(Settings.lastTransfer());
             return o.optBoolean("ok", false)
                     && System.currentTimeMillis() - o.optLong("time", 0) < 15000;
         } catch (Throwable e) {
             return false;
+        }
+    }
+
+    /** 上次转存「这部片」落地的网盘路径；片名不一致就返回空（防止张冠李戴）。 */
+    private String rememberedPath() {
+        try {
+            String t = Settings.lastTransferTitle();
+            if (t == null || t.isEmpty() || !t.equals(movieName)) return "";
+            return Settings.lastTransferPath();
+        } catch (Throwable e) {
+            return "";
         }
     }
 
@@ -512,8 +553,12 @@ public class DetailActivity extends Activity {
         final String pwd = sharePwd;
         final String dir = Settings.saveDir();
         pool.execute(() -> {
-            // ① 先查：已经转存过就到此为止
+            // ① 先查：已经转存过就到此为止（先按片名；名字被改过就用上次的落地路径回查）
             BaiduPan.Resolved have = BaiduPan.resolveAll(dir, movieName);
+            if (have.files.isEmpty()) {
+                String rem = rememberedPath();
+                if (!rem.isEmpty()) have = BaiduPan.resolveAt(dir, rem);
+            }
             if (!have.files.isEmpty()) {
                 final List<BaiduPan.PlayFile> fs = have.files;
                 final String where = have.anchorPath;
@@ -538,7 +583,8 @@ public class DetailActivity extends Activity {
                 r.ok = false;
                 r.message = "转存异常：" + e.getClass().getSimpleName();
             }
-            Settings.recordTransfer(dir, r.ok);
+            Settings.recordTransfer(dir, r.ok, movieName,
+                    r.toPaths.isEmpty() ? "" : r.toPaths.get(0));
             final BaiduPan.TransferResult fr = r;
 
             if (!fr.ok) {
@@ -552,8 +598,11 @@ public class DetailActivity extends Activity {
                 return;
             }
 
-            // ③ 转存后：枚举 + 按分享清单校验完整性
-            BaiduPan.Resolved rs = BaiduPan.resolveAll(dir, movieName);
+            // ③ 转存后：枚举 + 按分享清单校验完整性（优先按转存接口给的落地路径精确取）
+            BaiduPan.Resolved rs = fr.toPaths.isEmpty()
+                    ? new BaiduPan.Resolved()
+                    : BaiduPan.resolveAt(dir, fr.toPaths.get(0));
+            if (rs.files.isEmpty()) rs = BaiduPan.resolveAll(dir, movieName);
             List<BaiduPan.PlayFile> expect =
                     BaiduPan.shareManifest(fr.shareid, fr.uk, url);
             final List<BaiduPan.PlayFile> got = rs.files;
@@ -835,6 +884,53 @@ public class DetailActivity extends Activity {
             if (used.add(dirPath + "/" + cand)) return cand;
         }
         return fileName;
+    }
+
+    /**
+     * 片名 + 同一行右侧的「日期 · 片长」角标。
+     *
+     * <p>原来角标单独占一行（片名 24sp 加粗白、角标 13sp 灰），白占一行。现在合成一行：
+     * 片名保持原样式，角标缩小变灰，中间插一个 14dp 的固定空隙 —— 普通空格宽度随字号走、
+     * 全角空格又太宽，所以用 {@link GapSpan} 精确占位。</p>
+     */
+    private void setTitle(String name, String meta) {
+        String n = nz(name);
+        String m = nz(meta);
+        if (n.isEmpty() || m.isEmpty()) {
+            tvName.setText(n.isEmpty() ? m : n);
+            return;
+        }
+        android.text.SpannableString sp = new android.text.SpannableString(n + " " + m);
+        int metaStart = n.length() + 1;
+        sp.setSpan(new GapSpan((int) (14 * getResources().getDisplayMetrics().density)),
+                n.length(), metaStart, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        int metaPx = (int) android.util.TypedValue.applyDimension(
+                android.util.TypedValue.COMPLEX_UNIT_SP, 13,
+                getResources().getDisplayMetrics());
+        sp.setSpan(new android.text.style.AbsoluteSizeSpan(metaPx),
+                metaStart, sp.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        sp.setSpan(new android.text.style.ForegroundColorSpan(0xFF9AA0A6),
+                metaStart, sp.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        tvName.setText(sp);
+    }
+
+    /** 固定宽度的占位空隙（spannable 里放不了「多少 dp」的空白，只能自己占一格）。 */
+    private static class GapSpan extends android.text.style.ReplacementSpan {
+        private final int px;
+
+        GapSpan(int px) { this.px = px; }
+
+        @Override
+        public int getSize(android.graphics.Paint paint, CharSequence text, int start, int end,
+                           android.graphics.Paint.FontMetricsInt fm) {
+            return px;
+        }
+
+        @Override
+        public void draw(android.graphics.Canvas canvas, CharSequence text, int start, int end,
+                         float x, int top, int y, int bottom, android.graphics.Paint paint) {
+            // 只占位，不画任何东西
+        }
     }
 
     private static String nz(String s) {

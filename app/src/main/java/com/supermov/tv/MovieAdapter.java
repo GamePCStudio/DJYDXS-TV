@@ -40,6 +40,28 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
         notifyItemRangeInserted(start, list.size());
     }
 
+    /**
+     * 把这些 tid 的条目摘掉。
+     *
+     * <p>后台探测发现某些影片在站内没有百度网盘分享，就把它们摘掉 —— 与其让用户点进去
+     * 发现「没有可用的百度网盘链接」，不如一开始就不出现。逐条 notifyItemRemoved
+     * （而不是 notifyDataSetChanged）是为了保住电视上当前焦点和滚动位置。</p>
+     *
+     * <p><b>为什么传「要删的」而不是「要留的」：</b>翻页时 {@code items} 里同时躺着前几页的
+     * 条目，而探测只覆盖当前这一页。若按白名单「只留本页 tid」，前一页的海报会被一并清掉
+     * （往上翻会发现上面几屏空了）。黑名单与页码无关，重复调用也安全。</p>
+     */
+    public void dropTids(java.util.Set<String> tids) {
+        if (tids == null || tids.isEmpty() || items.isEmpty()) return;
+        for (int i = items.size() - 1; i >= 0; i--) {
+            String tid = items.get(i).tid;
+            if (tid != null && tids.contains(tid)) {
+                items.remove(i);
+                notifyItemRemoved(i);
+            }
+        }
+    }
+
     public void setOnClick(OnClick l) {
         listener = l;
     }

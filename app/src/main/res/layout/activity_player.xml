@@ -108,7 +108,7 @@
         android:paddingTop="8dp"
         android:paddingEnd="14dp"
         android:paddingBottom="8dp"
-        android:text="遥控器：左右 = 快退/快进 10 秒 · OK = 暂停/播放 · 返回退出"
+        android:text="遥控器：左右 = 快退/快进 10 秒（长按 = 拖动进度）· OK = 暂停/播放 · 上 = 选字幕 · 下 = 选音轨 · 返回退出"
         android:textColor="#CC9AA0A6"
         android:textSize="12sp" />
 </FrameLayout>

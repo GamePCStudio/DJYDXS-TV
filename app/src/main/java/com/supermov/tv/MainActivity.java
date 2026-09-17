@@ -50,6 +50,10 @@ public class MainActivity extends Activity {
     private int totalPages = 1;
     private int posterSpans = 7; // 海报列数（固定 7 列）
     private boolean loading = false;
+    /** 载入请求代号：每次点击 +1，旧请求回来时对不上号就丢弃（「最新一次点击说了算」）。 */
+    private volatile int loadGen = 0;
+    /** 百度链接探测专用线程池：跑在它上面，才不会把「下一次点击」的列表请求堵在同一个线程后面。 */
+    private final ExecutorService probePool = Executors.newSingleThreadExecutor();
     private String searchKeyword = ""; // 空 = 浏览版块；非空 = 搜索模式
     private int currentTypeid = 0;      // 版块内主题分类过滤（0=全部）
     private int currentFilterIndex = 0; // 选中的过滤器下标
@@ -142,8 +146,11 @@ public class MainActivity extends Activity {
                 if (lm == null) return;
                 int last = lm.findLastVisibleItemPosition();
                 // 提前量随列数放大（一行就有 posterSpans 个条目）
-                if (!loading && currentPage < totalPages
-                        && last >= movieAdapter.getItemCount() - posterSpans * 2) {
+                int total = movieAdapter.getItemCount();
+                // total > 0 也是必要的：列表还是空的时候 last 会是 -1，
+                // 不加这个判断就会「空列表 -> 立刻请求第 2 页 -> 再第 3 页」连轴转
+                if (!loading && currentPage < totalPages && total > 0
+                        && last >= total - posterSpans * 2) {
                     loadPage(currentPage + 1);
                 }
             }
@@ -371,14 +378,32 @@ public class MainActivity extends Activity {
         });
     }
 
+    /**
+     * 载入某一页。**先出画、后筛选**，两段式：
+     *
+     * <ol>
+     *   <li>列表页 + 表格页解析完就先 setItems 把海报墙画出来（约 1 秒）；</li>
+     *   <li>再在后台逐帖探测「有没有百度网盘分享」，把没有的条目摘掉。</li>
+     * </ol>
+     *
+     * <p>老实现是「把 36 个帖子全探测完才画」——一次版块切换要 5 秒多，屏幕上从头到尾
+     * 只有一句「加载中…」，看着像卡死；而且那个探测跑在 {@code pool}（单线程）上，
+     * 直接把后续请求堵在后面。</p>
+     *
+     * <p>另外用 {@link #loadGen} 实现「最新一次点击说了算」：新点击会让先前的请求作废，
+     * 但**不会再像以前那样把用户的点击整个丢掉** —— 旧实现开头的 {@code if (loading) return;}
+     * 遇上「正在加载下一页时点版块」，新点击直接被丢掉，停在「加载中…」再也不动。</p>
+     */
     private void loadPage(int page) {
-        if (loading) return;
+        final int gen = ++loadGen;
         loading = true;
         final String kw = searchKeyword;
         final int fid = currentFid;
         final int ftypeid = currentTypeid;
-        tvEmpty.setVisibility(View.VISIBLE);
-        tvEmpty.setText("加载中…");
+        if (page == 1) {
+            tvEmpty.setVisibility(View.VISIBLE);
+            tvEmpty.setText("加载中…");
+        }
         pool.execute(() -> {
             Site.lastLoadError = "";
             Site.Paged<List<Site.Movie>> res;
@@ -387,33 +412,57 @@ public class MainActivity extends Activity {
             } else {
                 res = Site.category(fid, page, ftypeid);
             }
-            // 后台线程过滤：只保留有百度网盘分享链接的影片
-            Site.filterBaiduOnly(res.data, 8);
+            final List<Site.Movie> raw = new ArrayList<>(res.data);
+            final int pageCount = res.pageCount;
+
+            // ① 先出画：不等百度链接探测
             main.post(() -> {
+                if (gen != loadGen) return; // 已被更新的点击取代（新的那次会自己画）
                 loading = false;
-                // 过期结果丢弃（用户已切换版块/过滤器/搜索词）
-                boolean stale = !kwEquals(kw)
-                        || ((kw == null || kw.isEmpty())
-                            && (fid != currentFid || ftypeid != currentTypeid));
-                if (stale) return;
-                // 海报/日期/片长已在后台探测阶段补全（filterBaiduOnly）
                 currentPage = page;
-                totalPages = Math.max(1, res.pageCount);
-                if (page == 1) movieAdapter.setItems(res.data);
-                else movieAdapter.addItems(res.data);
-                boolean empty = movieAdapter.getItemCount() == 0;
-                tvEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
-                if (empty && "login".equals(Site.lastLoadError)) {
-                    tvEmpty.setText("论坛登录已过期，请到 设置 → 论坛登录 重新登录");
-                    Toast.makeText(this, "论坛登录已过期，请到 设置 → 论坛登录 重新登录", Toast.LENGTH_LONG).show();
-                } else if (empty && "flood".equals(Site.lastLoadError)) {
-                    tvEmpty.setText("搜索太频繁，请等 10 秒后再试");
-                    Toast.makeText(this, "搜索太频繁，请等 10 秒后再试", Toast.LENGTH_SHORT).show();
-                } else {
-                    tvEmpty.setText(empty ? "没有内容" : "");
+                totalPages = Math.max(1, pageCount);
+                if (page == 1) movieAdapter.setItems(raw);
+                else movieAdapter.addItems(raw);
+                if (movieAdapter.getItemCount() > 0) tvEmpty.setVisibility(View.GONE);
+                else showEmpty();
+            });
+
+            if (raw.isEmpty() || gen != loadGen) return;
+
+            // ② 再筛选：没有百度网盘分享链接的条目摘掉（独立线程池，不挡住下一次点击的加载）
+            final List<Site.Movie> before = new ArrayList<>(raw);
+            probePool.execute(() -> {
+                Site.filterBaiduOnly(raw, 8);
+                // 差集 = 被摘掉的那批。**只能传「要删的 tid」**：翻到第 2 页时 items 里
+                // 还躺着第 1 页的条目，若按白名单「只留本页 tid」，第 1 页会被一起清空。
+                final java.util.Set<String> alive = new java.util.HashSet<>();
+                for (Site.Movie m : raw) if (m.tid != null) alive.add(m.tid);
+                final java.util.Set<String> drop = new java.util.HashSet<>();
+                for (Site.Movie m : before) {
+                    if (m.tid != null && !alive.contains(m.tid)) drop.add(m.tid);
                 }
+                if (drop.isEmpty()) return;   // 一条都没摘掉，不用打扰主线程
+                main.post(() -> {
+                    if (gen != loadGen) return;
+                    movieAdapter.dropTids(drop);
+                    if (movieAdapter.getItemCount() == 0) showEmpty();
+                });
             });
         });
+    }
+
+    /** 列表为空时的那句提示（登录失效 / 搜索太频繁 / 真的没内容）。 */
+    private void showEmpty() {
+        tvEmpty.setVisibility(View.VISIBLE);
+        if ("login".equals(Site.lastLoadError)) {
+            tvEmpty.setText("论坛登录已过期，请到 设置 → 论坛登录 重新登录");
+            Toast.makeText(this, "论坛登录已过期，请到 设置 → 论坛登录 重新登录", Toast.LENGTH_LONG).show();
+        } else if ("flood".equals(Site.lastLoadError)) {
+            tvEmpty.setText("搜索太频繁，请等 10 秒后再试");
+            Toast.makeText(this, "搜索太频繁，请等 10 秒后再试", Toast.LENGTH_SHORT).show();
+        } else {
+            tvEmpty.setText("没有内容");
+        }
     }
 
     private boolean kwEquals(String kw) {

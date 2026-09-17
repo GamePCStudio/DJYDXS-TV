@@ -488,6 +488,15 @@ public final class Site {
     private static final Pattern RE_INFO_INTRO = Pattern.compile(
             "^[ \\t\\u3000]*◎[ \\t\\u3000]*(?:剧情)?[ \\t\\u3000]*简[ \\t\\u3000]*介.*$",
             Pattern.MULTILINE);
+    /** 整行不要：「◎年　　代　2026」（年份已经并到片名后面显示）。 */
+    private static final Pattern RE_LINE_YEAR = Pattern.compile(
+            "^[ \\t\\u3000]*◎[ \\t\\u3000]*年[ \\t\\u3000]*代");
+    /** 「◎上映日期」行 —— 用它把正文切成「资料区 / 它下面的整块正文」两段，见 splitAtUpcoming。 */
+    private static final Pattern RE_LINE_UPCOMING = Pattern.compile(
+            "^[ \\t\\u3000]*◎[ \\t\\u3000]*上[ \\t\\u3000]*映[ \\t\\u3000]*日[ \\t\\u3000]*期");
+    /** 含 DJYDXS 的行（论坛自带的转载/压制声明），整行不显示。 */
+    private static final Pattern RE_LINE_JUNK = Pattern.compile(
+            "DJYDXS", Pattern.CASE_INSENSITIVE);
 
     /**
      * 首帖 HTML → 适合电视上阅读的纯文本。
@@ -498,7 +507,13 @@ public final class Site {
      * 连续空行最多留一个（当段落分隔）。</p>
      *
      * <p><b>砍中段</b>：按需求，{@code ◎IMDb链接} 到 {@code ◎简　　介} 之间的内容
-     * （豆瓣评分 / 豆瓣链接 / 片长 / 导演 / 主演长名单）不显示，只留基本资料 + 简介。</p>
+     * （豆瓣评分 / 豆瓣链接 / 片长 / 导演 / 主演长名单）不显示，只留基本资料 + 简介；
+     * {@code ◎简　　介} 这个表头行本身、以及它下面那个空行也一起去掉。</p>
+     *
+     * <p><b>去噪</b>：{@code ◎年　　代} 整行不要（年份已并到片名后面）；含 DJYDXS 的转载声明整行不显示。</p>
+     *
+     * <p><b>切两段</b>：界面要求「{@code ◎上映日期} 往下整块最多 8 行」，所以调用方还要用
+     * {@link #splitAtUpcoming(String)} 把资料区和它下面的正文分开渲染，8 行由布局的 maxLines 锁。</p>
      */
     static String cleanPost(String post) {
         if (post == null || post.isEmpty()) return "";
@@ -518,6 +533,8 @@ public final class Site {
         s = s.replaceAll("\\[/?(?:dztc_\\w+|attach(?:img)?|free|hide|quote|code|media|flash|audio|video|url|img)\\]", " ");
         s = tidyLines(s);
         s = cutInfoMiddle(s);
+        s = dropNoiseLines(s);
+        // 说明：「◎上映日期 往下最多 8 行」是**显示行**限制，交给调用方 splitAtUpcoming + 布局 maxLines
         if (s.length() > 2000) s = s.substring(0, 2000) + "…";
         return s;
     }
@@ -547,7 +564,8 @@ public final class Site {
     }
 
     /**
-     * 去掉「◎IMDb链接」→「◎简　　介」之间的资料区。
+     * 去掉「◎IMDb链接」→「◎简　　介」之间的资料区，并**连「◎简　　介」表头行和它下面那个空行一起**去掉
+     * （表头留着没意义，正文自己会说话）。
      * 找不到「◎简　　介」时，从「◎IMDb链接」一路砍到末尾。
      */
     static String cutInfoMiddle(String s) {
@@ -555,12 +573,48 @@ public final class Site {
         if (!head.find()) return s;
         int from = head.start();
         Matcher intro = RE_INFO_INTRO.matcher(s);
-        int to = intro.find(from) ? intro.start() : s.length();
-        if (to <= from) return s;
-        String cut = s.substring(0, from);
-        String keep = s.substring(to);
-        String merged = cut.isEmpty() ? keep : (cut + "\n" + keep);
-        return merged.replaceAll("\n{3,}", "\n\n").trim();
+        if (!intro.find(from)) return s.substring(0, from).trim();   // 没有简介表头 → 砍到末尾
+        String cut = s.substring(0, from).replaceAll("\\s+$", "");
+        String keep = s.substring(intro.end()).replaceAll("^\\s+", "");  // 表头下那个空行一起吃掉
+        if (cut.isEmpty()) return keep.trim();
+        return (cut + "\n\n" + keep).replaceAll("\n{3,}", "\n\n").trim();
+    }
+
+    /**
+     * 把清洗后的正文按「◎上映日期」切成两段：[0] = 资料区（含该行），[1] = 它下面的整块正文
+     * （◎IMDb评分 → 简介 → 片尾说明）。
+     *
+     * <p>界面要求「{@code ◎上映日期} 往下整块最多保留 8 行」。这 8 行是<b>显示行</b>——
+     * 电视按可用宽度折行之后的行数，而源码里一整段简介就是一行，在文本层根本裁不动，
+     * 所以这里只负责切，行数上限交给布局（{@code activity_detail.xml} 的 maxLines）。</p>
+     *
+     * <p>找不到「◎上映日期」时不切（整篇都当资料区），返回长度 1 的数组。</p>
+     */
+    static String[] splitAtUpcoming(String s) {
+        if (s == null || s.isEmpty()) return new String[]{""};
+        String[] lines = s.split("\n", -1);
+        for (int i = 0; i < lines.length; i++) {
+            if (!RE_LINE_UPCOMING.matcher(lines[i]).find()) continue;
+            StringBuilder head = new StringBuilder(s.length());
+            StringBuilder tail = new StringBuilder(s.length());
+            for (int k = 0; k <= i; k++) head.append(lines[k]).append('\n');
+            for (int k = i + 1; k < lines.length; k++) tail.append(lines[k]).append('\n');
+            String h = head.toString().trim();
+            String t = tail.toString().trim();
+            return t.isEmpty() ? new String[]{h} : new String[]{h, t};
+        }
+        return new String[]{s};
+    }
+
+    /** 整行丢掉：①「◎年　　代」；②含 DJYDXS 的转载/压制声明行。 */
+    static String dropNoiseLines(String s) {
+        StringBuilder sb = new StringBuilder(s.length());
+        for (String ln : s.split("\n", -1)) {
+            if (RE_LINE_YEAR.matcher(ln).find()) continue;
+            if (RE_LINE_JUNK.matcher(ln).find()) continue;
+            sb.append(ln).append('\n');
+        }
+        return sb.toString().trim();
     }
 
     /** 详情：标题/海报/简介/日期/片长 + 下载源（只保留百度）。 */
@@ -857,9 +911,20 @@ public final class Site {
         return RE_BAIDU_URL.matcher(html).find();
     }
 
+    /**
+     * 探测结果缓存：tid -> 有没有百度分享。
+     *
+     * <p>列表页每翻一页都要探测 36 个帖子（约 4.7MB），而用户来回切版块时同一批帖子会被
+     * 反复探测（实测一次会话里同一页探测了 5 遍）。缓存后回访不再发请求，也不用等。</p>
+     */
+    private static final java.util.Map<String, Boolean> BAIDU_PROBE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     /** 探测一部影片：是否有百度分享，并顺带补全海报/日期/片长（详情页一次请求三用）。 */
     private static boolean probeAndFill(Movie m) {
         if (m.tid == null || m.tid.isEmpty()) return false;
+        Boolean cached = BAIDU_PROBE.get(m.tid);
+        if (cached != null) return cached;   // 探过就不再来一遍（海报/日期列表页已经有）
         try {
             Http.Resp r = Http.get(BASE + "/thread-" + m.tid + "-1-1.html");
             if (r.code != 200 || isLoginWall(r.body)) return false;
@@ -878,9 +943,12 @@ public final class Site {
             }
             // 角标：日期 · 片长。已有日期（表格布局/列表阶段）优先保留，这里补上详情页片长
             m.remarks = buildRemarks(m.remarks, html);
-            return htmlHasBaiduShare(html);
+            boolean has = htmlHasBaiduShare(html);
+            if (BAIDU_PROBE.size() > 4000) BAIDU_PROBE.clear();
+            BAIDU_PROBE.put(m.tid, has);
+            return has;
         } catch (Exception e) {
-            return false;
+            return false;   // 网络抖动：不写缓存，下次还探
         }
     }
 

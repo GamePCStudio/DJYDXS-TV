@@ -156,6 +156,64 @@ public final class BaiduPan {
         /** 分享页解析出的 shareid / uk：转存成功后用来递归核对「分享清单是否被完整转存」。 */
         public String shareid = "";
         public String uk = "";
+        /**
+         * 转存**实际落地**的网盘绝对路径（如 /超级影库/特别行动：母狮.S03.1080P）。
+         *
+         * <p>分享里的文件夹名和片名经常不一样（被改名、被顺延成「(2)」），所以落地后不能用
+         * 片名去猜 —— 直接拿这里记下的路径精确取文件，永远播不错。</p>
+         */
+        public final List<String> toPaths = new ArrayList<>();
+    }
+
+    /**
+     * 从转存响应里取出「实际落地路径」。
+     *
+     * <p>百度回的是
+     * {@code {"errno":0,"extra":{"list":[{"from":"/分享里的名字","to":"/超级影库/实际名字"}]}}，
+     * 取 to；没有 extra 时退回「目标目录下同名项」；再不行拿分享里的名字拼到目标目录下
+     * （{@link #locate} 会核对是否真的存在）。</p>
+     */
+    private static void collectTargets(TransferResult out, String respBody, String targetDir) {
+        try {
+            JSONObject o = new JSONObject(respBody);
+            JSONObject extra = o.optJSONObject("extra");
+            JSONArray list = extra == null ? null : extra.optJSONArray("list");
+            List<String> froms = new ArrayList<>();
+            if (list != null) {
+                for (int i = 0; i < list.length(); i++) {
+                    JSONObject it = list.optJSONObject(i);
+                    if (it == null) continue;
+                    String to = it.optString("to", "");
+                    if (!to.isEmpty() && !out.toPaths.contains(to)) out.toPaths.add(to);
+                    String f = it.optString("from", "");
+                    if (!f.isEmpty()) froms.add(f);
+                }
+            }
+            if (out.toPaths.isEmpty()) {
+                JSONArray info = o.optJSONArray("info");
+                if (info != null) {
+                    for (int i = 0; i < info.length(); i++) {
+                        JSONObject it = info.optJSONObject(i);
+                        if (it == null) continue;
+                        String p = it.optString("path", "");
+                        if (!p.isEmpty() && p.startsWith(trimSlash(targetDir) + "/")
+                                && !out.toPaths.contains(p)) out.toPaths.add(p);
+                    }
+                }
+            }
+            if (out.toPaths.isEmpty()) {
+                for (String f : froms) {
+                    String leaf = f;
+                    int sl = leaf.lastIndexOf('/');
+                    if (sl >= 0) leaf = leaf.substring(sl + 1);
+                    if (leaf.isEmpty()) continue;
+                    String p = trimSlash(targetDir) + "/" + leaf;
+                    if (!out.toPaths.contains(p)) out.toPaths.add(p);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        android.util.Log.d("SupeMov", "transfer: toPaths=" + out.toPaths);
     }
 
     /**
@@ -371,7 +429,9 @@ public final class BaiduPan {
             android.util.Log.d("SupeMov", "transfer: final errno=" + errno + " body=" + tr.body.substring(0, Math.min(200, tr.body.length())));
             out.ok = "0".equals(errno);
             if (out.ok) {
-                out.message = "转存成功 → " + targetDir;
+                collectTargets(out, tr.body, targetDir);
+                out.message = "转存成功 → "
+                        + (out.toPaths.isEmpty() ? targetDir : out.toPaths.get(0));
                 return out;
             }
             // errno=12 目标目录已有同名文件：自动顺延到 目录(2) (3) … 最多试到 (5)
@@ -388,7 +448,9 @@ public final class BaiduPan {
                     String errno2 = errnoOf(tr2.body);
                     if ("0".equals(errno2)) {
                         out.ok = true;
-                        out.message = "目标目录已有同名影片，已转存到 → " + alt;
+                        collectTargets(out, tr2.body, alt);
+                        out.message = "目标目录已有同名影片，已转存到 → "
+                                + (out.toPaths.isEmpty() ? alt : out.toPaths.get(0));
                         return out;
                     }
                     if (!"12".equals(errno2)) {
@@ -449,40 +511,13 @@ public final class BaiduPan {
         PlayFile out = new PlayFile();
         Http.desktopUa.set(true);
         try {
-            // 转存目录可能因同名被顺延为 目录(2)..(5)，依次找一遍
-            String[] dirs = {
-                    rootDir,
-                    trimSlash(rootDir) + " (2)", trimSlash(rootDir) + " (3)",
-                    trimSlash(rootDir) + " (4)", trimSlash(rootDir) + " (5)"
-            };
+            // 与 resolveAll 共用同一套「只认名字」的匹配：绝不猜「目录里最新的一项」，
+            // 否则刚转存完 A 再点 B，B 会拿到 A 的文件
             String key = normName(keyword);
-            JSONObject pick = null;
-            for (String dir : dirs) {
-                JSONArray list = listDir(dir);
-                if (list == null) continue; // 目录不存在
-                JSONObject newest = null;
-                long newestTime = -1;
-                for (int i = 0; i < list.length(); i++) {
-                    JSONObject f = list.optJSONObject(i);
-                    if (f == null) continue;
-                    if (f.optLong("fs_id", 0) <= 0) continue;
-                    long mt = f.optLong("server_mtime", 0);
-                    if (mt > newestTime) {
-                        newestTime = mt;
-                        newest = f;
-                    }
-                    if (pick == null && !key.isEmpty()) {
-                        String nm = normName(f.optString("server_filename", ""));
-                        if (!nm.isEmpty() && (nm.contains(key) || key.contains(nm))) pick = f;
-                    }
-                }
-                // 没找到同名项时，仅当目录里最新一项是「刚刚转存的」（10 分钟内）才认，
-                // 否则宁可报错也不能播错片子
-                if (pick == null && newest != null
-                        && System.currentTimeMillis() / 1000 - newestTime < 600) {
-                    pick = newest;
-                }
-                if (pick != null) break;
+            JSONObject pick = findAnchor(rootDir, key);
+            if (pick == null) {
+                String rem = rememberedPathFor(keyword);
+                if (!rem.isEmpty()) pick = locate(rootDir, rem);
             }
             if (pick == null) {
                 out.message = key.isEmpty()
@@ -580,17 +615,35 @@ public final class BaiduPan {
      * </ul>
      */
     public static Resolved resolveAll(String rootDir, String keyword) {
-        Resolved out = new Resolved();
+        String key = normName(keyword);
         Http.desktopUa.set(true);
+        JSONObject pick = findAnchor(rootDir, key);
+        if (pick == null) {
+            // 名字匹配不上时，只有当「上次转存的正是这部片」才用记下的落地路径回查
+            String rem = rememberedPathFor(keyword);
+            if (!rem.isEmpty()) pick = locate(rootDir, rem);
+        }
+        String miss = key.isEmpty()
+                ? "网盘目录里没有可播放的内容"
+                : "网盘里没找到这部影片（可先点「转存」再试）";
+        return materialize(pick, miss, key);
+    }
+
+    /** 按转存落地路径精确解析（转存刚结束时用；名字对不上也能定位到）。 */
+    public static Resolved resolveAt(String rootDir, String absPath) {
+        Http.desktopUa.set(true);
+        JSONObject pick = locate(rootDir, absPath);
+        return materialize(pick, "网盘里没找到这部影片（可先点「转存」再试）", absPath);
+    }
+
+    /** 把「命中的那一项」展开成可播放文件表；pick 为 null 时返回带 message 的空结果。 */
+    private static Resolved materialize(JSONObject pick, String missMsg, String keyForLog) {
+        Resolved out = new Resolved();
+        if (pick == null) {
+            out.message = missMsg;
+            return out;
+        }
         try {
-            String key = normName(keyword);
-            JSONObject pick = findAnchor(rootDir, key);
-            if (pick == null) {
-                out.message = key.isEmpty()
-                        ? "网盘目录里没有可播放的内容"
-                        : "网盘里没找到这部影片（可先点「转存」再试）";
-                return out;
-            }
             out.anchorPath = pick.optString("path", "");
             out.anchorName = pick.optString("server_filename", "");
             if (pick.optInt("isdir", 0) == 1) {
@@ -618,7 +671,7 @@ public final class BaiduPan {
             sortNaturally(out.files);
             out.ok = !out.files.isEmpty();
             if (!out.ok) out.message = "目录里没找到视频文件：" + pick.optString("server_filename", "");
-            android.util.Log.d("SupeMov", "resolveAll " + out.anchorPath
+            android.util.Log.d("SupeMov", "resolveAll key=" + keyForLog + " -> " + out.anchorPath
                     + " files=" + out.files.size()
                     + " relRoot=" + (out.anchorName.isEmpty() ? "(单文件,平铺)" : out.anchorName));
             return out;
@@ -628,42 +681,91 @@ public final class BaiduPan {
         }
     }
 
-    /** 在 rootDir（含 目录(2)..(5) 顺延）里定位「这部电影」：先按片名匹配，匹配不到取刚转存的。 */
+    /**
+     * 在转存根目录里**按名字**找那一项；找不到返回 null。
+     *
+     * <p><b>这里绝不能有「猜最新一项」的兜底。</b>老实现里有一条：名字没匹配上、但目录里最新
+     * 一项是 10 分钟内创建的，就认它。于是「刚转存完 A 片，再点 B 片」时 —— B 还没转存过、
+     * 名字当然匹配不上 —— 直接把刚转存的 A 返回了：用户点任何片子出来的都是 A 的剧集列表，
+     * 而且因为「查到了」，连转存都被跳过（连转存按钮都会说「已转存过」）。名字匹配不上就该
+     * 如实报「没找到」，由调用方决定要不要转存。</p>
+     *
+     * <p>「转存下来的文件夹名和片名对不上」的情况改用落地路径定位，见 {@link #locate}。</p>
+     */
     private static JSONObject findAnchor(String rootDir, String key) {
-        String[] dirs = {
+        if (key == null || key.isEmpty()) {
+            android.util.Log.d("SupeMov", "findAnchor: 片名为空，不猜");
+            return null;
+        }
+        for (String dir : rootDirs(rootDir)) {
+            JSONArray list = listDir(dir);
+            if (list == null) continue; // 目录不存在
+            for (int i = 0; i < list.length(); i++) {
+                JSONObject f = list.optJSONObject(i);
+                if (f == null || f.optLong("fs_id", 0) <= 0) continue;
+                String nm = normName(f.optString("server_filename", ""));
+                if (!nm.isEmpty() && (nm.contains(key) || key.contains(nm))) return f;
+            }
+        }
+        android.util.Log.d("SupeMov", "findAnchor miss key=" + key);
+        return null;
+    }
+
+    /** 转存根目录候选：同名冲突时百度会把目录顺延成 目录(2)..(5)。 */
+    private static String[] rootDirs(String rootDir) {
+        return new String[]{
                 rootDir,
                 trimSlash(rootDir) + " (2)", trimSlash(rootDir) + " (3)",
                 trimSlash(rootDir) + " (4)", trimSlash(rootDir) + " (5)"
         };
-        for (String dir : dirs) {
+    }
+
+    /**
+     * 按**绝对路径**在转存根目录里精确取那一项（先比完整 path，再比末段名字）。
+     *
+     * <p>转存接口会把实际落地路径告诉我们（{@link TransferResult#toPaths}），用它定位不存在
+     * 「播错片」的可能 —— 这比拿片名做模糊匹配可靠得多。</p>
+     */
+    private static JSONObject locate(String rootDir, String absPath) {
+        if (absPath == null || absPath.isEmpty()) return null;
+        String leaf = absPath;
+        int sl = leaf.lastIndexOf('/');
+        if (sl >= 0) leaf = leaf.substring(sl + 1);
+        String leafKey = normName(leaf);
+        if (leafKey.isEmpty()) return null;
+        for (String dir : rootDirs(rootDir)) {
             JSONArray list = listDir(dir);
-            if (list == null) continue; // 目录不存在
-            JSONObject pick = null;
-            JSONObject newest = null;
-            long newestTime = -1;
+            if (list == null) continue;
             for (int i = 0; i < list.length(); i++) {
                 JSONObject f = list.optJSONObject(i);
                 if (f == null || f.optLong("fs_id", 0) <= 0) continue;
-                long mt = f.optLong("server_mtime", 0);
-                if (mt > newestTime) {
-                    newestTime = mt;
-                    newest = f;
-                }
-                if (pick == null && !key.isEmpty()) {
-                    String nm = normName(f.optString("server_filename", ""));
-                    if (!nm.isEmpty() && (nm.contains(key) || key.contains(nm))) pick = f;
-                }
+                if (absPath.equals(f.optString("path", ""))) return f;
             }
-            // 没找到同名项时，仅当目录里最新一项是「刚刚转存的」（10 分钟内）才认，
-            // 否则宁可报错也不能播错片子
-            if (pick == null && newest != null
-                    && System.currentTimeMillis() / 1000 - newestTime < 600) {
-                pick = newest;
+            for (int i = 0; i < list.length(); i++) {
+                JSONObject f = list.optJSONObject(i);
+                if (f == null || f.optLong("fs_id", 0) <= 0) continue;
+                if (leafKey.equals(normName(f.optString("server_filename", "")))) return f;
             }
-            if (pick != null) return pick;
         }
+        android.util.Log.d("SupeMov", "locate miss path=" + absPath);
         return null;
     }
+
+    /**
+     * 上次转存**这一部片**落地的网盘路径；片名对不上就返回空（防止张冠李戴）。
+     * 用于「分享里的文件夹名被改过、按片名匹配不到」时精确回查。
+     */
+    private static String rememberedPathFor(String keyword) {
+        try {
+            String t = Settings.lastTransferTitle();
+            if (t == null || t.isEmpty()) return "";
+            if (!normName(t).equals(normName(keyword))) return "";
+            return Settings.lastTransferPath();
+        } catch (Throwable e) {
+            return "";
+        }
+    }
+
 
     /**
      * 递归收集 dir 下的视频文件；rel 是相对「命中目录」的子路径（用于展示与本地还原目录结构）。

@@ -1,6 +1,7 @@
 package com.supermov.tv;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
@@ -8,7 +9,10 @@ import android.os.Looper;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
 import android.view.WindowManager;
+import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -26,7 +30,18 @@ import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.ui.PlayerView;
 
+import android.graphics.Color;
+
+import androidx.media3.common.Format;
+import androidx.media3.common.TrackSelectionOverride;
+import androidx.media3.common.TrackSelectionParameters;
+import androidx.media3.common.Tracks;
+import androidx.media3.ui.CaptionStyleCompat;
+import androidx.media3.ui.SubtitleView;
+
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -85,8 +100,11 @@ public class PlayerActivity extends Activity {
     /**
      * 连按时延迟一点才真正 seekTo：一串连按只跳一次。
      * 否则每按一下都发一次 seek，LocalProxy 直链会被反复重连，画面疯狂缓冲。
+     *
+     * <p>必须大于 {@link #HOLD_ARM_MS}：这样「按住不放」升级成拖动时，
+     * 还能把这一次待提交的 seek 取消掉，整段长按只真跳一次（松手那一刻）。</p>
      */
-    private static final long SEEK_COMMIT_DELAY = 350L;
+    private static final long SEEK_COMMIT_DELAY = 500L;
     /** 左右键每按一次的时间步长 */
     private static final long SEEK_STEP_MS = 10000L;
     /** 遥控器「快进/快退」专用键的步长 */
@@ -101,6 +119,78 @@ public class PlayerActivity extends Activity {
     private long seekTarget = -1;
     private boolean seekPending = false;
     private long lastSeekKeyAt = 0;
+
+    // ---------- v1.15：字幕/音轨切换 · 进度记忆 · 长按拖动 ----------
+
+    /** 按住超过它就算「长按」，升级成连续拖动 */
+    private static final long HOLD_ARM_MS = 450L;
+    /** 拖动时进度条的刷新间隔 */
+    private static final long DRAG_TICK_MS = 100L;
+    /** 拖满整片大约需要多少个 tick（240 × 100ms ≈ 24 秒） */
+    private static final long DRAG_TICKS_FULL = 240L;
+    /** 拖动时每 tick 的最小步长，免得短片拖起来太黏 */
+    private static final long DRAG_MIN_STEP_MS = 1500L;
+    /** 每 10 秒落一次播放进度 */
+    private static final long PROGRESS_SAVE_INTERVAL = 10000L;
+    /** 进度不到这里就不值得记（防止「只看了个片头」把记录写脏） */
+    private static final long RESUME_MIN_MS = 15000L;
+    /** 离结尾这么近就当看完了，直接清记录 */
+    private static final long RESUME_TAIL_MS = 20000L;
+    /** 字幕字号（占屏幕高度的比例，media3 默认 0.0533） */
+    private static final float SUBTITLE_TEXT_FRACTION = 0.066f;
+
+    /** 轨道选择框的条目字号：TV 上默认字号太大，一屏放不下几条轨道。 */
+    private static final float DIALOG_ITEM_SP = 13f;
+
+    /** 长按拖动中 */
+    private boolean dragging = false;
+    private boolean dragBackward = false;
+    private long dragPos = 0;
+    /** 上一次左右键的方向，长按成立时沿用它 */
+    private boolean lastSeekBackward = false;
+    /** 记忆的播放进度；-1 = 还没查过 */
+    private long resumePos = -1;
+    /** 是否要在出画后提示「继续上次进度」 */
+    private boolean resumeNotice = false;
+
+    /** 按住不放 -> 升级成连续拖动 */
+    private final Runnable holdArm = new Runnable() {
+        @Override
+        public void run() {
+            beginDrag(lastSeekBackward);
+        }
+    };
+
+    /** 拖动中：只动进度条，不真 seek；松手才落点 */
+    private final Runnable dragTick = new Runnable() {
+        @Override
+        public void run() {
+            if (!dragging || player == null) return;
+            long dur = player.getDuration();
+            if (dur == C.TIME_UNSET || dur <= 0) {
+                endDrag(false);
+                return;
+            }
+            long stepMs = dur / DRAG_TICKS_FULL;
+            if (stepMs < DRAG_MIN_STEP_MS) stepMs = DRAG_MIN_STEP_MS;
+            dragPos += dragBackward ? -stepMs : stepMs;
+            if (dragPos < 0) dragPos = 0;
+            if (dragPos > dur) dragPos = dur;
+            showSeekOverlay(dragBackward ? "\u25c0\u25c0 \u5feb\u9000\u4e2d"
+                    : "\u5feb\u8fdb\u4e2d \u25b6\u25b6", dragPos);
+            main.postDelayed(this, DRAG_TICK_MS);
+        }
+    };
+
+    /** 定时落盘播放进度 */
+    private final Runnable saveTick = new Runnable() {
+        @Override
+        public void run() {
+            saveProgressNow();
+            main.postDelayed(this, PROGRESS_SAVE_INTERVAL);
+        }
+    };
+
 
     private final Runnable hideChrome = new Runnable() {
         @Override
@@ -175,14 +265,41 @@ public class PlayerActivity extends Activity {
                     pbBuffering.setVisibility(
                             state == Player.STATE_BUFFERING ? View.VISIBLE : View.GONE);
                 }
-                if (state == Player.STATE_READY && !chromeArmable) {
-                    chromeArmable = true;
-                    main.removeCallbacks(hideChrome);
-                    main.postDelayed(hideChrome, CHROME_HIDE_DELAY);
+                if (state == Player.STATE_READY) {
+                    if (resumeNotice) {
+                        resumeNotice = false;
+                        // 用记录的位置本身提示，不依赖 seek 之后 getCurrentPosition 的时点
+                        showSeekOverlay("\u7ee7\u7eed\u4e0a\u6b21\u8fdb\u5ea6 " + fmtTime(resumePos),
+                                resumePos);
+                    }
+                    if (!chromeArmable) {
+                        chromeArmable = true;
+                        main.removeCallbacks(hideChrome);
+                        main.postDelayed(hideChrome, CHROME_HIDE_DELAY);
+                    }
+                } else if (state == Player.STATE_ENDED) {
+                    // 看完了：把进度记录清掉，下次从头开始
+                    Settings.clearPos(progressKey());
                 }
             }
         });
         playerView.setPlayer(player);
+
+        // 字幕渲染在 PlayerView 的默认布局里（SubtitleView, id=exo_subtitles）。
+        // 默认是「无描边白字 + 5.33% 屏高」，电视上远看偏小，这里改成黑描边 + 6.6%。
+        try {
+            SubtitleView sv = playerView.getSubtitleView();
+            if (sv != null) {
+                sv.setStyle(new CaptionStyleCompat(Color.WHITE, Color.TRANSPARENT, Color.TRANSPARENT,
+                        CaptionStyleCompat.EDGE_TYPE_OUTLINE, Color.BLACK, null));
+                sv.setFractionalTextSize(SUBTITLE_TEXT_FRACTION);
+                sv.setBottomPaddingFraction(0.10f);
+            }
+        } catch (Throwable ignored) {
+        }
+
+        // 每 10 秒落一次进度（另外在暂停 / 退出 / 播完时也会落）
+        main.postDelayed(saveTick, PROGRESS_SAVE_INTERVAL);
 
         if (!localFile.isEmpty()) {
             playLocalFile();
@@ -199,9 +316,11 @@ public class PlayerActivity extends Activity {
             return;
         }
         status("本地播放：" + f.getName() + "（" + humanSize(f.length()) + "）");
+        long start = freshStartPos();
         MediaItem.Builder b = new MediaItem.Builder().setUri(android.net.Uri.fromFile(f));
         player.setMediaItem(b.build());
         player.prepare();
+        if (start > 0) player.seekTo(start);
         player.setPlayWhenReady(true);
     }
 
@@ -301,13 +420,32 @@ public class PlayerActivity extends Activity {
         }, "player-fetch").start();
     }
 
+    /**
+     * 全新开播时「该从哪儿开始」：有记忆的进度就用它，否则 0。
+     *
+     * <p>只在这里读一次并缓存到 resumePos —— 中途换链/降级时要保住手上这条进度，
+     * 不能再被旧记忆覆盖回去。</p>
+     */
+    private long freshStartPos() {
+        if (resumePos < 0) resumePos = loadResumePos();
+        if (resumePos > 0) {
+            resumeNotice = true;
+            status("\u6b63\u5728\u4ece\u4e0a\u6b21\u7684\u8fdb\u5ea6\u7ee7\u7eed\u2026\uff08"
+                    + fmtTime(resumePos) + "\uff09");
+            return resumePos;
+        }
+        return 0;
+    }
+
     private void startPlay(String url, long pos, boolean m3u8) {
         if (finishing || player == null) return;
+        // pos > 0 = 换链/降级时保住手上这条进度；pos <= 0 = 全新开播，这时才去读记忆的进度
+        long start = (pos > 0) ? pos : freshStartPos();
         MediaItem.Builder b = new MediaItem.Builder().setUri(url);
         if (m3u8) b.setMimeType(MimeTypes.APPLICATION_M3U8);
         player.setMediaItem(b.build());
         player.prepare();
-        if (pos > 0) player.seekTo(pos);
+        if (start > 0) player.seekTo(start);
         player.setPlayWhenReady(true);
     }
 
@@ -417,29 +555,281 @@ public class PlayerActivity extends Activity {
         boolean isForward = (code == KeyEvent.KEYCODE_DPAD_RIGHT || code == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD);
         boolean isOk = (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER
                 || code == KeyEvent.KEYCODE_NUMPAD_ENTER || code == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);
+        boolean isSubs = (code == KeyEvent.KEYCODE_DPAD_UP);
+        boolean isAudio = (code == KeyEvent.KEYCODE_DPAD_DOWN);
 
-        if (!isRewind && !isForward && !isOk) {
+        if (!isRewind && !isForward && !isOk && !isSubs && !isAudio) {
             // 其它键（返回/音量…）照旧透传，顺手把顶部底部提示亮 3 秒
             if (e.getAction() == KeyEvent.ACTION_DOWN) pokeChrome();
             return super.dispatchKeyEvent(e);
         }
 
-        if (e.getAction() != KeyEvent.ACTION_DOWN) return true;   // 吞掉 UP，免得再响一次按键音
-        if (e.getRepeatCount() > 0) return true;                 // 长按的重复事件忽略：按一下就是一下
-
-        if (isRewind || isForward) {
-            long step = (code == KeyEvent.KEYCODE_MEDIA_REWIND || code == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD)
-                    ? SEEK_STEP_BIG_MS : SEEK_STEP_MS;
-            doSeek(step, isRewind);
-        } else {
-            togglePlayPause();
+        // 上/下 = 列出字幕轨 / 音轨让用户挑（长按产生的重复事件忽略：按一下弹一次）
+        if (isSubs || isAudio) {
+            if (e.getAction() == KeyEvent.ACTION_DOWN && e.getRepeatCount() == 0) {
+                showTrackPicker(isSubs ? C.TRACK_TYPE_TEXT : C.TRACK_TYPE_AUDIO);
+            }
+            return true;
         }
+
+        // 抬手：如果刚才在长按拖动，这里才真正落到拖到的位置
+        if (e.getAction() == KeyEvent.ACTION_UP || e.getAction() == KeyEvent.ACTION_CANCEL) {
+            main.removeCallbacks(holdArm);
+            if (dragging) endDrag(e.getAction() == KeyEvent.ACTION_UP);
+            return true;                 // 吞掉 UP，免得再响一次按键音
+        }
+        if (e.getAction() != KeyEvent.ACTION_DOWN) return true;
+
+        if (e.getRepeatCount() > 0) return true;   // 长按的重复事件：位移在首次按下时已算过
+        if (dragging) {
+            // 万一手上的 UP 事件丢了（切窗口/弹框），任意一次新的按下也能把它收掉
+            endDrag(true);
+            return true;
+        }
+
+        if (isOk) {
+            togglePlayPause();
+            return true;
+        }
+
+        long step = (code == KeyEvent.KEYCODE_MEDIA_REWIND || code == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD)
+                ? SEEK_STEP_BIG_MS : SEEK_STEP_MS;
+        doSeek(step, isRewind);
+        // 按住不放超过 450ms -> 升级成连续拖动（松手才落点）
+        main.removeCallbacks(holdArm);
+        main.postDelayed(holdArm, HOLD_ARM_MS);
         return true;
+    }
+
+    // ---------- 上/下键：选择字幕轨与音轨 ----------
+
+    /**
+     * 弹出轨道选择框：把这一类的候选轨道全列出来让用户挑。
+     *
+     * <p>为什么不做「按一下切一条」：轨道顺序由容器里 TrackGroup 的排列决定，
+     * 用户根本不知道要按几下才轮到「国语 5.1」，按过头还得绕一整圈。
+     * 列出名字 + 标出当前选中项，一次到位。字幕多给一条「关闭字幕」。</p>
+     */
+    private void showTrackPicker(int type) {
+        if (player == null) return;
+        boolean isText = (type == C.TRACK_TYPE_TEXT);
+        String what = isText ? "\u5b57\u5e55" : "\u97f3\u8f68";
+
+        // 弹框前先把左右键那个「还没成立的长按」收掉：否则用户是在长按途中按的上键，
+        // 松手事件会被对话框吃掉、回不到 Activity，dragTick 会一直空转下去。
+        main.removeCallbacks(holdArm);
+        if (dragging) endDrag(true);
+
+        if (player.getPlaybackState() == Player.STATE_IDLE) {
+            showSeekOverlay("\u89c6\u9891\u8fd8\u6ca1\u51c6\u5907\u597d");
+            return;
+        }
+
+        // 把「受支持」的候选轨道摊平成平行数组
+        List<Tracks.Group> groups = new ArrayList<>();
+        List<Integer> idxs = new ArrayList<>();
+        for (Tracks.Group g : player.getCurrentTracks().getGroups()) {
+            if (g.getType() != type) continue;
+            for (int i = 0; i < g.length; i++) {
+                if (!g.isTrackSupported(i)) continue;
+                groups.add(g);
+                idxs.add(i);
+            }
+        }
+
+        if (groups.isEmpty()) {
+            // 还在缓冲时轨道表可能尚未解析出来，这时报「没有字幕」是误报
+            if (player.getPlaybackState() == Player.STATE_BUFFERING) {
+                showSeekOverlay("\u6b63\u5728\u89e3\u6790\u8f68\u9053\uff0c\u7a0d\u540e\u518d\u8bd5 \u00b7 " + what);
+                return;
+            }
+            showSeekOverlay(isText ? "\u5f53\u524d\u5f71\u7247\u6ca1\u6709\u5b57\u5e55\u8f68"
+                    : "\u5f53\u524d\u5f71\u7247\u6ca1\u6709\u97f3\u8f68");
+            return;
+        }
+
+        // 当前选中的是哪一条（字幕全关时 = -1）
+        int cur = -1;
+        for (int i = 0; i < groups.size(); i++) {
+            if (groups.get(i).isTrackSelected(idxs.get(i).intValue())) {
+                cur = i;
+                break;
+            }
+        }
+
+        // 这里用 setItems 而不是 setSingleChoiceItems：后者的条目是 CheckedTextView，
+        // 给它改 ellipsize / maxLines 在部分 ROM 上会让条目文字直接不显示。
+        // 选中项自己点一个实心圆，效果一样，长轨名还能换两行。
+        final List<String> items = new ArrayList<>();
+        final List<Tracks.Group> itemGroup = new ArrayList<>();
+        final List<Integer> itemIdx = new ArrayList<>();
+        final List<Boolean> itemOff = new ArrayList<>();
+
+        if (isText) {
+            items.add(mark(cur < 0) + "\u5173\u95ed\u5b57\u5e55");
+            itemGroup.add(null);
+            itemIdx.add(0);
+            itemOff.add(Boolean.TRUE);
+        }
+        for (int i = 0; i < groups.size(); i++) {
+            items.add(mark(i == cur) + trackLabel(groups.get(i), idxs.get(i).intValue(), type));
+            itemGroup.add(groups.get(i));
+            itemIdx.add(idxs.get(i));
+            itemOff.add(Boolean.FALSE);
+        }
+
+        AlertDialog dlg = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("\u9009\u62e9" + what)
+                .setItems(items.toArray(new String[0]), (d, which) ->
+                        applyTrack(type, itemGroup.get(which), itemIdx.get(which).intValue(),
+                                itemOff.get(which).booleanValue()))
+                .setNegativeButton("\u53d6\u6d88", null)
+                .create();
+        dlg.show();
+        tuneDialog(dlg);
+    }
+
+    /** 列表里的选中标记：实心圆 / 空心圆，两个字符等宽，列不会参差。 */
+    private String mark(boolean on) {
+        return on ? "\u25cf " : "\u25cb ";
+    }
+
+    /** 真正改选轨：走 {@link TrackSelectionParameters}，不重建 TrackSelector，改完立刻生效。 */
+    private void applyTrack(int type, Tracks.Group g, int idx, boolean off) {
+        if (player == null) return;
+        boolean isText = (type == C.TRACK_TYPE_TEXT);
+        TrackSelectionParameters.Builder b = player.getTrackSelectionParameters().buildUpon();
+        b.clearOverridesOfType(type);
+        String label;
+        if (off || g == null) {
+            b.setTrackTypeDisabled(type, true);
+            label = "\u5173\u95ed";
+        } else {
+            b.setTrackTypeDisabled(type, false);
+            b.setOverrideForType(new TrackSelectionOverride(g.getMediaTrackGroup(), idx));
+            label = trackLabel(g, idx, type);
+        }
+        try {
+            player.setTrackSelectionParameters(b.build());
+        } catch (Throwable e) {
+            Log.d(TAG, "setTrackSelectionParameters err " + e);
+            toast("\u5207\u6362\u5931\u8d25");
+            return;
+        }
+        showSeekOverlay((isText ? "\u5b57\u5e55\uff1a" : "\u97f3\u8f68\uff1a") + label);
+    }
+
+    /** 轨道的展示名：优先 label，其次语言代码，再兜底「字幕 N / 音轨 N」。 */
+    private String trackLabel(Tracks.Group g, int idx, int type) {
+        Format f = g.getTrackFormat(idx);
+        String s = (f == null) ? "" : f.label;
+        if (s == null || s.trim().isEmpty()) s = (f == null) ? "" : f.language;
+        if (s == null || s.trim().isEmpty()) {
+            s = (type == C.TRACK_TYPE_TEXT ? "\u5b57\u5e55 " : "\u97f3\u8f68 ") + (idx + 1);
+        }
+        s = s.trim();
+        if (f != null && type == C.TRACK_TYPE_AUDIO && f.channelCount > 0) {
+            s = s + " \u00b7 " + f.channelCount + "ch";
+        }
+        if (s.length() > 26) s = s.substring(0, 26) + "\u2026";
+        return s;
+    }
+
+    // ---------- 长按左右键：连续拖动进度 ----------
+
+    /** 长按成立：先把进度条接管过来，之后每次 tick 只动进度条，不真 seek。 */
+    private void beginDrag(boolean backward) {
+        if (dragging || finishing || player == null) return;
+        if (player.getPlaybackState() == Player.STATE_IDLE) return;
+        if (!player.isCurrentMediaItemSeekable()) return;
+        long dur = player.getDuration();
+        if (dur == C.TIME_UNSET || dur <= 0) return;      // 时长未知（直播）没法拖
+
+        dragging = true;
+        dragBackward = backward;
+        // 起点沿用「刚按下的那一步」算出的目标位置，进度条就不会往回跳
+        long base = (seekTarget >= 0) ? seekTarget : player.getCurrentPosition();
+        if (base < 0) base = 0;
+        if (base > dur) base = dur;
+        dragPos = base;
+
+        // 刚才那一步不再单独跳了，等松手一起落
+        main.removeCallbacks(commitSeek);
+        seekPending = false;
+        main.removeCallbacks(dragTick);
+        main.post(dragTick);
+    }
+
+    /** 松手：真正落到拖到的位置。 */
+    private void endDrag(boolean commit) {
+        boolean was = dragging;
+        dragging = false;
+        main.removeCallbacks(dragTick);
+        if (!was || !commit || finishing || player == null) return;
+        long dur = player.getDuration();
+        long p = Math.max(0L, dragPos);
+        if (dur > 0 && p > dur) p = dur;
+        player.seekTo(p);
+        seekTarget = p;
+        seekPending = false;
+        lastSeekKeyAt = 0;                 // 下一轮按键重新取基准
+        showSeekOverlay((dragBackward ? "\u25c0 \u5df2\u62d6\u5230 " : "\u5df2\u62d6\u5230 ")
+                + fmtTime(p), p);
+        saveProgressNow();
+    }
+
+    // ---------- 记忆播放进度 ----------
+
+    /** 进度记录的 key：本地文件按路径、网盘按「路径 + 大小」——重传后大小变了就自动换一条。 */
+    private String progressKey() {
+        if (!localFile.isEmpty()) return "file:" + localFile;
+        if (playFile != null && playFile.path != null && !playFile.path.isEmpty()) {
+            if (playFile.size > 0) return "pan:" + playFile.path + "#" + playFile.size;
+            return "pan:" + playFile.path;
+        }
+        if (!reqBpath.isEmpty()) return "pan:" + reqBpath;
+        return name.isEmpty() ? "" : "name:" + name;
+    }
+
+    /** 读上次看到哪儿；不值得续播（太靠前/太靠后/没记录）一律返回 0。 */
+    private long loadResumePos() {
+        String k = progressKey();
+        if (k.isEmpty()) return 0;
+        long[] v = Settings.loadPos(k);
+        if (v == null) return 0;
+        long pos = v[0];
+        long dur = v[1];
+        if (pos < RESUME_MIN_MS) return 0;
+        if (dur > 0 && pos > dur - RESUME_TAIL_MS) return 0;
+        return pos;
+    }
+
+    /** 立即落一次进度（定时器 / 暂停 / 退出时调用）。 */
+    private void saveProgressNow() {
+        if (player == null) return;
+        String k = progressKey();
+        if (k.isEmpty()) return;
+        int st = player.getPlaybackState();
+        if (st == Player.STATE_IDLE) return;
+        if (st == Player.STATE_ENDED) {
+            Settings.clearPos(k);
+            return;
+        }
+        long dur = player.getDuration();
+        if (dur == C.TIME_UNSET || dur <= 0) return;      // 时长还没解析出来 / 直播，不记
+        long pos = dragging ? dragPos : player.getCurrentPosition();
+        if (pos < RESUME_MIN_MS) return;                  // 刚开头，不值得记
+        if (pos > dur - RESUME_TAIL_MS) {                 // 快看完了 -> 下次从头
+            Settings.clearPos(k);
+            return;
+        }
+        Settings.savePos(k, pos, dur);
     }
 
     /** 按时间快退/快进；连续按在同一基准上叠加位移。 */
     private void doSeek(long step, boolean backward) {
         if (player == null) return;
+        lastSeekBackward = backward;
         int st = player.getPlaybackState();
         if (st == Player.STATE_IDLE) {
             // ENDED 也允许跳：看完按左键退回上一段，ExoPlayer 会自动继续播
@@ -491,10 +881,17 @@ public class PlayerActivity extends Activity {
 
     /** 中央覆盖层：一行提示 + 进度条 + 当前/总时长，2.5 秒后自动淡出。 */
     private void showSeekOverlay(String tip) {
+        showSeekOverlay(tip, -1);
+    }
+
+    /** 同上，但进度条画在指定位置上（长按拖动时用）。 */
+    private void showSeekOverlay(String tip, long posExplicit) {
         if (boxSeek == null) return;
         long dur = (player == null) ? C.TIME_UNSET : player.getDuration();
         long pos;
-        if (seekPending && seekTarget >= 0) {
+        if (posExplicit >= 0) {
+            pos = posExplicit;
+        } else if (seekPending && seekTarget >= 0) {
             pos = seekTarget;
         } else {
             pos = (player == null) ? 0 : player.getCurrentPosition();
@@ -546,6 +943,60 @@ public class PlayerActivity extends Activity {
                 }
             }
         }, 320);
+    }
+
+    // ---------- 对话框在 TV 上的调优 ----------
+
+    /** TV 上对话框默认又窄、字又大，一屏放不下几条轨道 —— 统一走这里调一遍。 */
+    private void tuneDialog(final AlertDialog dlg) {
+        widen(dlg, 1.3f);
+        shrinkItems(dlg);
+    }
+
+    /** 把窗口宽度在「当前实际宽度」基础上放大 factor 倍，上限为屏宽的 94%。 */
+    private void widen(final AlertDialog dlg, final float factor) {
+        final Window w = dlg.getWindow();
+        if (w == null) return;
+        // 布局完成前 getWidth() 还是 0，post 到下一轮再量
+        w.getDecorView().post(() -> {
+            int base = w.getDecorView().getWidth();
+            int screen = getResources().getDisplayMetrics().widthPixels;
+            int target = base > 0 ? (int) (base * factor) : (int) (screen * 0.85f);
+            int cap = (int) (screen * 0.94f);
+            if (target > cap) target = cap;
+            w.setLayout(target, ViewGroup.LayoutParams.WRAP_CONTENT);
+        });
+    }
+
+    /** 列表条目：缩小字号、允许两行、超出用省略号（长轨名尽量显示完整）。 */
+    private void shrinkItems(AlertDialog dlg) {
+        ListView lv = dlg.getListView();
+        if (lv == null) return;
+        // 条目是回收复用的，后滚出来的孩子也要处理 -> 挂个层级监听
+        lv.setOnHierarchyChangeListener(new ViewGroup.OnHierarchyChangeListener() {
+            @Override
+            public void onChildViewAdded(View parent, View child) {
+                shrinkText(child);
+            }
+
+            @Override
+            public void onChildViewRemoved(View parent, View child) {
+            }
+        });
+        for (int i = 0; i < lv.getChildCount(); i++) shrinkText(lv.getChildAt(i));
+    }
+
+    private void shrinkText(View v) {
+        if (v instanceof TextView) {
+            TextView tv = (TextView) v;
+            tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, DIALOG_ITEM_SP);
+            tv.setSingleLine(false);
+            tv.setMaxLines(2);
+            tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        } else if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) shrinkText(g.getChildAt(i));
+        }
     }
 
     private void toast(String s) {
@@ -604,15 +1055,22 @@ public class PlayerActivity extends Activity {
     @Override
     protected void onStop() {
         super.onStop();
+        main.removeCallbacks(holdArm);
+        endDrag(false);
+        saveProgressNow();                 // 息屏/切走前把进度存下来
         if (player != null && !isFinishing()) player.pause();
     }
 
     @Override
     protected void onDestroy() {
         finishing = true;
+        saveProgressNow();                 // 退出前最后落一次
         main.removeCallbacks(hideChrome);
         main.removeCallbacks(hideSeekOverlay);
         main.removeCallbacks(commitSeek);
+        main.removeCallbacks(holdArm);
+        main.removeCallbacks(dragTick);
+        main.removeCallbacks(saveTick);
         try {
             if (player != null) {
                 playerView.setPlayer(null);
