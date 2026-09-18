@@ -1,5 +1,7 @@
 // Top-level build file
 plugins {
-    // media3 1.11.0 要求 compileSdk 36，compileSdk 36 要求 AGP >= 8.9.0
-    id 'com.android.application' version '8.9.1' apply false
+    // AGP 对齐到 NEXIO media3 fork 自己用的版本（fork build.gradle 里是 8.13.2），
+    // 免得 composite build 里并存两套 AGP 行为。
+    // 注意：AGP 8.13.2 硬性要求 Gradle >= 8.13（见 gradle-wrapper.properties）。
+    id 'com.android.application' version '8.13.2' apply false
 }
