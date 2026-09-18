@@ -71,11 +71,18 @@ public class SettingsActivity extends Activity {
                         + "AC-3 / E-AC-3 命中率最高；DTS-HD / TrueHD / AC-4 多数国产盒子没有"
                         + "授权解码器，勾了可能「有画面没声音」",
                 v -> showPassthroughCodecDialog()));
-        group.addView(option("最大声道数: " + Settings.audioMaxChannels() + " ch",
-                "2 = 立体声 / 6 = 5.1 / 8 = 7.1\n"
-                        + "实测显示：选 8 时这台盒子建轨会被 AudioFlinger 拒（status -12）→ 没声，"
-                        + "所以缺省是 6；接功放时优先 6，只有 7.1 功放且确实出声再试 8",
+        group.addView(option("最大声道数上限: " + Settings.audioMaxChannels() + " ch",
+                "2 = 立体声 / 6 = 5.1 / 8 = 7.1（缺省 8）\n"
+                        + "这是「上限」而不是「写死」：媒体引擎拿它在片源里挑不超过该声道的音轨\n"
+                        + "v1.25 曾把缺省压到 6，代价是 7.1 的 TrueHD / DTS-HD 一律直通不了 —— "
+                        + "v1.26 改回 8，真建不出轨时自动降道重试（见下一项）",
                 v -> showMaxChannelDialog()));
+        group.addView(option("本机直通实测: " + ptOkText(),
+                "第一次播直通片时自动逐级试 8 → 6 → 2，出声的那一档记在本机，以后开局直接用\n"
+                        + "这就是「设备差异」的处理办法：不按机型一个个打补丁，让每台机器自己把话说完，"
+                        + "能 8 声道的功放和只能 6 声道的盒子各得其所\n"
+                        + "点按可清除记录，下次播放重新测（换功放 / 换线 / 刷固件之后用）",
+                v -> showPtResetDialog()));
         group.addView(option("直通失败自动回退: " + onOff(Settings.passthroughFallback()),
                 "开：直通建音频轨失败时自动改用解码重播，不会一播就崩\n"
                         + "关：失败就停在错误上（排查设备到底支不支持时用）",
@@ -87,8 +94,10 @@ public class SettingsActivity extends Activity {
                 "多音轨时优先挑这个语种；「不指定」= 跟随片源默认轨",
                 v -> showAudioLangDialog()));
 
-        group.addView(option("音频诊断",
-                "有画面没声音先看这里：设备真实直通能力 / 系统里的音频解码器 / 上次音频失败原因\n"
+        group.addView(option("媒体诊断（音频 / 视频 / 字幕）",
+                "有画面没声音、杜比视界点不亮、ASS 字幕不出来 —— 先看这里\n"
+                        + "含：设备真实直通能力 / 本机直通实测声道 / 系统音频与视频解码器 / "
+                        + "显示端 HDR 与 DV 能力 / 上次音频失败原因\n"
                         + "（media3 在「直通不了又没有解码器」时会静默丢弃音轨：画面照播、不报错、也没声）",
                 v -> showAudioDiag()));
 
@@ -98,10 +107,19 @@ public class SettingsActivity extends Activity {
                 "适应屏幕 = 保留原始比例、可能有黑边（推荐）\n"
                         + "拉伸 / 裁剪 = 填满屏幕，前者会变形，后者会切掉边缘",
                 v -> showResizeDialog()));
-        group.addView(option("在线清晰度上限: " + qualityName(Settings.qualityCap()),
-                "原画优先 = 先取原画直链，失败才降级转码流（推荐）\n"
-                        + "选 1080p / 720p 会直接走云端转码流，省带宽但清晰度打折",
-                v -> showQualityDialog()));
+        group.addView(option("最大分辨率: " + videoHeightName(Settings.maxVideoHeight()),
+                "不限制（推荐）= 片源是什么就放什么\n"
+                        + "盒子/电视只到 1080p 却硬啃 4K，常见表现是掉帧、发烫、甚至解码器直接崩\n"
+                        + "只有「同一部片里既有 4K 又有 1080p 轨」时才需要限制，单轨片源限了也没用",
+                v -> showMaxVideoHeightDialog()));
+        group.addView(option("最大帧率: " + videoFpsName(Settings.maxVideoFrameRate()),
+                "不限制（推荐）。老盒子遇到 60fps 片源明显卡顿时，可以压到 30 或 24",
+                v -> showMaxVideoFpsDialog()));
+        group.addView(option("解码器优先: " + decoderPrefName(Settings.decoderPrefer()),
+                "自动（推荐）= 先用硬件解码，失败再退软解\n"
+                        + "优先硬解 = 只认硬解：省电、颜色和 HDR 更准，但遇到不支持的编码会直接失败\n"
+                        + "优先软解 = 一律走 CPU：最稳，代价是 4K 会烫、会卡",
+                v -> showDecoderPrefDialog()));
         group.addView(option("硬解失败回退软解: " + onOff(Settings.decoderFallback()),
                 "开：盒子硬解不了该编码时自动换别的解码器再试\n"
                         + "关：直接报解码失败（排查不支持编码时用）",
@@ -109,9 +127,53 @@ public class SettingsActivity extends Activity {
                     Settings.setDecoderFallback(!Settings.decoderFallback());
                     rebuild();
                 }));
+        group.addView(option("隧道模式: " + onOff(Settings.tunneling()),
+                "开 = Tunneled playback：把「解码 + 显示」交给系统一气呵成\n"
+                        + "部分老电视盒上音画会更同步、切台不黑屏；也有固件直接给黑屏 —— "
+                        + "打开后如果没画面就关掉（缺省关）",
+                v -> {
+                    Settings.setTunneling(!Settings.tunneling());
+                    rebuild();
+                }));
+        group.addView(option("杜比视界处理: " + dvPolicyName(Settings.dvPolicy()),
+                "跟随片源（推荐）。遇到「杜比视界片源全黑 / 发紫」再改成「优先非 DV 轨」\n"
+                        + "实话：DV 能不能点亮由「显示端 + 芯片」决定，应用改不了 —— "
+                        + "这一项只能让播放器在同一部片里改挑 HDR10 / H.265 基础层那条轨",
+                v -> showDvPolicyDialog()));
+
+        // ②.9 播放 · 字幕（v1.26：用户反馈「没有字幕相关的选项」）
+        group.addView(sectionLabel("播放 · 字幕"));
+        group.addView(option("字幕模式: " + subModeName(Settings.subMode()),
+                "跟随片源（推荐）/ 总是打开 / 一律关闭\n"
+                        + "「一律关闭」只是不自动开字幕，播放中仍然可以用上/下键手动选字幕轨",
+                v -> showSubModeDialog()));
+        group.addView(option("首选字幕语言: " + langName(Settings.subPreferredLang()),
+                "内嵌多字幕时优先挑这个语种；「不指定」= 跟随片源默认轨",
+                v -> showSubLangDialog()));
         group.addView(option("字幕字号: " + subSizeName(Settings.subSize()),
                 "以屏幕高度为基准；电视上离得远，建议「大」",
                 v -> showSubSizeDialog()));
+        group.addView(option("字幕颜色: " + subColorName(Settings.subColor()),
+                "白字黑描边（缺省）/ 黄字黑描边 / 黑底白字 / 白字无描边\n"
+                        + "这是全局样式，会盖掉 ASS 里逐行的 \\c&Hxx 颜色；想保留片源原色选「白字无描边」",
+                v -> showSubColorDialog()));
+        group.addView(option("字幕位置: " + subPosName(Settings.subPos()),
+                "下部（缺省）/ 中部 / 顶部\n"
+                        + "做法是把 SubtitleView 的底边留白比例改掉，对 ASS 里写了 \\pos 的字幕同样有效",
+                v -> showSubPosDialog()));
+        group.addView(option("外挂字幕自动挂载: " + onOff(Settings.subExternalAuto()),
+                "开（缺省）：播本地文件时自动在同目录找同名 .ass / .ssa / .srt / .vtt / .ttml 挂上\n"
+                        + "片名和字幕名对不上时，用下面的「手动字幕文件」",
+                v -> {
+                    Settings.setSubExternalAuto(!Settings.subExternalAuto());
+                    rebuild();
+                }));
+        group.addView(option("手动字幕文件: " + subManualText(),
+                "填本地绝对路径或 http(s) 链接，优先级高于自动查找；留空 = 关掉手动挂载\n"
+                        + "这条专门为「外挂 ASS / SSA 字幕」准备：片子和字幕是两个文件时走这里",
+                v -> showSubManualDialog()));
+
+        group.addView(sectionLabel("播放 · 其他"));
         group.addView(option("记住播放进度: " + onOff(Settings.rememberPos()),
                 "关掉后不再自动续播，每次从头开始（已记录的进度不会被删）",
                 v -> {
@@ -470,17 +532,29 @@ public class SettingsActivity extends Activity {
         return "适应屏幕（推荐）";
     }
 
-    private void showQualityDialog() {
-        final int[] caps = {Settings.QUALITY_ORIGINAL, Settings.QUALITY_1080, Settings.QUALITY_720};
-        final String[] labels = new String[caps.length];
-        for (int i = 0; i < caps.length; i++) {
-            labels[i] = (caps[i] == Settings.qualityCap() ? "● " : "○ ") + qualityName(caps[i]);
+    // ---------- 播放 · 视频（v1.26 新增）----------
+
+    /**
+     * 单选列表对话框的公共壳子。
+     *
+     * <p>不用 {@code java.util.function.IntConsumer} —— 它是 API 24 才有的，
+     * 本应用 minSdk 23，用了会在 6.0 机器上炸。所以自己声明一个接口。</p>
+     */
+    private interface IntPick {
+        void onPick(int v);
+    }
+
+    private void pickOne(String title, int[] values, int cur, String[] names, IntPick pick) {
+        final int[] vals = values;
+        final String[] labels = new String[vals.length];
+        for (int i = 0; i < vals.length; i++) {
+            labels[i] = (vals[i] == cur ? "● " : "○ ") + names[i];
         }
         android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(
                 this, android.R.style.Theme_DeviceDefault_Dialog)
-                .setTitle("在线清晰度上限")
+                .setTitle(title)
                 .setItems(labels, (d, which) -> {
-                    Settings.setQualityCap(caps[which]);
+                    pick.onPick(vals[which]);
                     rebuild();
                 })
                 .setNegativeButton("取消", null)
@@ -488,10 +562,176 @@ public class SettingsActivity extends Activity {
         dlg.show();
     }
 
-    private String qualityName(int cap) {
-        if (cap == Settings.QUALITY_1080) return "≤ 1080p 转码流";
-        if (cap == Settings.QUALITY_720) return "≤ 720p 转码流";
-        return "原画优先";
+    private void showMaxVideoHeightDialog() {
+        final int[] vs = {Settings.VIDEO_HEIGHT_AUTO, 720, 1080, 2160};
+        final String[] names = new String[vs.length];
+        for (int i = 0; i < vs.length; i++) names[i] = videoHeightName(vs[i]);
+        pickOne("最大分辨率", vs, Settings.maxVideoHeight(), names, Settings::setMaxVideoHeight);
+    }
+
+    private String videoHeightName(int h) {
+        if (h == 720) return "≤ 720p";
+        if (h == 1080) return "≤ 1080p";
+        if (h == 2160) return "≤ 4K（2160p）";
+        return "不限制（自动）";
+    }
+
+    private void showMaxVideoFpsDialog() {
+        final int[] vs = {Settings.VIDEO_FPS_AUTO, 24, 30, 60};
+        final String[] names = new String[vs.length];
+        for (int i = 0; i < vs.length; i++) names[i] = videoFpsName(vs[i]);
+        pickOne("最大帧率", vs, Settings.maxVideoFrameRate(), names, Settings::setMaxVideoFrameRate);
+    }
+
+    private String videoFpsName(int fps) {
+        if (fps == 24) return "≤ 24 fps";
+        if (fps == 30) return "≤ 30 fps";
+        if (fps == 60) return "≤ 60 fps";
+        return "不限制（自动）";
+    }
+
+    private void showDecoderPrefDialog() {
+        final int[] vs = {Settings.DECODER_AUTO, Settings.DECODER_PREFER_HW, Settings.DECODER_PREFER_SW};
+        final String[] names = new String[vs.length];
+        for (int i = 0; i < vs.length; i++) names[i] = decoderPrefName(vs[i]);
+        pickOne("解码器优先", vs, Settings.decoderPrefer(), names, Settings::setDecoderPrefer);
+    }
+
+    private String decoderPrefName(int v) {
+        if (v == Settings.DECODER_PREFER_HW) return "优先硬解";
+        if (v == Settings.DECODER_PREFER_SW) return "优先软解";
+        return "自动（推荐）";
+    }
+
+    private void showDvPolicyDialog() {
+        final int[] vs = {Settings.DV_AUTO, Settings.DV_AVOID};
+        final String[] names = new String[vs.length];
+        for (int i = 0; i < vs.length; i++) names[i] = dvPolicyName(vs[i]);
+        pickOne("杜比视界处理", vs, Settings.dvPolicy(), names, Settings::setDvPolicy);
+    }
+
+    private String dvPolicyName(int v) {
+        if (v == Settings.DV_AVOID) return "优先非 DV 轨（黑屏时用）";
+        return "跟随片源（推荐）";
+    }
+
+    // ---------- 播放 · 字幕（v1.26 新增）----------
+
+    private void showSubModeDialog() {
+        final int[] vs = {Settings.SUB_MODE_SOURCE, Settings.SUB_MODE_ALWAYS, Settings.SUB_MODE_OFF};
+        final String[] names = new String[vs.length];
+        for (int i = 0; i < vs.length; i++) names[i] = subModeName(vs[i]);
+        pickOne("字幕模式", vs, Settings.subMode(), names, Settings::setSubMode);
+    }
+
+    private String subModeName(int v) {
+        if (v == Settings.SUB_MODE_ALWAYS) return "总是打开";
+        if (v == Settings.SUB_MODE_OFF) return "一律关闭";
+        return "跟随片源（推荐）";
+    }
+
+    private void showSubLangDialog() {
+        final String[] codes = {"", "zh", "en", "ja", "yue"};
+        final String[] labels = new String[codes.length];
+        for (int i = 0; i < codes.length; i++) {
+            labels[i] = (codes[i].equals(Settings.subPreferredLang()) ? "● " : "○ ") + langName(codes[i]);
+        }
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(
+                this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("首选字幕语言")
+                .setItems(labels, (d, which) -> {
+                    Settings.setSubPreferredLang(codes[which]);
+                    rebuild();
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        dlg.show();
+    }
+
+    private void showSubColorDialog() {
+        final int[] vs = {Settings.SUB_COLOR_WHITE_OUTLINE, Settings.SUB_COLOR_YELLOW_OUTLINE,
+                Settings.SUB_COLOR_BOX, Settings.SUB_COLOR_PLAIN};
+        final String[] names = new String[vs.length];
+        for (int i = 0; i < vs.length; i++) names[i] = subColorName(vs[i]);
+        pickOne("字幕颜色", vs, Settings.subColor(), names, Settings::setSubColor);
+    }
+
+    private String subColorName(int v) {
+        if (v == Settings.SUB_COLOR_YELLOW_OUTLINE) return "黄字黑描边";
+        if (v == Settings.SUB_COLOR_BOX) return "黑底白字";
+        if (v == Settings.SUB_COLOR_PLAIN) return "白字无描边";
+        return "白字黑描边（缺省）";
+    }
+
+    private void showSubPosDialog() {
+        final int[] vs = {Settings.SUB_POS_BOTTOM, Settings.SUB_POS_MIDDLE, Settings.SUB_POS_TOP};
+        final String[] names = new String[vs.length];
+        for (int i = 0; i < vs.length; i++) names[i] = subPosName(vs[i]);
+        pickOne("字幕位置", vs, Settings.subPos(), names, Settings::setSubPos);
+    }
+
+    private String subPosName(int v) {
+        if (v == Settings.SUB_POS_TOP) return "顶部";
+        if (v == Settings.SUB_POS_MIDDLE) return "中部";
+        return "下部（缺省）";
+    }
+
+    /** 手动字幕文件：本地绝对路径或 http(s) 链接，留空即关闭。 */
+    private void showSubManualDialog() {
+        final android.widget.EditText input = new android.widget.EditText(this);
+        input.setText(Settings.subManual());
+        input.setSelection(input.getText().length());
+        input.setTextSize(15);
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(
+                this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("手动字幕文件")
+                .setMessage("本地绝对路径，或 http(s) 直链；留空 = 关掉手动挂载\n"
+                        + "支持 .ass / .ssa / .srt / .vtt / .ttml")
+                .setView(input)
+                .setPositiveButton("保存", (d, w) -> {
+                    Settings.setSubManual(input.getText().toString().trim());
+                    Toast.makeText(this, Settings.subManual().isEmpty()
+                            ? "已关闭手动字幕" : "手动字幕已设为\n" + Settings.subManual(),
+                            Toast.LENGTH_LONG).show();
+                    rebuild();
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        dlg.show();
+        dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).requestFocus();
+    }
+
+    private String subManualText() {
+        String v = Settings.subManual();
+        if (v == null || v.isEmpty()) return "未指定";
+        return v.length() > 42 ? "…" + v.substring(v.length() - 42) : v;
+    }
+
+    // ---------- 直通实测记忆（问题 5 的落点）----------
+
+    private String ptOkText() {
+        int ok = Settings.ptOkCh();
+        if (ok <= 0) return "还没测出来（首次播直通片时自动测）";
+        int eff = Settings.ptEffectiveCap();
+        return ok + " ch 可用"
+                + (eff < Settings.audioMaxChannels() ? "（当前实际按 " + eff + " ch 走）" : "");
+    }
+
+    private void showPtResetDialog() {
+        final String body = "本机记录：" + ptOkText() + "\n"
+                + "设备指纹：\n" + Settings.ptDeviceKey() + "\n\n"
+                + "清除后下次播放会重新逐级试 8 → 6 → 2 声道。\n"
+                + "换功放、换 HDMI 线、刷固件之后建议清一次。";
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("本机直通实测")
+                .setMessage(body)
+                .setPositiveButton("清除记录", (d, w) -> {
+                    Settings.clearPtOkCh();
+                    Toast.makeText(this, "已清除，下次播放重新测", Toast.LENGTH_SHORT).show();
+                    rebuild();
+                })
+                .setNegativeButton("返回", null)
+                .show();
     }
 
     private void showSubSizeDialog() {

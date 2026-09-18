@@ -297,3 +297,189 @@ lib-database  lib-exoplayer(+compileReleaseKotlin)  lib-exoplayer-hls  lib-ui
 - 最大声道数 = **6**
 - 直通失败自动回退 = 开
 - 拿不准就先点**「音频诊断」**，看设备上报的能力表与解码器清单再决定勾什么
+
+
+---
+
+## 十、v1.26：五个真机问题的归因与修复（2026-09-18 20:00–23:30）
+
+用户报了五条，其中第 5 条是**我们自己在 v1.25 引入的回归**，必须单独认领。
+
+| # | 现象 | 真正的原因 | 结论 |
+| --- | --- | --- | --- |
+| 1 | 设置页「刷新二维码」按了不出码 | `QrActivity` 只有**一个**单线程池：`startPolling()` 一次占住它最多 60×2.5s=150s，刷新按钮的 `startQr()` 排在后面永远轮不上；而且 `startQr()` 把 `stopPoll` 置回 false，把上一轮轮询又救活了 | 双线程池 + 世代号（见 10.1） |
+| 2 | 设置里没有视频相关选项，尤其 DV | 确实没有 —— 之前只做了音频组。但**杜比视界能不能点亮不是应用能决定的**（显示端 + 芯片），应用只能影响「挑哪条轨」 | 补齐视频组，并把 DV 的真实边界写清楚（见 10.2） |
+| 3 | 要永远原画，拿掉转码相关设置 | 「在线清晰度上限」与整个转码链路（`startTranscode` / `fallbackM3u8`）还在 | 整条删除（见 10.3） |
+| 4 | ASS / SSA 字幕不支持 | **内嵌 ASS/SSA 本来就是支持的**（fork 的 `SsaParser` 能解文字/颜色/`\an`/`\pos`/字号）；真正缺的是**外挂字幕完全没有入口** —— 片子和字幕是两个文件时无人加载 | 补外挂字幕链路（见 10.4） |
+| 5 | 上个版本 TrueHD / DTS-HD 能源码直通的设备，改完不能了 | **v1.25 把 `AUDIO_MAX_CH_DEFAULT` 从 8 改成 6**，这是一次「一刀切」的全局收紧：`AudioCapabilities` 的 `maxChannelCount=6` 会让 `AudioProfile.supportsChannelCount(8)` 返回 false，media3 于是把 7.1 的 TrueHD / DTS-HD 整条判成不可直通 —— 所有设备一起中招 | 改回 8，并给出**不按机型打补丁**的正解（见 10.5） |
+
+### 10.1 扫码刷新不出来：单线程池把自己堵死了
+
+`QrActivity` 原实现把「取二维码」和「轮询扫码结果」放在**同一个** `newSingleThreadExecutor()` 上：
+
+```
+startQr()  ->  fetchPool 排队
+startPolling() -> 同一个 executor 里 while(!stopPoll){ sleep(2500); 查一次 }   // 最多 150s 不出来
+```
+
+轮询一开始，刷新按钮的 `startQr()` 就只能排在那 150s 后面；就算排到了，`startQr()`
+里那句 `stopPoll = false` 还会把**上一轮**轮询复活，两轮抢着刷新同一个 ImageView。
+
+修法（`_p1_qr.py`）：
+
+- **两个线程池**：`fetchPool`（取码）与 `pollPool`（轮询）互不阻塞；
+- **世代号 `gen`**：每次 `startQr()` 执行 `++gen`，所有 UI 回调先校验 `gen` 是不是自己这一代，
+  不是就直接丢掉 —— 旧轮询即使还在跑也污染不了界面；
+- `onDestroy()` 里 `++gen` 再 `shutdownNow()` 两个池。
+
+### 10.2 视频相关选项：哪些真有用，哪些是骗人的
+
+新加的「播放 · 视频」组一共六项，都能落到 media3 的真实 API 上：
+
+| 设置项 | 落到哪 | 有效场景 |
+| --- | --- | --- |
+| 画面比例（原有） | `PlayerView` resizeMode | 黑边 / 变形 / 裁边 |
+| 最大分辨率 ≤720p / ≤1080p / ≤4K / 不限 | `TrackSelectionParameters.setMaxVideoSize` | 电视只到 1080p 却硬啃 4K → 掉帧、发烫、解码器崩 |
+| 最大帧率 ≤24 / ≤30 / ≤60 / 不限 | `setMaxVideoFrameRate` | 老盒子播 60fps 卡顿 |
+| 解码器优先 自动 / 硬解 / 软解 | `DefaultRenderersFactory.setMediaCodecSelector` | 硬解颜色/HDR 更准；软解最稳但 4K 烫 |
+| 硬解失败回退软解（原有） | `setEnableDecoderFallback` | 排查不支持编码 |
+| 隧道模式 | `DefaultTrackSelector.Parameters.setTunnelingEnabled` | 音画同步更好；部分固件黑屏 |
+| 杜比视界处理 跟随片源 / 优先非 DV 轨 | `setPreferredVideoMimeTypes` | **DV 片源全黑 / 发紫时的唯一应用层手段** |
+
+**关于杜比视界，必须说实话**：能不能点亮由「显示端 + 芯片解码器」决定，应用改不了：
+
+- media3 只在 **API 26+ 且屏幕不支持 DV** 时才自动改用 H.264/H.265 基础层解码器
+  （`MediaCodecVideoRenderer.Api26.doesDisplaySupportDolbyVision()`）；
+- API < 26 这段逻辑**根本不会执行** —— 这也是为什么 Android 7 的盒子放纯 DV 片会黑屏；
+- 所以应用层能做的只有一件事：**在同一部片里改挑哪条轨**（`setPreferredVideoMimeTypes`
+  把非 DV 的 mime 排前面）。这就是「杜比视界处理」这一项的全部作用，不多不少。
+- 想确认真实能力，看设置页 → **媒体诊断**，里面会打出 `Display.getHdrCapabilities()`
+  支持的 HDR 类型清单和系统里有没有 `video/dolby-vision` 解码器。
+
+### 10.3 永远原画：整条转码链路删除
+
+删掉的东西（不只是藏起来）：
+
+| 位置 | 删除内容 |
+| --- | --- |
+| `Settings` | `K_QUALITY_CAP` / `QUALITY_ORIGINAL` / `QUALITY_1080` / `QUALITY_720` / `qualityCap()` / `setQualityCap()` |
+| `SettingsActivity` | 「在线清晰度上限」整行 + `showQualityDialog()` + `qualityName()` |
+| `PlayerActivity` | `startTranscode()` / `transcodeCode()` / `codeLabel()` / `fallbackM3u8()` / 字段 `usingM3u8`；`startPlay(url, pos, m3u8)` 去掉第三个参数 |
+| `PlayerActivity` | `prepareAndPlay()` 里两处「限了上限就直接走转码流」的分支 |
+
+现在的取流只有一条路：**原画直链 → 失败就换一条新直链重试一次 → 再失败如实报错**。
+
+之所以连兜底也删掉：百度 `api/streaming` 对 **mkv 多半返回空地址**（v1.25 的真机日志里
+`M3U8_AUTO_720` 返回 200 但 body 解析不出地址），留着只是一条会误导人的假退路。
+
+`BaiduPan.streamingUrl()` 这个公开方法保留但不再被播放器调用（不删是为了不扩大改动面）。
+
+### 10.4 字幕：内嵌本来就支持，缺的是外挂
+
+先把结论说清楚 —— **「ASS / SSA 字幕没支持」不是设置问题，也不是解析器不支持**：
+
+- `MatroskaExtractor` 把 `S_TEXT/ASS` / `S_TEXT/SSA` 映射成 `MimeTypes.TEXT_SSA`；
+- `DefaultSubtitleParserFactory` 支持 `TEXT_SSA`；fork 的 `SsaParser` 能解析**文字、颜色、
+  `\an` 对齐、`\pos` 位置、字号**（通过 `SsaStyle`）；
+- 未实现的是 `\move` / `\k` 卡拉OK / `\clip` / `\t` 动画 / `\p` 绘图 —— 这些属于特效级，
+  电视上极少见，也不影响「能不能看到字幕」。
+
+**真正的缺口是：应用从来没有加载过外挂字幕。** 用户下的片子（`.mkv`）和字幕（`.ass`）
+是两个文件时，谁都没把它们凑到一起，表现就像「不支持 ASS」。
+
+本版补上的链路（`PlayerActivity`）：
+
+1. 新增字幕设置组：**字幕模式**（跟随片源 / 总是打开 / 一律关闭）、
+   **首选字幕语言**、**字幕字号**、**字幕颜色**（白字黑描边 / 黄字黑描边 / 黑底白字 / 白字无描边）、
+   **字幕位置**（下 / 中 / 顶）、**外挂字幕自动挂载**（缺省开）、**手动字幕文件**（路径或 URL）。
+2. `startPlay()` 组装 `MediaItem.SubtitleConfiguration`：
+   - ① 「手动字幕文件」填了就用它（本地路径 `Uri.fromFile` / http(s) 用 `Uri.parse`）；
+   - ② 否则播本地文件时，在**同目录找同名**字幕：`.ass / .ssa / .srt / .vtt / .ttml / .sub`，
+     先精确同名，再放宽成「以片名开头 + 字幕后缀」（覆盖 `影片.zh.ass` 这种命名）；
+   - mime 由 `Settings.subMimeFor()` 按后缀给出，认不出就留空让 media3 自己嗅探。
+3. 外观：`SubtitleView.setStyle(...)` 用 `CaptionStyleCompat`，位置档位换算成
+   `setBottomPaddingFraction()`（下 0.10 / 中 0.45 / 上 0.80）。
+
+**一个必须知道的取舍**：`CaptionStyleCompat` 是**全局**样式，会盖在每条 cue 自带样式之上，
+所以 ASS 里逐行的 `\c&Hxxxxxx` 颜色会被统一掉。想尽量保留片源原色，就选「白字无描边」——
+此时 caption 的透明度不为 1，cue 自身的颜色才有机会透出来。
+
+### 10.5 源码输出被改坏：根因、以及「设备差异」到底该怎么处理
+
+**先认领**：这是 v1.25 我们自己改出来的，不是设备差异。
+
+v1.25 为了让那台小米盒子别再撞 `AudioFlinger ... status: -12`，把
+`AUDIO_MAX_CH_DEFAULT` 从 8 改成了 6。但 `AudioCapabilities` 的 `maxChannelCount`
+不是「保守一点更安全」的旋钮，它是**判定闸门**：
+
+```
+getAudioProfiles(encodings, maxChannelCount)  ->  AudioProfile(encoding, maxChannelCount)
+AudioProfile.supportsChannelCount(8)          ->  8 <= 6  ==  false
+getPassthroughConfigForFormat()               ->  null      // 不支持 -> 不走直通
+AudioTrackAudioOutputProvider.getFormatSupportLevel()  ->  FORMAT_UNSUPPORTED
+```
+
+于是**所有 7.1 的 TrueHD / DTS-HD 一起失去直通能力** —— 本来能直通的功放设备也被误伤。
+这就是「后处理问题 2/3/4」之后没料到的副作用。
+
+**再回答用户的问题：要不要按机型一个个打补丁？**
+
+不要。按机型打补丁是三个坑：
+
+1. 机型无穷、固件版本还会变（同一型号不同 OTA 行为都不一样），补丁永远追不上；
+2. 把「结论」写死在常量里，下一个人的设备又被误伤 —— 这正是 v1.25 的翻版；
+3. 用户手里到底接没接功放、走的哪路 HDMI，应用看不出来，猜不准。
+
+**正解是「宽进 + 运行时降道 + 记住结论」**，把判断权交给设备自己：
+
+```
+设置里「最大声道数上限」缺省 = 8          // 宽进：不预先假设设备不行
+        ↓ 播放，建不出音频轨 -> 出错
+onAudioFailure()：降道重试 8 → 6 → 2        // 让设备自己把话说完
+        ↓ 哪一档真的出声了
+STATE_READY 把该档位写进 Settings.setPtOkCh() // 记住结论（带设备指纹）
+        ↓ 下次开局
+effectiveMaxAudioCh() = min(设置上限, 实测值) // 直接用，不再逐级试错
+```
+
+实现要点：
+
+| 位置 | 内容 |
+| --- | --- |
+| `Settings.AUDIO_MAX_CH_DEFAULT` | **改回 8**（语义是「上限」，不是「写死」） |
+| `Settings.ptOkCh()` / `setPtOkCh()` / `clearPtOkCh()` | 本机实测可用的声道数；换机器/固件自动作废 |
+| `Settings.ptDeviceKey()` | 设备指纹 = 机型 + `Build.DISPLAY` + SDK + HDMI 输出名 |
+| `Settings.ptEffectiveCap()` | `min(设置上限, 实测值)` |
+| `PlaybackEngine.effectiveMaxAudioCh()` | 优先级：临时覆盖 > 实测值 > 设置上限 |
+| `PlaybackEngine.setChannelCapOverride()` | 降道重试时的一次性覆盖（换片时清零） |
+| `PlayerActivity.onAudioFailure()` / `nextLowerCap()` | 8 → 6 → 2 逐级；都不行才退回 PCM 解码 |
+| `PlayerActivity.rebuildWithChannelCap()` | 用新的声道上限重建播放器并 seek 回原位置 |
+| 设置页「本机直通实测」 | 显示实测结论 + 设备指纹，可一键清除重测 |
+
+这样「只能 6 声道的盒子」和「能 8 声道的功放」用**同一个包**，各得其所；
+换功放 / 换 HDMI 线 / 刷固件之后，用户在设置页点一下「清除记录」即可重测。
+
+> 顺带修掉的旧逻辑：v1.25 是「音频一失败就直接降级 PCM」，代价是本来能直通 5.1 的盒子
+> 被白白降成 PCM。现在先把声道降下来再试直通，能保住的音质就保住。
+
+### 10.6 本版改动清单
+
+| 文件 | 改动 |
+| --- | --- |
+| `QrActivity.java` | 双线程池 + 世代号 `gen`；扫码/轮询互不阻塞，旧轮询无法污染 UI |
+| `Settings.java` | `AUDIO_MAX_CH_DEFAULT` 6→**8**；删 `qualityCap` 一组；新增视频组（最大分辨率/帧率/解码器优先/隧道/DV）、字幕组（模式/语言/颜色/位置/外挂自动/手动）、直通实测记忆（`ptOkCh`/`ptDeviceKey`/`ptEffectiveCap`/`clearPtOkCh`） |
+| `PlaybackEngine.java` | 新增 `trackSelector()`（隧道模式）、`withVideoPreferences()`、`withSubtitlePreferences()`、`setChannelCapOverride()`、`effectiveMaxAudioCh()`、`avReport()`（显示端 HDR/DV + 视频解码器 + 字幕支持） |
+| `PlayerActivity.java` | 删整条转码链路；`startPlay()` 挂外挂字幕；字幕外观跟随设置；音频失败改为「降道重试 8→6→2 → 最后 PCM」；`STATE_READY` 记录实测声道 |
+| `SettingsActivity.java` | 删「在线清晰度上限」；新增视频组 5 项、字幕组 6 项、「本机直通实测」行；「音频诊断」升级为「媒体诊断」 |
+| `app/build.gradle` | versionCode 26 / versionName 1.26 |
+
+### 10.7 验收清单（v1.26）
+
+1. 设置页 → 扫码页：连点几次「刷新二维码」，每次都在 1 秒内出新码（不再等 150s）。
+2. 设置页能看到「播放 · 视频」6 项、「播放 · 字幕」7 项、「本机直通实测」1 项。
+3. 设置页里**找不到**「在线清晰度上限」或任何「1080p / 720p 转码」字样。
+4. 在线播一部 7.1 TrueHD / DTS-HD 片，功放面板应点亮对应格式（默认上限已回到 8）。
+5. 若某台盒子 8 声道建不出轨：应在日志里看到自动降到 6 后继续播；再到设置页看
+   「本机直通实测」是否已记成 `6 ch 可用`，下一次播放直接按 6 走。
+6. 本地文件旁放一个同名 `.ass`，播放后字幕应自动出现；换成 `.srt` 同样有效。
+7. 「媒体诊断」里能看到显示端 HDR/DV 能力、系统视频解码器清单、外挂字幕状态。

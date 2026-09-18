@@ -3,6 +3,7 @@ package com.supermov.tv;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -40,6 +41,7 @@ import androidx.media3.common.Tracks;
 import androidx.media3.ui.CaptionStyleCompat;
 import androidx.media3.ui.SubtitleView;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -51,13 +53,15 @@ import java.util.Map;
  * <p>引擎配置（音频直通/解码、声道数、音轨语言、解码器回退）全部来自
  * {@link PlaybackEngine} —— 它读设置页的选项；本类只负责取流与播控。</p>
  *
- * 取流策略（按用户选定的「直链 + 本地代理 + M3U8 兜底」）：
+ * 取流策略（v1.26 起：<b>永远原画，不考虑转码</b>）：
  *   1. 先在自己网盘的转存目录里定位这部影片（没转存过则自动转存一次）
  *   2. /api/filemetas 取原画 dlink → 交给 LocalProxy（补 UA=netdisk）→ 播放原画
- *   3. 原画失败/卡死 → 换一条新直链重试一次（dlink 只有 8 小时有效期）
- *   4. 仍失败 → 降级 pan.baidu.com/api/streaming 的 M3U8 转码流（上限 1080p），并 seek 回原进度
+ *   3. 失败/中断 → 换一条新直链重试一次（dlink 只有 8 小时有效期）
+ *   4. 仍失败 → 如实报错（不再降级到 pan.baidu.com/api/streaming 的 M3U8 转码流）
  *
- * <p>若用户在设置里限了「在线清晰度上限」，第 2/3 步会跳过，直接走第 4 步的转码流。</p>
+ * <p>v1.26 按用户要求把「清晰度上限」整个拿掉了：设置页不再出现「原画 / 1080p / 720p」
+ * 这类选项，转码链路（startTranscode / fallbackM3u8）也一并删除 —— 留着只会出现
+ * 「设置里还能选转码、播放器却永不转码」的自相矛盾状态。</p>
  */
 @OptIn(markerClass = UnstableApi.class)
 public class PlayerActivity extends Activity {
@@ -93,8 +97,14 @@ public class PlayerActivity extends Activity {
     private String reqFname = "";
 
     private BaiduPan.PlayFile playFile;
-    private boolean usingM3u8 = false;
     private boolean retriedDlink = false;
+    /**
+     * 直通降道重试已经试过的声道数（8 / 6 / 2），用来避免来回打转。
+     *
+     * <p>这是「设备差异」的正解：不猜型号、不写死全局常量，让这台机器自己把话说完 ——
+     * 8 声道建不出轨就试 6，再不行试 2，成功的那一档记进 {@link Settings#ptOkCh()}。</p>
+     */
+    private final List<Integer> ptTried = new ArrayList<>();
     private boolean finishing = false;
 
     /** 直通失败后已降级成 PCM 解码重播；true 之后不再重复降级 */
@@ -274,6 +284,9 @@ public class PlayerActivity extends Activity {
         // 画面比例这类「一次性生效」的视频设置，先就位再建播放器
         applyVideoSettings();
 
+        // 清掉上一部片可能留下的「降道重试」临时值：新片开局按设置上限走
+        PlaybackEngine.setChannelCapOverride(0);
+
         buildPlayer();
 
         // 每 10 秒落一次进度（另外在暂停 / 退出 / 播完时也会落）
@@ -296,6 +309,8 @@ public class PlayerActivity extends Activity {
         player = new ExoPlayer.Builder(this)
                 // 音频 sink 的来源由 PlaybackEngine 决定（自动 / 直通 / 解码）
                 .setRenderersFactory(PlaybackEngine.renderersFactory(this, forcedDecode))
+                // 隧道模式是 DefaultTrackSelector 的参数，所以必须自己造一个 selector
+                .setTrackSelector(PlaybackEngine.trackSelector(this))
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(dataSourceFactory()))
                 .setAudioAttributes(new AudioAttributes.Builder()
                         .setUsage(C.USAGE_MEDIA)
@@ -308,9 +323,12 @@ public class PlayerActivity extends Activity {
         // 从播放器「现有」参数 buildUpon 叠加 —— 别新建 Builder，那会丢掉它自带的默认值
         // （例如字幕首选语言 = 系统语言），字幕自动选择会跟着变味。
         try {
-            player.setTrackSelectionParameters(
-                    PlaybackEngine.withAudioPreferences(
-                            player.getTrackSelectionParameters().buildUpon()).build());
+            TrackSelectionParameters.Builder tb =
+                    player.getTrackSelectionParameters().buildUpon();
+            PlaybackEngine.withAudioPreferences(tb);      // 声道上限 / 首选音轨语言 / 直通编码优先
+            PlaybackEngine.withVideoPreferences(tb);      // 最大分辨率 / 最大帧率 / 杜比视界处理
+            PlaybackEngine.withSubtitlePreferences(tb);   // 字幕模式 / 首选字幕语言
+            player.setTrackSelectionParameters(tb.build());
         } catch (Throwable e) {
             Log.d(TAG, "setTrackSelectionParameters err " + e);
         }
@@ -344,6 +362,12 @@ public class PlayerActivity extends Activity {
                         titleSettled = true;
                         showTitleBar();
                     }
+                    // 直通模式下能走到 READY，基本可以认定这一档声道建得出音频轨 ——
+                    // 记进本机，下次开局直接用，不再逐级试错（这就是「设备差异」的正解）
+                    if (!forcedDecode
+                            && Settings.audioMode() == Settings.AUDIO_MODE_PASSTHROUGH) {
+                        Settings.setPtOkCh(PlaybackEngine.effectiveMaxAudioCh());
+                    }
                 } else if (state == Player.STATE_ENDED) {
                     // 看完了：把进度记录清掉，下次从头开始
                     Settings.clearPos(progressKey());
@@ -365,6 +389,30 @@ public class PlayerActivity extends Activity {
     }
 
     /**
+     * 字幕颜色 / 描边：设置页三档 + 无描边。
+     *
+     * <p>注意这是<b>全局</b>样式，会盖在每条 cue 自带样式之上 —— ASS 里
+     * {@code \\c&H...} 这类逐行颜色因此会被统一掉。想保留片源原色就别用「黑底白字」，
+     * 选「白字无描边」时 caption 自身的透明度会让 cue 颜色有机会透出来。</p>
+     */
+    private CaptionStyleCompat subtitleStyle() {
+        switch (Settings.subColor()) {
+            case Settings.SUB_COLOR_YELLOW_OUTLINE:
+                return new CaptionStyleCompat(Color.YELLOW, Color.TRANSPARENT, Color.TRANSPARENT,
+                        CaptionStyleCompat.EDGE_TYPE_OUTLINE, Color.BLACK, null);
+            case Settings.SUB_COLOR_BOX:
+                return new CaptionStyleCompat(Color.WHITE, Color.BLACK, Color.BLACK,
+                        CaptionStyleCompat.EDGE_TYPE_NONE, Color.BLACK, null);
+            case Settings.SUB_COLOR_PLAIN:
+                return new CaptionStyleCompat(Color.WHITE, Color.TRANSPARENT, Color.TRANSPARENT,
+                        CaptionStyleCompat.EDGE_TYPE_NONE, Color.BLACK, null);
+            default:
+                return new CaptionStyleCompat(Color.WHITE, Color.TRANSPARENT, Color.TRANSPARENT,
+                        CaptionStyleCompat.EDGE_TYPE_OUTLINE, Color.BLACK, null);
+        }
+    }
+
+    /**
      * 字幕渲染在 PlayerView 的默认布局里（SubtitleView, id=exo_subtitles）。
      * 默认是「无描边白字 + 5.33% 屏高」，电视上远看偏小，这里统一改成黑描边，
      * 比例取设置页的「字幕字号」（缺省 6.6%）。
@@ -373,10 +421,10 @@ public class PlayerActivity extends Activity {
         try {
             SubtitleView sv = playerView.getSubtitleView();
             if (sv != null) {
-                sv.setStyle(new CaptionStyleCompat(Color.WHITE, Color.TRANSPARENT, Color.TRANSPARENT,
-                        CaptionStyleCompat.EDGE_TYPE_OUTLINE, Color.BLACK, null));
+                sv.setStyle(subtitleStyle());
                 sv.setFractionalTextSize(Settings.subFraction());
-                sv.setBottomPaddingFraction(0.10f);
+                // 位置档位（底 / 中 / 顶）→ SubtitleView 的底边留白比例
+                sv.setBottomPaddingFraction(Settings.subBottomPadding());
             }
         } catch (Throwable ignored) {
         }
@@ -454,20 +502,14 @@ public class PlayerActivity extends Activity {
             pf.fsId = reqFsId;
             pf.path = reqBpath;
             pf.name = reqFname.isEmpty() ? name : reqFname;
-            // 设置里限了清晰度上限 -> 直接走云端转码流，没必要再去取原画直链
-            if (Settings.qualityCap() != Settings.QUALITY_ORIGINAL) {
-                playFile = pf;
-                status("按设置走云端转码流…（" + pf.name + "）");
-                startTranscode(Settings.qualityCap());
-                return;
-            }
+            // v1.26：永远原画，不再有「清晰度上限」这回事
             status("正在获取原画直链…（" + pf.name + "）");
             new Thread(() -> {
                 try {
                     String d = BaiduPan.dlink(pf.fsId, pf.path);
                     if (d.isEmpty()) {
                         playFile = pf;
-                        fallbackM3u8("原画直链获取失败");
+                        fail("原画直链获取失败：百度没返回可播地址（会员权限或接口变动）");
                         return;
                     }
                     playFile = pf;
@@ -475,7 +517,7 @@ public class PlayerActivity extends Activity {
                     proxy.start();
                     final String u = proxy.urlFor(d);
                     status("原画播放：" + pf.name);
-                    main.post(() -> startPlay(u, 0, false));
+                    main.post(() -> startPlay(u, 0));
                 } catch (Throwable e) {
                     Log.d(TAG, "direct play err " + e);
                     fail("取流异常：" + e.getClass().getSimpleName());
@@ -506,22 +548,17 @@ public class PlayerActivity extends Activity {
                     return;
                 }
                 playFile = pf;
-                int cap = Settings.qualityCap();
-                if (cap != Settings.QUALITY_ORIGINAL) {
-                    status("按设置走云端转码流…（" + humanSize(pf.size) + "）");
-                    main.post(() -> startTranscode(cap));
-                    return;
-                }
+                // v1.26：固定走原画直链；失败只换一条新直链重试，不再降级转码流
                 status("正在获取原画直链…（" + humanSize(pf.size) + "）");
                 String dlink = BaiduPan.dlink(pf.fsId, pf.path);
                 if (dlink.isEmpty()) {
-                    fallbackM3u8("原画直链获取失败");
+                    fail("原画直链获取失败：百度没返回可播地址（会员权限或接口变动）");
                     return;
                 }
                 proxy = new LocalProxy();
                 proxy.start();
                 status("原画播放：" + pf.name);
-                main.post(() -> startPlay(proxy.urlFor(dlink), 0, false));
+                main.post(() -> startPlay(proxy.urlFor(dlink), 0));
             } catch (Throwable e) {
                 Log.d(TAG, "prepare err " + e);
                 fail("取流异常：" + e.getClass().getSimpleName());
@@ -546,62 +583,29 @@ public class PlayerActivity extends Activity {
         return 0;
     }
 
-    private void startPlay(String url, long pos, boolean m3u8) {
+    private void startPlay(String url, long pos) {
         if (finishing || player == null) return;
         curUrl = url == null ? "" : url;
-        // pos > 0 = 换链/降级时保住手上这条进度；pos <= 0 = 全新开播，这时才去读记忆的进度
+        // pos > 0 = 换链/重播时保住手上这条进度；pos <= 0 = 全新开播，这时才去读记忆的进度
         long start = (pos > 0) ? pos : freshStartPos();
         MediaItem.Builder b = new MediaItem.Builder().setUri(url);
-        if (m3u8) b.setMimeType(MimeTypes.APPLICATION_M3U8);
+        // 外挂字幕：手动指定的优先，其次本地同目录同名（内嵌字幕由容器自己带，无需处理）
+        List<MediaItem.SubtitleConfiguration> subs = externalSubtitles();
+        if (!subs.isEmpty()) {
+            b.setSubtitleConfigurations(subs);
+            Log.i(TAG, "外挂字幕已挂上 " + subs.size() + " 条");
+        }
         player.setMediaItem(b.build());
         player.prepare();
         if (start > 0) player.seekTo(start);
         player.setPlayWhenReady(true);
     }
 
-    /**
-     * 直接以云端转码流起播（设置里限了「在线清晰度上限」时走这条）。
-     *
-     * <p>转码流走 pan.baidu.com/api/streaming，清晰度由 type 决定，不需要原画直链，
-     * 也不受「原画直链只有 8 小时有效期」的影响。调用前必须先把 {@link #playFile} 备好。</p>
-     */
-    private void startTranscode(int cap) {
-        if (finishing) return;
-        final BaiduPan.PlayFile pf = playFile;
-        final String code = transcodeCode(cap);
-        if (pf == null || pf.path == null || pf.path.isEmpty() || code.isEmpty()) {
-            fail("清晰度设置无效，无法起播转码流");
-            return;
-        }
-        usingM3u8 = true;
-        new Thread(() -> {
-            String u = BaiduPan.streamingUrl(pf.path, code);
-            final String url = u == null ? "" : u;
-            main.post(() -> {
-                if (finishing) return;
-                if (url.isEmpty()) {
-                    fail("转码流不可用（可能受会员权限限制或接口已变动）");
-                    return;
-                }
-                status("转码流播放（" + codeLabel(code) + "）");
-                startPlay(url, 0, true);
-            });
-        }, "player-transcode").start();
-    }
-
-    /** 清晰度档位 -> 百度转码类型码；「原画优先」档不产生码（走原画直链）。 */
-    private static String transcodeCode(int cap) {
-        if (cap == Settings.QUALITY_1080) return "M3U8_AUTO_1080";
-        if (cap == Settings.QUALITY_720) return "M3U8_AUTO_720";
-        return "";
-    }
-
-    private static String codeLabel(String code) {
-        if ("M3U8_AUTO_1080".equals(code)) return "\u2264 1080p";
-        if ("M3U8_AUTO_720".equals(code)) return "\u2264 720p";
-        if ("M3U8_AUTO_480".equals(code)) return "\u2264 480p";
-        return code;
-    }
+    // ---------- 已移除（v1.26）：云端转码链路 ----------
+    //
+    // 原 startTranscode() / transcodeCode() / codeLabel() / fallbackM3u8() 四处已整体删除，
+    // 对应设置页的「在线清晰度上限」。用户要求「永远原画，不考虑转码」，而转码对 mkv
+    // 本身就常不可用（百度 streaming 接口对 mkv 多半返回空地址），留着反而是个假退路。
 
     private void handlePlaybackError(PlaybackException error) {
         if (finishing) return;
@@ -613,14 +617,8 @@ public class PlayerActivity extends Activity {
             // 留给设置页的「音频诊断」，这类问题不该再让人去抓 logcat
             PlaybackEngine.noteAudioError(error.getErrorCodeName() + " / " + describe(error));
         }
-        if (audioFail && PlaybackEngine.shouldFallbackToDecode(forcedDecode)) {
-            rebuildWithDecode();
-            return;
-        }
-        // 音频问题但回退被关掉（或已经回退过一次）：说清楚是音频的锅，
-        // 别再报「原画播放失败」把人引到网络/清晰度上去
         if (audioFail) {
-            fail("音频输出失败（已关掉自动回退）：" + describe(error));
+            onAudioFailure(error);
             return;
         }
         final long pos = player.getCurrentPosition();
@@ -630,28 +628,25 @@ public class PlayerActivity extends Activity {
             fail("本地文件播放失败：" + describe(error) + localHint(error));
             return;
         }
-        if (!usingM3u8) {
-            // 第一次失败：直链可能已过期（8h）或被风控掐断 -> 换一条新链再试
-            if (!retriedDlink && playFile != null && proxy != null) {
-                retriedDlink = true;
-                status("播放中断，正在重新获取直链…");
-                new Thread(() -> {
-                    String d = BaiduPan.dlink(playFile.fsId, playFile.path);
-                    if (d != null && !d.isEmpty()) {
-                        main.post(() -> {
-                            status("已换新直链，继续播放");
-                            startPlay(proxy.urlFor(d), pos, false);
-                        });
-                    } else {
-                        fallbackM3u8("重新取链失败");
-                    }
-                }, "player-relink").start();
-                return;
-            }
-            fallbackM3u8("原画播放失败");
+        // 直链可能已过期（8h）或被风控掐断 -> 换一条新直链再试一次
+        // （v1.26 起不再降级到转码流：那条路对 mkv 基本不通，徒增误导）
+        if (!retriedDlink && playFile != null && proxy != null) {
+            retriedDlink = true;
+            status("播放中断，正在重新获取直链…");
+            new Thread(() -> {
+                String d = BaiduPan.dlink(playFile.fsId, playFile.path);
+                if (d != null && !d.isEmpty()) {
+                    main.post(() -> {
+                        status("已换新直链，继续播放");
+                        startPlay(proxy.urlFor(d), pos);
+                    });
+                } else {
+                    main.post(() -> fail("换新直链也失败了：百度没返回可播地址"));
+                }
+            }, "player-relink").start();
             return;
         }
-        fail("播放失败：" + describe(error));
+        fail("原画播放失败：" + describe(error));
     }
 
     /**
@@ -702,19 +697,50 @@ public class PlayerActivity extends Activity {
      */
     private void rebuildWithDecode() {
         if (finishing || forcedDecode) return;
-        String url = curUrl;
-        if (url == null || url.isEmpty()) {
+        if (curUrl == null || curUrl.isEmpty()) {
             fail("音频直通失败，且没有可重播的地址");
             return;
         }
-        long pos = 0;
-        try {
-            if (player != null) pos = player.getCurrentPosition();
-        } catch (Throwable ignored) {
-        }
-        final boolean m3u8 = usingM3u8;
+        long pos = currentPosOrZero();
         forcedDecode = true;
-        status("音频直通失败，已自动改用解码输出重播");
+        PlaybackEngine.setChannelCapOverride(0);
+        status("音频直通失败，已改用解码输出（PCM）重播");
+        releasePlayerForRebuild();
+        buildPlayer();
+        startPlay(curUrl, pos);
+    }
+
+    /**
+     * 换一个「更低的声道上限」重试直通。
+     *
+     * <p>这就是「设备差异」的正解：不猜机型、不按型号打补丁、也不写死一个全局常量，
+     * 而是让这台机器自己把话说完 —— 8 声道建不出轨就试 6，再不行试 2；
+     * 成功的那一档由 {@code STATE_READY} 记进 {@link Settings#ptOkCh()}，下次开局直接用。
+     * 这样「只能 6ch 的盒子」与「能 8ch 的功放」各得其所，不需要两套包。</p>
+     */
+    private void rebuildWithChannelCap(int ch) {
+        if (finishing) return;
+        if (curUrl == null || curUrl.isEmpty()) {
+            fail("音频直通失败，且没有可重播的地址");
+            return;
+        }
+        long pos = currentPosOrZero();
+        PlaybackEngine.setChannelCapOverride(ch);
+        status("音频直通失败，正在按 " + ch + " 声道重试直通…");
+        releasePlayerForRebuild();
+        buildPlayer();
+        startPlay(curUrl, pos);
+    }
+
+    private long currentPosOrZero() {
+        try {
+            return player == null ? 0 : player.getCurrentPosition();
+        } catch (Throwable e) {
+            return 0;
+        }
+    }
+
+    private void releasePlayerForRebuild() {
         try {
             if (player != null) {
                 playerView.setPlayer(null);
@@ -723,39 +749,43 @@ public class PlayerActivity extends Activity {
             }
         } catch (Throwable ignored) {
         }
-        buildPlayer();
-        startPlay(url, pos, m3u8);
     }
 
-    /** 降级到百度云端转码 M3U8（720p 优先，再退 480p），并保留当前进度。 */
-    private void fallbackM3u8(String why) {
-        if (finishing) return;
-        if (usingM3u8 || playFile == null) {
-            main.post(() -> fail(why));
+    /**
+     * 音频输出失败之后走哪条路。
+     *
+     * <p>顺序（仅源码直通模式有意义）：<b>降道重试 8 → 6 → 2 → 最后才 PCM 解码</b>。
+     * 以前是「一失败就直接 PCM」，代价是本来能直通 5.1 的盒子被白白降级成 PCM；
+     * 现在先把声道降下来再试直通，能保住的音质就保住。</p>
+     */
+    private void onAudioFailure(PlaybackException error) {
+        if (Settings.audioMode() == Settings.AUDIO_MODE_PASSTHROUGH && !forcedDecode) {
+            int cur = PlaybackEngine.effectiveMaxAudioCh();
+            ptTried.add(Integer.valueOf(cur));
+            int next = nextLowerCap(cur);
+            if (next > 0) {
+                rebuildWithChannelCap(next);
+                return;
+            }
+        }
+        if (PlaybackEngine.shouldFallbackToDecode(forcedDecode)) {
+            rebuildWithDecode();
             return;
         }
-        usingM3u8 = true;
-        status(why + "，正在切换到转码流…");
-        new Thread(() -> {
-            String u = "";
-            // 用户在设置里限了清晰度就按他的来（如 ≤1080p），否则缺省 720p -> 480p 逐级退
-            String preferred = transcodeCode(Settings.qualityCap());
-            if (!preferred.isEmpty()) u = BaiduPan.streamingUrl(playFile.path, preferred);
-            if (u == null || u.isEmpty()) u = BaiduPan.streamingUrl(playFile.path, "M3U8_AUTO_720");
-            if (u == null || u.isEmpty()) u = BaiduPan.streamingUrl(playFile.path, "M3U8_AUTO_480");
-            final String url = u == null ? "" : u;
-            main.post(() -> {
-                if (finishing) return;
-                if (url.isEmpty()) {
-                    fail("转码流不可用：百度没返回可播地址（mkv 转码常受限，已记日志）");
-                    return;
-                }
-                long pos = player.getCurrentPosition();
-                status("已降级为转码流（M3U8，清晰度上限 1080p）");
-                startPlay(url, pos, true);
-            });
-        }, "player-m3u8").start();
+        fail("音频输出失败（已关掉自动回退）：" + describe(error));
     }
+
+    /** 下一档要试的声道数：8 → 6 → 2，已试过的不再试；没有更低的返回 0。 */
+    private int nextLowerCap(int cur) {
+        final int[] ladder = {8, 6, 2};
+        for (int i = 0; i < ladder.length; i++) {
+            if (ladder[i] < cur && !ptTried.contains(Integer.valueOf(ladder[i]))) return ladder[i];
+        }
+        return 0;
+    }
+
+    // ---------- 已移除（v1.26）：fallbackM3u8() ----------
+    // 原「降级到百度云端转码 M3U8」整段删除，原因见 handlePlaybackError 里的说明。
 
     /**
      * 把 media3 的错误码翻成中文提示。
@@ -882,6 +912,80 @@ public class PlayerActivity extends Activity {
         main.removeCallbacks(holdArm);
         main.postDelayed(holdArm, HOLD_ARM_MS);
         return true;
+    }
+
+    // ---------- 外挂字幕（v1.26）----------
+
+    /**
+     * 收集外挂字幕。
+     *
+     * <p><b>为什么加这个：</b>内嵌字幕（MKV 里的 {@code S_TEXT/ASS}）media3 本来就支持 ——
+     * 容器把 ASS/SSA 映射成 {@code text/x-ssa}，fork 的 {@code SsaParser} 能解析文字、颜色、
+     * {@code \an} 对齐、{@code \pos} 位置、字号。但<b>外挂字幕此前完全没有入口</b>：
+     * 用户下的片子和字幕是两个文件时，表现就是「ASS SSA 字幕没支持」。</p>
+     *
+     * <p>来源优先级：① 设置页手动指定的路径 / URL；② 本地文件的同目录同名
+     * (.ass / .ssa / .srt / .vtt / .ttml / .sub)。</p>
+     */
+    private List<MediaItem.SubtitleConfiguration> externalSubtitles() {
+        List<MediaItem.SubtitleConfiguration> out = new ArrayList<>();
+        // ① 手动指定
+        String manual = Settings.subManual();
+        if (manual != null && !manual.isEmpty()) {
+            try {
+                Uri u = (manual.startsWith("http://") || manual.startsWith("https://"))
+                        ? Uri.parse(manual) : Uri.fromFile(new File(manual));
+                out.add(subtitleConfig(u, manual, manual));
+            } catch (Throwable e) {
+                Log.d(TAG, "手动字幕解析失败 " + e);
+            }
+        }
+        // ② 本地文件同目录同名
+        if (out.isEmpty() && Settings.subExternalAuto() && !localFile.isEmpty()) {
+            File f = findSiblingSubtitle(new File(localFile));
+            if (f != null) {
+                out.add(subtitleConfig(Uri.fromFile(f), f.getName(), f.getName()));
+                Log.i(TAG, "同目录外挂字幕命中：" + f.getName());
+            }
+        }
+        return out;
+    }
+
+    private MediaItem.SubtitleConfiguration subtitleConfig(Uri uri, String label, String nameForMime) {
+        MediaItem.SubtitleConfiguration.Builder cb =
+                new MediaItem.SubtitleConfiguration.Builder(uri);
+        String mime = Settings.subMimeFor(nameForMime);
+        if (mime != null && !mime.isEmpty()) cb.setMimeType(mime);
+        cb.setLabel(label);
+        String lang = Settings.subPreferredLang();
+        if (lang != null && !lang.isEmpty()) cb.setLanguage(lang);
+        return cb.build();
+    }
+
+    /** 在视频所在目录找同名字幕：先精确同名，再放宽成「以片名开头 + 字幕后缀」。 */
+    private File findSiblingSubtitle(File video) {
+        File dir = video.getParentFile();
+        if (dir == null) return null;
+        String base = video.getName();
+        int dot = base.lastIndexOf('.');
+        if (dot > 0) base = base.substring(0, dot);
+        final String[] exts = {".ass", ".ssa", ".srt", ".vtt", ".ttml", ".sub"};
+        for (String e : exts) {
+            File f = new File(dir, base + e);
+            if (f.isFile()) return f;
+        }
+        File[] files = dir.listFiles();
+        if (files == null) return null;
+        String lower = base.toLowerCase(java.util.Locale.US);
+        for (File f : files) {
+            if (f == null || !f.isFile()) continue;
+            String n = f.getName().toLowerCase(java.util.Locale.US);
+            if (!n.startsWith(lower)) continue;
+            for (String e : exts) {
+                if (n.endsWith(e)) return f;
+            }
+        }
+        return null;
     }
 
     // ---------- 上/下键：选择字幕轨与音轨 ----------

@@ -11,6 +11,8 @@ import androidx.media3.common.TrackSelectionParameters;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.audio.AudioCapabilities;
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector;
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector;
 import androidx.media3.exoplayer.audio.AudioSink;
 import androidx.media3.exoplayer.audio.DefaultAudioSink;
 
@@ -48,7 +50,26 @@ public final class PlaybackEngine {
      */
     public static DefaultRenderersFactory renderersFactory(Context ctx, boolean forceDecode) {
         return new EngineRenderersFactory(ctx, injectedCapabilities(forceDecode),
-                Settings.decoderFallback());
+                Settings.decoderFallback(), Settings.decoderPrefer());
+    }
+
+    /**
+     * 轨道选择器。
+     *
+     * <p>以前直接用 {@code ExoPlayer.Builder} 的缺省 selector —— 拿不到实例，也就改不了
+     * 隧道模式（{@code setTunnelingEnabled} 是 {@code DefaultTrackSelector} 的参数）。
+     * 现在自己造一个，把设置页的隧道开关带上。</p>
+     */
+    public static DefaultTrackSelector trackSelector(Context ctx) {
+        DefaultTrackSelector sel = new DefaultTrackSelector(ctx);
+        try {
+            sel.setParameters(sel.getParameters().buildUpon()
+                    .setTunnelingEnabled(Settings.tunneling())
+                    .build());
+        } catch (Throwable e) {
+            Log.w(TAG, "tunneling 设置失败: " + e);
+        }
+        return sel;
     }
 
     /**
@@ -93,9 +114,42 @@ public final class PlaybackEngine {
                 Log.i(TAG, "audio caps: 源码直通，声明 " + list.size() + " 种编码");
             }
         }
-        int maxCh = Settings.audioMaxChannels();
+        int maxCh = effectiveMaxAudioCh();
         if (maxCh < 2) maxCh = 2;
+        Log.i(TAG, "audio caps: maxChannelCount=" + maxCh
+                + (capOverride > 0 ? "（降道重试中）" : "")
+                + (Settings.ptOkCh() > 0 ? "（实测可用 " + Settings.ptOkCh() + "ch）" : ""));
         return newDeprecatedCaps(enc, maxCh);
+    }
+
+    // ---------- 声道口径（v1.26：上限 + 实测，不再全设备统一写死）----------
+
+    /**
+     * 直通降道重试时临时指定的声道上限。
+     *
+     * <p>为什么要做成全局静态量：{@code AudioCapabilities} 是 <b>建 AudioSink 时的快照</b>，
+     * 而 {@code TrackSelectionParameters} 用的是另一次读取 —— 两处必须同一个口径，
+     * 否则会出现「能力表说 8 能直通、选轨上限却只有 6」的自相矛盾（v1.25 的回归就是这么来的）。
+     * 播放器重建引擎前用 {@link #setChannelCapOverride(int)} 设一次，两处同时生效。</p>
+     */
+    private static volatile int capOverride = 0;
+
+    /** 设置直通降道重试的临时声道上限（0 = 不覆盖）。 */
+    public static void setChannelCapOverride(int ch) {
+        capOverride = (ch == 2 || ch == 6 || ch == 8) ? ch : 0;
+    }
+
+    /**
+     * 当前该用的音频声道上限。
+     *
+     * <p>优先级：降道重试的临时值 &gt; 本机实测可用值 &gt; 设置页上限。
+     * 「实测可用值」来自 {@link Settings#ptOkCh()} —— 直通真的出过声的那一档，
+     * 这是解决「设备差异」的正解：不猜、不写死，让设备自己说话并记住结论。</p>
+     */
+    public static int effectiveMaxAudioCh() {
+        if (capOverride > 0) return capOverride;
+        if (Settings.audioMode() == Settings.AUDIO_MODE_PASSTHROUGH) return Settings.ptEffectiveCap();
+        return Settings.audioMaxChannels();
     }
 
     /**
@@ -123,7 +177,8 @@ public final class PlaybackEngine {
      */
     public static TrackSelectionParameters.Builder withAudioPreferences(
             TrackSelectionParameters.Builder b) {
-        b.setMaxAudioChannelCount(Settings.audioMaxChannels());
+        // 与能力表同口径：直通时是「设置上限」与「实测可用值」的较小者
+        b.setMaxAudioChannelCount(effectiveMaxAudioCh());
         String lang = Settings.audioPreferredLang();
         if (lang != null && !lang.isEmpty()) b.setPreferredAudioLanguage(lang);
         if (Settings.audioMode() == Settings.AUDIO_MODE_PASSTHROUGH) {
@@ -138,6 +193,72 @@ public final class PlaybackEngine {
             if (!mimes.isEmpty()) {
                 b.setPreferredAudioMimeTypes(mimes.toArray(new String[0]));
             }
+        }
+        return b;
+    }
+
+    // ---------- 视频偏好（v1.26）----------
+
+    /**
+     * 叠加视频相关偏好。
+     *
+     * <p>三件事，全部走 {@code TrackSelectionParameters}（不动渲染器，改完立即生效）：</p>
+     * <ul>
+     *   <li><b>最大分辨率 / 最大帧率</b>：{@code setMaxVideoSize} / {@code setMaxVideoFrameRate}。
+     *       超出的轨会被标成「不在约束内」，从而优先挑更低的那条 —— 盒子只到 1080p 时
+     *       别硬啃 4K。</li>
+     *   <li><b>杜比视界处理</b>：注意 app 层<b>无法</b>切换 DV↔HDR10 的渲染方式，
+     *       那取决于显示端能力与芯片解码器（media3 只在 API 26+ 且屏幕不支持 DV 时
+     *       自动改用基础层解码器）。这里能做的是「选轨倾向」：{@code DV_AVOID} 时把
+     *       非 DV 的常见视频 mime 列为偏好，同一部片里若有 HDR10 轨就会被优先选中。</li>
+     * </ul>
+     */
+    public static TrackSelectionParameters.Builder withVideoPreferences(
+            TrackSelectionParameters.Builder b) {
+        try {
+            // 只在用户设了上限时才写值：新建播放器时参数本来就是 DEFAULT，
+            // 不需要 clear（TrackSelectionParameters.Builder 也没有 clearVideoFrameRateConstraints）
+            int h = Settings.maxVideoHeight();
+            if (h > 0) b.setMaxVideoSize(Integer.MAX_VALUE, h);
+            int fps = Settings.maxVideoFrameRate();
+            if (fps > 0) b.setMaxVideoFrameRate(fps);
+            if (Settings.dvPolicy() == Settings.DV_AVOID) {
+                // 「优先要哪些」而不是「排除哪些」—— setPreferredVideoMimeTypes 的语义就是偏好表
+                b.setPreferredVideoMimeTypes(
+                        MimeTypes.VIDEO_H265, MimeTypes.VIDEO_AV1, MimeTypes.VIDEO_H264, MimeTypes.VIDEO_VP9);
+                Log.i(TAG, "video pref: 优先非杜比视界轨");
+            }
+        } catch (Throwable e) {
+            Log.w(TAG, "withVideoPreferences 失败: " + e);
+        }
+        return b;
+    }
+
+    // ---------- 字幕偏好（v1.26）----------
+
+    /**
+     * 叠加字幕相关偏好。
+     *
+     * <p>三种模式：跟随片源（不动）、总是开（{@code setSelectTextByDefault(true)} +
+     * 首选语言）、关（把文本渲染器整个禁用，播放中仍可用上下键手动打开）。</p>
+     *
+     * <p>注意 {@code setSelectTextByDefault} 的语义是「容器没标 default 轨也照样选一条」，
+     * 正好对应「总是开」。</p>
+     */
+    public static TrackSelectionParameters.Builder withSubtitlePreferences(
+            TrackSelectionParameters.Builder b) {
+        try {
+            int mode = Settings.subMode();
+            if (mode == Settings.SUB_MODE_OFF) {
+                b.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true);
+            } else {
+                b.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false);
+                String lang = Settings.subPreferredLang();
+                if (lang != null && !lang.isEmpty()) b.setPreferredTextLanguage(lang);
+                b.setSelectTextByDefault(mode == Settings.SUB_MODE_ALWAYS);
+            }
+        } catch (Throwable e) {
+            Log.w(TAG, "withSubtitlePreferences 失败: " + e);
         }
         return b;
     }
@@ -205,7 +326,126 @@ public final class PlaybackEngine {
 
         sb.append("【上次音频失败】\n");
         sb.append(lastAudioError.isEmpty() ? "（本次运行还没有音频失败）" : lastAudioError);
+        sb.append('\n');
+        sb.append(avReport(ctx));
         return sb.toString();
+    }
+
+    /**
+     * 视频 / 字幕侧体检：显示端 HDR 与杜比视界能力、视频解码器、字幕解析支持、外挂字幕状态。
+     *
+     * <p>查「DV 到底能不能点亮」「ASS 字幕为什么没出来」先看这里 —— 三件事一次摊开。</p>
+     */
+    public static String avReport(Context ctx) {
+        StringBuilder sb = new StringBuilder();
+
+        sb.append("【显示端 HDR / 杜比视界】\n");
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 24) {
+                android.hardware.display.DisplayManager dm = (android.hardware.display.DisplayManager)
+                        ctx.getSystemService(Context.DISPLAY_SERVICE);
+                android.view.Display d = dm == null ? null
+                        : dm.getDisplay(android.view.Display.DEFAULT_DISPLAY);
+                if (d == null) {
+                    sb.append("取不到默认显示\n");
+                } else {
+                    sb.append("HDR 屏幕: ").append(d.isHdr() ? "是" : "否").append('\n');
+                    android.view.Display.HdrCapabilities hc = d.getHdrCapabilities();
+                    int[] types = hc == null ? null : hc.getSupportedHdrTypes();
+                    sb.append("HDR 类型: ");
+                    if (types == null || types.length == 0) {
+                        sb.append("（无）");
+                    } else {
+                        for (int i = 0; i < types.length; i++) {
+                            if (i > 0) sb.append(" / ");
+                            sb.append(hdrName(types[i]));
+                        }
+                    }
+                    sb.append('\n');
+                    if (hc != null) {
+                        sb.append("最大亮度: ").append((int) hc.getDesiredMaxLuminance())
+                                .append(" / 平均 ").append((int) hc.getDesiredMaxAverageLuminance())
+                                .append(" nits\n");
+                    }
+                }
+            } else {
+                sb.append("系统 < 7.0，取不到 HDR 能力（API ").append(android.os.Build.VERSION.SDK_INT).append("）\n");
+            }
+        } catch (Throwable e) {
+            sb.append("读取失败: ").append(e).append('\n');
+        }
+        sb.append("说明：杜比视界能否点亮由「显示端 + 芯片解码器」决定，应用改不了。\n")
+                .append("media3 仅在 API 26+ 且屏幕不支持 DV 时，才自动改用 H.264/H.265 基础层解码器。\n");
+        sb.append('\n');
+
+        sb.append("【系统视频解码器】\n");
+        try {
+            android.media.MediaCodecList list = new android.media.MediaCodecList(
+                    android.media.MediaCodecList.REGULAR_CODECS);
+            final String[][] want = {
+                    {"video/avc", "H.264"},
+                    {"video/hevc", "H.265/HEVC"},
+                    {"video/x-vnd.on2.vp9", "VP9"},
+                    {"video/av01", "AV1"},
+                    {"video/dolby-vision", "Dolby Vision"},
+                    {"video/mpeg2", "MPEG-2"},
+                    {"video/mp4v-es", "MPEG-4"},
+                    {"video/x-ms-wmv", "VC-1/WMV"},
+            };
+            for (String[] w : want) {
+                int won = 0;
+                String firstName = null;
+                for (android.media.MediaCodecInfo ci : list.getCodecInfos()) {
+                    if (ci == null || ci.isEncoder()) continue;
+                    boolean has = false;
+                    try {
+                        for (String ty : ci.getSupportedTypes()) {
+                            if (w[0].equalsIgnoreCase(ty)) {
+                                has = true;
+                                break;
+                            }
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                    if (has) {
+                        won++;
+                        if (firstName == null) firstName = ci.getName();
+                    }
+                }
+                sb.append(w[1]).append(": ").append(won == 0 ? "无解码器" :
+                        (won + " 个 · 如 " + firstName)).append('\n');
+            }
+        } catch (Throwable e) {
+            sb.append("枚举失败: ").append(e).append('\n');
+        }
+        sb.append('\n');
+
+        sb.append("【字幕】\n");
+        sb.append("解析支持: ASS/SSA(text/x-ssa) · SRT · WebVTT · TTML · PGS · VobSub · DVB · CEA608/708\n");
+        sb.append("说明：MKV 内嵌 S_TEXT/ASS 会映射成 text/x-ssa，本 fork 的 SsaParser 能解析\n")
+                .append("      文字/颜色/\\an 对齐/\\pos 位置/字号；\\move、\\k 卡拉OK、\\clip、\n")
+                .append("      \\t 动画、\\p 绘图这些复杂特效会被丢弃（media3-ui 的 SubtitleView 不渲染）。\n");
+        sb.append("字幕模式: ");
+        int sm = Settings.subMode();
+        sb.append(sm == Settings.SUB_MODE_OFF ? "关"
+                : (sm == Settings.SUB_MODE_ALWAYS ? "总是开" : "跟随片源")).append('\n');
+        sb.append("首选字幕语言: ").append(Settings.subPreferredLang().isEmpty()
+                ? "不指定" : Settings.subPreferredLang()).append('\n');
+        sb.append("外挂字幕自动加载(本地同目录同名): ")
+                .append(Settings.subExternalAuto() ? "开" : "关").append('\n');
+        sb.append("手动字幕: ").append(Settings.subManual().isEmpty()
+                ? "未设置" : Settings.subManual()).append('\n');
+        return sb.toString();
+    }
+
+    private static String hdrName(int type) {
+        switch (type) {
+            case 1: return "Dolby Vision";
+            case 2: return "HDR10";
+            case 3: return "HLG";
+            case 4: return "HDR10+";
+            default: return "未知(" + type + ")";
+        }
     }
 
     private static String capsLine(AudioCapabilities caps, String label, int encoding) {
@@ -270,11 +510,22 @@ public final class PlaybackEngine {
         private final AudioCapabilities injected;
 
         EngineRenderersFactory(Context ctx, @Nullable AudioCapabilities injected,
-                               boolean enableDecoderFallback) {
+                               boolean enableDecoderFallback, int decoderPrefer) {
             super(ctx);
             this.injected = injected;
             // 硬解失败要不要回退软解（DefaultRenderersFactory 自带的解码器回退）
             setEnableDecoderFallback(enableDecoderFallback);
+            // 解码器优先级：优先软解时改用 PREFER_SOFTWARE（硬解花屏/绿屏时的退路）
+            try {
+                if (decoderPrefer == Settings.DECODER_PREFER_SW) {
+                    setMediaCodecSelector(MediaCodecSelector.PREFER_SOFTWARE);
+                    Log.i(TAG, "decoder: 优先软解");
+                } else {
+                    setMediaCodecSelector(MediaCodecSelector.DEFAULT);
+                }
+            } catch (Throwable e) {
+                Log.w(TAG, "setMediaCodecSelector 失败: " + e);
+            }
         }
 
         /**

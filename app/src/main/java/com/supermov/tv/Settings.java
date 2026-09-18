@@ -438,16 +438,31 @@ public final class Settings {
 
     private static final String K_AUDIO_MAX_CH = "audio_max_channels";
     /**
-     * 缺省 6（5.1）而不是 8（7.1）。
+     * 缺省 8：这是「<b>上限</b>」，不是「目标值」—— 意思是 7.1 也允许尝试直通。
      *
-     * <p>实测（小米/Amlogic 盒子，18:14:34 logcat）：声明 8 声道后 media3 会去建
-     * {@code Config(48000, 252, 8, 2250000)} 的 AudioTrack，AudioFlinger 直接回
-     * {@code could not create track, status: -12}（ENOMEM），同时 HAL 只肯开
-     * {@code ch=0x3f}(6ch) 并且「for raw audio output, force alsa stereo output」。
-     * 也就是说这台设备根本吃不下 8 声道的 PCM/直通轨 —— 缺省 6 才能开出声；
-     * 真接了 7.1 功放且 HAL 支持，再手动调到 8。</p>
+     * <p><b>为什么从 v1.25 的 6 改回 8：</b>v1.25 曾把它设成 6，起因是某台小米/Amlogic
+     * 盒子建 8 声道 AudioTrack 报 {@code AudioFlinger status -12}。但那个常量是
+     * <b>全设备统一</b>的，而 media3 判定「这条音轨能不能直通」正好逐条比这个上限 ——
+     * 读 fork 源码可确证：</p>
+     *
+     * <pre>
+     *   AudioCapabilities.AudioProfile#supportsChannelCount(n)  →  n &lt;= maxChannelCount
+     *   AudioCapabilities#getPassthroughConfigForFormat(...)：supportsChannelCount 为 false
+     *       就 return null → AudioTrackAudioOutputProvider#getFormatSupportLevel 判
+     *       FORMAT_UNSUPPORTED → media3 认为这条音轨不能直通
+     * </pre>
+     *
+     * <p>后果：凡是 <b>7.1 的 TrueHD / DTS-HD</b>，在 maxChannelCount=6 时一律被判成
+     * 「不可直通」，直通当场失效 —— 这正是「上个版本 TrueHD / DTS-HD 能源码的设备，
+     * 改了之后不能源码了」。而且对 -12 那台盒子，把它降到 6 也只是把「报错」换成
+     * 「静音丢轨」，并没有真正修好。</p>
+     *
+     * <p><b>正确做法：设备差异不能靠一个统一常量扛 —— 宽进 + 运行时逐级降道。</b>
+     * 这里只当上限用（缺省 8）；真正能吃几声道由实测结果 {@link #ptOkCh()} 决定：
+     * 直通建轨失败时播放器会按 8 → 6 → 2 逐级降道重试，成功的那一档写回本机，
+     * 下次开局直接用它，不再试错。</p>
      */
-    public static final int AUDIO_MAX_CH_DEFAULT = 6;
+    public static final int AUDIO_MAX_CH_DEFAULT = 8;
 
     public static int audioMaxChannels() {
         if (p() == null) return AUDIO_MAX_CH_DEFAULT;
@@ -536,33 +551,13 @@ public final class Settings {
         p().edit().putInt(K_VIDEO_RESIZE, mode).apply();
     }
 
-    // ---- 在线清晰度上限 ----
-
-    private static final String K_QUALITY_CAP = "quality_cap";
-    /** 原画优先（缺省）：先取原画直链，失败才降级转码流 */
-    public static final int QUALITY_ORIGINAL = 0;
-    /** 直接走 ≤1080p 转码流 */
-    public static final int QUALITY_1080 = 1;
-    /** 直接走 ≤720p 转码流 */
-    public static final int QUALITY_720 = 2;
-
-    public static int qualityCap() {
-        if (p() == null) return QUALITY_ORIGINAL;
-        int v;
-        try {
-            v = p().getInt(K_QUALITY_CAP, QUALITY_ORIGINAL);
-        } catch (Throwable e) {
-            return QUALITY_ORIGINAL;
-        }
-        if (v < QUALITY_ORIGINAL || v > QUALITY_720) v = QUALITY_ORIGINAL;
-        return v;
-    }
-
-    public static void setQualityCap(int cap) {
-        if (p() == null) return;
-        if (cap < QUALITY_ORIGINAL || cap > QUALITY_720) cap = QUALITY_ORIGINAL;
-        p().edit().putInt(K_QUALITY_CAP, cap).apply();
-    }
+    // ---- 在线清晰度：固定原画（v1.26）----
+    //
+    // v1.26 起按「永远原画、不考虑转码」执行：设置页不再提供「清晰度上限」，
+    // 播放器只走 /api/filemetas 的原画直链（失败就换一条新直链重试一次，
+    // 不再降级到 pan.baidu.com/api/streaming 的 M3U8 转码流）。
+    // 因此这一组偏好项（qualityCap / QUALITY_* / setQualityCap）整体删除 ——
+    // 留着只会出现「设置里还能选转码、播放器却永不转码」的自相矛盾状态。
 
     // ---- 硬解失败回退软解 ----
 
@@ -632,6 +627,399 @@ public final class Settings {
     public static void setRememberPos(boolean on) {
         if (p() == null) return;
         p().edit().putBoolean(K_REMEMBER_POS, on).apply();
+    }
+
+    // ==================== 播放 · 视频（v1.26）====================
+
+    // ---- 最大分辨率上限（0 = 自动，不设限）----
+
+    private static final String K_MAX_VIDEO_HEIGHT = "video_max_height";
+    /** 自动：不干预选轨 */
+    public static final int VIDEO_HEIGHT_AUTO = 0;
+
+    /**
+     * 视频最大高度（像素），0 = 自动。
+     *
+     * <p>落到 {@code TrackSelectionParameters#setMaxVideoSize}：超过这个高度的视频轨会被
+     * 排到「不在约束内」，最终优先挑更低的那条。用途是盒子/电视只到 1080p 时，
+     * 别硬啃 4K 片源把硬解拖垮。</p>
+     */
+    public static int maxVideoHeight() {
+        if (p() == null) return VIDEO_HEIGHT_AUTO;
+        int v;
+        try {
+            v = p().getInt(K_MAX_VIDEO_HEIGHT, VIDEO_HEIGHT_AUTO);
+        } catch (Throwable e) {
+            return VIDEO_HEIGHT_AUTO;
+        }
+        if (v != VIDEO_HEIGHT_AUTO && v != 720 && v != 1080 && v != 2160) v = VIDEO_HEIGHT_AUTO;
+        return v;
+    }
+
+    public static void setMaxVideoHeight(int h) {
+        if (p() == null) return;
+        if (h != VIDEO_HEIGHT_AUTO && h != 720 && h != 1080 && h != 2160) h = VIDEO_HEIGHT_AUTO;
+        p().edit().putInt(K_MAX_VIDEO_HEIGHT, h).apply();
+    }
+
+    // ---- 最大帧率上限（0 = 自动）----
+
+    private static final String K_MAX_VIDEO_FPS = "video_max_fps";
+    public static final int VIDEO_FPS_AUTO = 0;
+
+    /** 视频最大帧率，0 = 自动。落到 {@code setMaxVideoFrameRate}。 */
+    public static int maxVideoFrameRate() {
+        if (p() == null) return VIDEO_FPS_AUTO;
+        int v;
+        try {
+            v = p().getInt(K_MAX_VIDEO_FPS, VIDEO_FPS_AUTO);
+        } catch (Throwable e) {
+            return VIDEO_FPS_AUTO;
+        }
+        if (v != VIDEO_FPS_AUTO && v != 24 && v != 30 && v != 60) v = VIDEO_FPS_AUTO;
+        return v;
+    }
+
+    public static void setMaxVideoFrameRate(int fps) {
+        if (p() == null) return;
+        if (fps != VIDEO_FPS_AUTO && fps != 24 && fps != 30 && fps != 60) fps = VIDEO_FPS_AUTO;
+        p().edit().putInt(K_MAX_VIDEO_FPS, fps).apply();
+    }
+
+    // ---- 解码器优先（0 自动 / 1 优先硬解 / 2 优先软解）----
+
+    private static final String K_DECODER_PREFER = "decoder_prefer";
+    public static final int DECODER_AUTO = 0;
+    /** 优先硬解（{@code MediaCodecSelector.DEFAULT}）：省电、发热低，个别盒子颜色不对时可换这个 */
+    public static final int DECODER_PREFER_HW = 1;
+    /** 优先软解（{@code MediaCodecSelector.PREFER_SOFTWARE}）：硬解花屏 / 绿屏时的退路，吃 CPU */
+    public static final int DECODER_PREFER_SW = 2;
+
+    public static int decoderPrefer() {
+        if (p() == null) return DECODER_AUTO;
+        int v;
+        try {
+            v = p().getInt(K_DECODER_PREFER, DECODER_AUTO);
+        } catch (Throwable e) {
+            return DECODER_AUTO;
+        }
+        if (v < DECODER_AUTO || v > DECODER_PREFER_SW) v = DECODER_AUTO;
+        return v;
+    }
+
+    public static void setDecoderPrefer(int v) {
+        if (p() == null) return;
+        if (v < DECODER_AUTO || v > DECODER_PREFER_SW) v = DECODER_AUTO;
+        p().edit().putInt(K_DECODER_PREFER, v).apply();
+    }
+
+    // ---- 隧道模式（Tunneling）----
+
+    private static final String K_TUNNELING = "video_tunneling";
+
+    /**
+     * 隧道模式：把音视频同步交给系统（{@code DefaultTrackSelector#setTunnelingEnabled}）。
+     *
+     * <p>缺省关。开着在部分盒子上能显著改善 A/V 同步、并让 HDR / 杜比视界的直通更顺，
+     * 但也有设备一开就黑屏或没声音 —— 所以做成开关，由用户实测决定。</p>
+     */
+    public static boolean tunneling() {
+        if (p() == null) return false;
+        try {
+            return p().getBoolean(K_TUNNELING, false);
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    public static void setTunneling(boolean on) {
+        if (p() == null) return;
+        p().edit().putBoolean(K_TUNNELING, on).apply();
+    }
+
+    // ---- 杜比视界（DV）处理 ----
+
+    private static final String K_DV_POLICY = "dv_policy";
+    /** 自动：完全交给设备与 media3（8.0+ 且屏幕不支持 DV 时会自动改用基础层解码器） */
+    public static final int DV_AUTO = 0;
+    /** 优先避开：排轨时把杜比视界轨压到最低，优先挑 HDR10 / SDR 轨 */
+    public static final int DV_AVOID = 1;
+
+    /**
+     * 杜比视界处理。
+     *
+     * <p><b>先说清楚 app 层能做什么、不能做什么：</b>DV 能不能点亮，取决于
+     * ① 显示端是否支持 DV（{@code Display.getHdrCapabilities()} 里有
+     * {@code HDR_TYPE_DOLBY_VISION}）② 芯片有没有 DV 解码器。这两件都不是应用能改的。
+     * media3 自带的处理是：Android 8.0(API 26) 以上、屏幕不支持 DV 时，
+     * {@code MediaCodecVideoRenderer} 自动去找 H.264 / H.265 基础层解码器（DV7→HDR10 那条路）。
+     * <b>API 26 以下这段逻辑整个不执行</b>，所以 Android 7 盒子遇到纯 DV 片源很可能直接黑屏。</p>
+     *
+     * <p>应用唯一能做的就是在<b>选轨</b>上让步：{@link #DV_AVOID} 时把 DV 轨排到最后，
+     * 让同一部片里若同时存在 HDR10 轨就会被优先选中。片源只有 DV 一条轨时，这个开关无效。</p>
+     */
+    public static int dvPolicy() {
+        if (p() == null) return DV_AUTO;
+        int v;
+        try {
+            v = p().getInt(K_DV_POLICY, DV_AUTO);
+        } catch (Throwable e) {
+            return DV_AUTO;
+        }
+        if (v < DV_AUTO || v > DV_AVOID) v = DV_AUTO;
+        return v;
+    }
+
+    public static void setDvPolicy(int v) {
+        if (p() == null) return;
+        if (v < DV_AUTO || v > DV_AVOID) v = DV_AUTO;
+        p().edit().putInt(K_DV_POLICY, v).apply();
+    }
+
+    // ==================== 播放 · 字幕（v1.26）====================
+
+    // ---- 字幕模式 ----
+
+    private static final String K_SUB_MODE = "sub_mode";
+    /** 跟随片源（缺省）：片源默认轨是什么就是什么，播放中可用遥控器上下键切换 */
+    public static final int SUB_MODE_SOURCE = 0;
+    /** 总是开：自动选中「首选字幕语言」的那条；没有则退回第一条文本轨 */
+    public static final int SUB_MODE_ALWAYS = 1;
+    /** 关：默认不出字幕（仍可在播放中手动打开） */
+    public static final int SUB_MODE_OFF = 2;
+
+    public static int subMode() {
+        if (p() == null) return SUB_MODE_SOURCE;
+        int v;
+        try {
+            v = p().getInt(K_SUB_MODE, SUB_MODE_SOURCE);
+        } catch (Throwable e) {
+            return SUB_MODE_SOURCE;
+        }
+        if (v < SUB_MODE_SOURCE || v > SUB_MODE_OFF) v = SUB_MODE_SOURCE;
+        return v;
+    }
+
+    public static void setSubMode(int v) {
+        if (p() == null) return;
+        if (v < SUB_MODE_SOURCE || v > SUB_MODE_OFF) v = SUB_MODE_SOURCE;
+        p().edit().putInt(K_SUB_MODE, v).apply();
+    }
+
+    // ---- 首选字幕语言 ----
+
+    private static final String K_SUB_LANG = "sub_pref_lang";
+
+    /** 首选字幕语言（ISO 639-1）；空串 = 不指定。 */
+    public static String subPreferredLang() {
+        if (p() == null) return "";
+        try {
+            String v = p().getString(K_SUB_LANG, "");
+            return v == null ? "" : v;
+        } catch (Throwable e) {
+            return "";
+        }
+    }
+
+    public static void setSubPreferredLang(String lang) {
+        if (p() == null) return;
+        p().edit().putString(K_SUB_LANG, lang == null ? "" : lang).apply();
+    }
+
+    // ---- 字幕颜色 / 描边 ----
+
+    private static final String K_SUB_COLOR = "sub_color";
+    public static final int SUB_COLOR_WHITE_OUTLINE = 0;
+    public static final int SUB_COLOR_YELLOW_OUTLINE = 1;
+    public static final int SUB_COLOR_BOX = 2;
+    public static final int SUB_COLOR_PLAIN = 3;
+
+    public static int subColor() {
+        if (p() == null) return SUB_COLOR_WHITE_OUTLINE;
+        int v;
+        try {
+            v = p().getInt(K_SUB_COLOR, SUB_COLOR_WHITE_OUTLINE);
+        } catch (Throwable e) {
+            return SUB_COLOR_WHITE_OUTLINE;
+        }
+        if (v < 0 || v > SUB_COLOR_PLAIN) v = SUB_COLOR_WHITE_OUTLINE;
+        return v;
+    }
+
+    public static void setSubColor(int v) {
+        if (p() == null) return;
+        if (v < 0 || v > SUB_COLOR_PLAIN) v = SUB_COLOR_WHITE_OUTLINE;
+        p().edit().putInt(K_SUB_COLOR, v).apply();
+    }
+
+    // ---- 字幕位置 ----
+
+    private static final String K_SUB_POS = "sub_pos";
+    public static final int SUB_POS_BOTTOM = 0;
+    public static final int SUB_POS_MIDDLE = 1;
+    public static final int SUB_POS_TOP = 2;
+
+    public static int subPos() {
+        if (p() == null) return SUB_POS_BOTTOM;
+        int v;
+        try {
+            v = p().getInt(K_SUB_POS, SUB_POS_BOTTOM);
+        } catch (Throwable e) {
+            return SUB_POS_BOTTOM;
+        }
+        if (v < SUB_POS_BOTTOM || v > SUB_POS_TOP) v = SUB_POS_BOTTOM;
+        return v;
+    }
+
+    public static void setSubPos(int v) {
+        if (p() == null) return;
+        if (v < SUB_POS_BOTTOM || v > SUB_POS_TOP) v = SUB_POS_BOTTOM;
+        p().edit().putInt(K_SUB_POS, v).apply();
+    }
+
+    /** 字幕底边留白（屏幕高度的比例）：位置档位 -> SubtitleView#setBottomPaddingFraction。 */
+    public static float subBottomPadding() {
+        int v = subPos();
+        if (v == SUB_POS_TOP) return 0.80f;
+        if (v == SUB_POS_MIDDLE) return 0.45f;
+        return 0.10f;
+    }
+
+    // ---- 外挂字幕：本地同目录同名自动加载 ----
+
+    private static final String K_SUB_EXT_AUTO = "sub_ext_auto";
+
+    /**
+     * 播本地文件时，自动在同目录找同名 .ass / .ssa / .srt / .vtt 挂上。
+     *
+     * <p>为什么需要它：内嵌字幕（MKV 里的 S_TEXT/ASS 等）media3 本来就支持，
+     * 但<b>外挂字幕此前完全没有入口</b> —— 用户下的片子和字幕是两个文件时，
+     * 表现就是「ASS SSA 字幕没支持」。缺省开。</p>
+     */
+    public static boolean subExternalAuto() {
+        if (p() == null) return true;
+        try {
+            return p().getBoolean(K_SUB_EXT_AUTO, true);
+        } catch (Throwable e) {
+            return true;
+        }
+    }
+
+    public static void setSubExternalAuto(boolean on) {
+        if (p() == null) return;
+        p().edit().putBoolean(K_SUB_EXT_AUTO, on).apply();
+    }
+
+    // ---- 外挂字幕：手动指定（路径或 http(s) 直链）----
+
+    private static final String K_SUB_MANUAL = "sub_manual";
+
+    /** 手动指定的字幕路径 / URL；空串 = 不用。 */
+    public static String subManual() {
+        if (p() == null) return "";
+        try {
+            String v = p().getString(K_SUB_MANUAL, "");
+            return v == null ? "" : v;
+        } catch (Throwable e) {
+            return "";
+        }
+    }
+
+    public static void setSubManual(String v) {
+        if (p() == null) return;
+        p().edit().putString(K_SUB_MANUAL, v == null ? "" : v.trim()).apply();
+    }
+
+    /** 按后缀猜字幕 mime；认不出来返回空串（交给 media3 自己嗅探）。 */
+    public static String subMimeFor(String name) {
+        if (name == null) return "";
+        String n = name.toLowerCase(java.util.Locale.US);
+        int q = n.indexOf('?');
+        if (q >= 0) n = n.substring(0, q);
+        if (n.endsWith(".ass") || n.endsWith(".ssa")) return androidx.media3.common.MimeTypes.TEXT_SSA;
+        if (n.endsWith(".srt")) return androidx.media3.common.MimeTypes.APPLICATION_SUBRIP;
+        if (n.endsWith(".vtt")) return androidx.media3.common.MimeTypes.TEXT_VTT;
+        if (n.endsWith(".ttml") || n.endsWith(".xml")) return androidx.media3.common.MimeTypes.APPLICATION_TTML;
+        if (n.endsWith(".sub")) return androidx.media3.common.MimeTypes.APPLICATION_SUBRIP;
+        return "";
+    }
+
+    // ==================== 直通声道自适应记忆（v1.26）====================
+
+    private static final String K_PT_OK_CH = "pt_ok_ch";
+    private static final String K_PT_DEV = "pt_dev_key";
+
+    /**
+     * 本机上「实测能出声」的直通声道数；0 = 还没测出来。
+     *
+     * <p>这是「设备差异」的正确落点：不写死常量，而是让第一次播放去试
+     * （8 → 6 → 2 逐级降道），成功的那一档记下来，之后开局直接用。
+     * 换机器 / 刷固件后 {@link #ptDeviceKey()} 变化，旧记忆自动作废。</p>
+     */
+    public static int ptOkCh() {
+        if (p() == null) return 0;
+        try {
+            if (!ptDeviceKey().equals(p().getString(K_PT_DEV, ""))) return 0;
+            int v = p().getInt(K_PT_OK_CH, 0);
+            return (v == 2 || v == 6 || v == 8) ? v : 0;
+        } catch (Throwable e) {
+            return 0;
+        }
+    }
+
+    public static void setPtOkCh(int ch) {
+        if (p() == null) return;
+        if (ch != 2 && ch != 6 && ch != 8) return;
+        p().edit()
+                .putInt(K_PT_OK_CH, ch)
+                .putString(K_PT_DEV, ptDeviceKey())
+                .apply();
+    }
+
+    /**
+     * 抹掉本机的直通实测记忆，下次播放重新逐级试（8 → 6 → 2）。
+     *
+     * <p>换功放 / 换 HDMI 线 / 刷固件之后，旧结论可能已经不准 —— 设置页留了这个出口。</p>
+     */
+    public static void clearPtOkCh() {
+        if (p() == null) return;
+        p().edit().remove(K_PT_OK_CH).remove(K_PT_DEV).apply();
+    }
+
+    /** 设备指纹：机型 + 固件版本 + SDK + HDMI 输出名。用于让「实测记忆」跟着设备走。 */
+    public static String ptDeviceKey() {
+        String model = android.os.Build.MODEL == null ? "" : android.os.Build.MODEL;
+        String disp = android.os.Build.DISPLAY == null ? "" : android.os.Build.DISPLAY;
+        StringBuilder sb = new StringBuilder();
+        sb.append(model).append('|').append(disp).append('|').append(android.os.Build.VERSION.SDK_INT);
+        try {
+            android.media.AudioManager am = appCtx == null ? null
+                    : (android.media.AudioManager) appCtx.getSystemService(Context.AUDIO_SERVICE);
+            if (am != null) {
+                for (android.media.AudioDeviceInfo d : am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)) {
+                    if (d.getType() == android.media.AudioDeviceInfo.TYPE_HDMI
+                            || d.getType() == android.media.AudioDeviceInfo.TYPE_HDMI_ARC
+                            || d.getType() == android.media.AudioDeviceInfo.TYPE_HDMI_EARC) {
+                        sb.append('|').append(d.getProductName());
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 开局该用几声道：设置上限与实测值的<b>较小者</b>。
+     *
+     * <p>实测值优先 —— 它是「这台设备真的开得出声」的证据；上限是用户的主观约束
+     * （比如「我只要 5.1」）。两者取小，既尊重用户，又不会再去撞已知的墙。</p>
+     */
+    public static int ptEffectiveCap() {
+        int cap = audioMaxChannels();
+        int ok = ptOkCh();
+        if (ok > 0 && ok < cap) return ok;
+        return cap;
     }
 }
 
