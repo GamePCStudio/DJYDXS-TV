@@ -53,15 +53,23 @@ import java.util.Map;
  * <p>引擎配置（音频直通/解码、声道数、音轨语言、解码器回退）全部来自
  * {@link PlaybackEngine} —— 它读设置页的选项；本类只负责取流与播控。</p>
  *
- * 取流策略（v1.26 起：<b>永远原画，不考虑转码</b>）：
+ * 取流策略（v1.27 起：<b>只认百度原画；失败就重来，绝不换源</b>）：
  *   1. 先在自己网盘的转存目录里定位这部影片（没转存过则自动转存一次）
  *   2. /api/filemetas 取原画 dlink → 交给 LocalProxy（补 UA=netdisk）→ 播放原画
- *   3. 失败/中断 → 换一条新直链重试一次（dlink 只有 8 小时有效期）
- *   4. 仍失败 → 如实报错（不再降级到 pan.baidu.com/api/streaming 的 M3U8 转码流）
+ *   3. 任何一步失败（拿不到地址 / 播放中断）→ 把上面整条流程重跑一遍，最多 3 次，
+ *      每一次都还是百度原画 —— 不换源、不降清晰度、不绕到别的接口去
+ *   4. 连续 3 次都拿不到可播地址 → 如实报错（附最后一次的原因）
  *
  * <p>v1.26 按用户要求把「清晰度上限」整个拿掉了：设置页不再出现「原画 / 1080p / 720p」
  * 这类选项，转码链路（startTranscode / fallbackM3u8）也一并删除 —— 留着只会出现
  * 「设置里还能选转码、播放器却永不转码」的自相矛盾状态。</p>
+ *
+ * <p>v1.27 进一步把失败处理收敛成<b>一条</b>。原来播放中断时只「换一条新直链」就了事，
+ * 现在改成重跑整条原画取流（重新定位文件 → 重新转存 → 重新取 dlink → 重新挂代理）。
+ * 理由：「换链」只治直链过期这一种病（dlink 8 小时有效），可真机上更常见的是风控、
+ * 接口抖动、定位环节出错 —— 这时换链拿到的东西和上一次一模一样，用户只看到一句
+ * 「换新直链也失败了」，等于白试一次。重跑整条流程把这些情况全覆盖，而且语义上永远
+ * 是「原画」。额度策略见 {@link #ORIGIN_MAX_TRIES}。</p>
  */
 @OptIn(markerClass = UnstableApi.class)
 public class PlayerActivity extends Activity {
@@ -97,7 +105,15 @@ public class PlayerActivity extends Activity {
     private String reqFname = "";
 
     private BaiduPan.PlayFile playFile;
-    private boolean retriedDlink = false;
+    /** v1.27：原画「完整重获取」在当前额度窗口里已经用掉的次数。额度见 {@link #ORIGIN_MAX_TRIES} */
+    private int originTries = 0;
+    /**
+     * v1.27：本次播放里「重新尝试原画」的累计次数 —— 只用于状态栏文案。
+     *
+     * <p>刻意与 {@link #originTries} 分开：额度窗口播满 30 秒会重置，
+     * 如果文案跟着重置就会出现「明明是第 2 次重试却显示第 1/3 次」的怪话。</p>
+     */
+    private int originSeq = 0;
     /**
      * 直通降道重试已经试过的声道数（8 / 6 / 2），用来避免来回打转。
      *
@@ -159,6 +175,21 @@ public class PlayerActivity extends Activity {
     private static final long DRAG_MIN_STEP_MS = 1500L;
     /** 每 10 秒落一次播放进度 */
     private static final long PROGRESS_SAVE_INTERVAL = 10000L;
+
+    /**
+     * 「原画」重试上限（v1.27）。
+     *
+     * <p>用户要求：百度原画失败后<b>只重新尝试原画</b>，不允许改走别的路 —— 既没有云端
+     * 转码，也没有「换一条直链就当修好了」的旁路。所以失败处理只剩一条：重跑整条原画
+     * 取流流程。没有上限就会变成死循环，所以给 3 次。</p>
+     *
+     * <p>额度归还见 {@link #refillOriginBudgetIfHealthy()}：连续播满
+     * {@link #ORIGIN_BUDGET_REFILL_MS} 说明这一档原画是通的，次数清零 —— 看了一小时
+     * 被风控掐断时不该只剩一次机会。</p>
+     */
+    private static final int ORIGIN_MAX_TRIES = 3;
+    /** 连续播满这么久（毫秒）就把原画重试额度还回来 */
+    private static final long ORIGIN_BUDGET_REFILL_MS = 30000L;
     /** 进度不到这里就不值得记（防止「只看了个片头」把记录写脏） */
     private static final long RESUME_MIN_MS = 15000L;
     /** 离结尾这么近就当看完了，直接清记录 */
@@ -222,6 +253,7 @@ public class PlayerActivity extends Activity {
         @Override
         public void run() {
             saveProgressNow();
+            refillOriginBudgetIfHealthy();
             main.postDelayed(this, PROGRESS_SAVE_INTERVAL);
         }
     };
@@ -493,77 +525,109 @@ public class PlayerActivity extends Activity {
             finish();
             return;
         }
+        acquireOriginal(0, "");
+    }
 
+    /**
+     * 取「百度原画」并开播 —— v1.27 起本类<b>唯一</b>的取流入口。
+     *
+     * <p>失败时只有一个动作：把整条流程重跑一遍（重新定位文件 → 重新转存 → 重新取
+     * dlink → 重新挂代理）。这就是用户要的「原画失败以后重新尝试，仍然是百度原画」。
+     * 不换源、不降清晰度、不绕到别的接口。</p>
+     *
+     * @param pos      续播位置；&lt;=0 = 全新开播（这时才去读记忆的播放进度）
+     * @param lastWhy  上一次失败的原因，只用于提示，不参与判断
+     */
+    private void acquireOriginal(final long pos, final String lastWhy) {
+        if (finishing) return;
+        if (!lastWhy.isEmpty()) originSeq++;
+        originTries++;
+        if (originTries > ORIGIN_MAX_TRIES) {
+            fail("原画获取失败：连续 " + ORIGIN_MAX_TRIES + " 次都没取到可播地址"
+                    + (lastWhy.isEmpty() ? "" : "（" + lastWhy + "）")
+                    + "，请稍后再试");
+            return;
+        }
+        final int n = originTries;
+        final boolean retry = !lastWhy.isEmpty();
+        if (!retry) {
+            status("正在定位影片…（" + name + "）");
+        } else {
+            status("原画获取失败，正在重新尝试原画（第 " + originSeq + " 次）…");
+        }
+        new Thread(() -> {
+            try {
+                final BaiduPan.PlayFile pf = locateOriginalFile();
+                // null = 「转存失败 / 网盘里找不到」这类重试也没用的错，已经报过
+                if (pf == null) return;
+                playFile = pf;
+                status("正在获取原画直链…（" + originLabel(pf) + "）");
+                String d = BaiduPan.dlink(pf.fsId, pf.path);
+                if (d == null || d.isEmpty()) {
+                    Log.d(TAG, "原画 dlink 为空，第 " + n + " 次尝试失败");
+                    main.post(() -> acquireOriginal(pos, "百度没返回可播地址"));
+                    return;
+                }
+                if (proxy == null) {
+                    proxy = new LocalProxy();
+                    proxy.start();
+                }
+                final String u = proxy.urlFor(d);
+                main.post(() -> {
+                    status(retry ? "已重新取到原画直链，继续播放" : "原画播放：" + pf.name);
+                    startPlay(u, pos);
+                });
+            } catch (Throwable e) {
+                Log.d(TAG, "原画取流异常（第 " + n + " 次）" + e);
+                main.post(() -> acquireOriginal(pos,
+                        "取流异常 " + e.getClass().getSimpleName()));
+            }
+        }, "player-origin").start();
+    }
+
+    /**
+     * 定位要播的原画文件：详情页已指定具体文件就直接用，否则去网盘里找
+     * （没转过存就自动转存一次）。
+     *
+     * @return null = 已经报过错，且属于「重试也没用」的那一类（转存失败 / 找不到文件）
+     */
+    private BaiduPan.PlayFile locateOriginalFile() {
         // 详情页已经选定了具体文件（多集/多文件时用户挑的那一集）-> 直接用，不再按片名去猜。
         // 这条分支必须放在最前面：如果还走 resolvePlayable，20 集的剧永远只会播到同一个文件。
         if (reqFsId > 0 && !reqBpath.isEmpty()) {
-            final BaiduPan.PlayFile pf = new BaiduPan.PlayFile();
-            pf.ok = true;
-            pf.fsId = reqFsId;
-            pf.path = reqBpath;
-            pf.name = reqFname.isEmpty() ? name : reqFname;
-            // v1.26：永远原画，不再有「清晰度上限」这回事
-            status("正在获取原画直链…（" + pf.name + "）");
-            new Thread(() -> {
-                try {
-                    String d = BaiduPan.dlink(pf.fsId, pf.path);
-                    if (d.isEmpty()) {
-                        playFile = pf;
-                        fail("原画直链获取失败：百度没返回可播地址（会员权限或接口变动）");
-                        return;
-                    }
-                    playFile = pf;
-                    proxy = new LocalProxy();
-                    proxy.start();
-                    final String u = proxy.urlFor(d);
-                    status("原画播放：" + pf.name);
-                    main.post(() -> startPlay(u, 0));
-                } catch (Throwable e) {
-                    Log.d(TAG, "direct play err " + e);
-                    fail("取流异常：" + e.getClass().getSimpleName());
-                }
-            }, "player-direct").start();
-            return;
+            final BaiduPan.PlayFile one = new BaiduPan.PlayFile();
+            one.ok = true;
+            one.fsId = reqFsId;
+            one.path = reqBpath;
+            one.name = reqFname.isEmpty() ? name : reqFname;
+            return one;
         }
-
-        status("正在定位影片…（" + name + "）");
-        new Thread(() -> {
-            try {
-                final String dir = Settings.saveDir();
-                BaiduPan.PlayFile pf = BaiduPan.resolvePlayable(dir, name);
-                if (!pf.ok) {
-                    // 没转过存（或目录里没有）-> 自动转存一次，转存功能已具备
-                    status("尚未转存，正在转存到 " + dir + " …");
-                    BaiduPan.TransferResult tr = BaiduPan.transfer(shareUrl, sharePwd, dir);
-                    if (!tr.ok) {
-                        fail("转存失败：" + tr.message);
-                        return;
-                    }
-                    Settings.recordTransfer(dir, true);
-                    status("转存成功，正在定位文件…");
-                    pf = BaiduPan.resolvePlayable(dir, name);
-                }
-                if (!pf.ok) {
-                    fail(pf.message.isEmpty() ? "未能在网盘里定位到可播放文件" : pf.message);
-                    return;
-                }
-                playFile = pf;
-                // v1.26：固定走原画直链；失败只换一条新直链重试，不再降级转码流
-                status("正在获取原画直链…（" + humanSize(pf.size) + "）");
-                String dlink = BaiduPan.dlink(pf.fsId, pf.path);
-                if (dlink.isEmpty()) {
-                    fail("原画直链获取失败：百度没返回可播地址（会员权限或接口变动）");
-                    return;
-                }
-                proxy = new LocalProxy();
-                proxy.start();
-                status("原画播放：" + pf.name);
-                main.post(() -> startPlay(proxy.urlFor(dlink), 0));
-            } catch (Throwable e) {
-                Log.d(TAG, "prepare err " + e);
-                fail("取流异常：" + e.getClass().getSimpleName());
+        final String dir = Settings.saveDir();
+        BaiduPan.PlayFile pf = BaiduPan.resolvePlayable(dir, name);
+        if (!pf.ok) {
+            // 没转过存（或目录里没有）-> 自动转存一次，转存功能已具备
+            status("尚未转存，正在转存到 " + dir + " …");
+            BaiduPan.TransferResult tr = BaiduPan.transfer(shareUrl, sharePwd, dir);
+            if (!tr.ok) {
+                fail("转存失败：" + tr.message);
+                return null;
             }
-        }, "player-fetch").start();
+            Settings.recordTransfer(dir, true);
+            status("转存成功，正在定位文件…");
+            pf = BaiduPan.resolvePlayable(dir, name);
+        }
+        if (!pf.ok) {
+            fail(pf.message.isEmpty() ? "未能在网盘里定位到可播放文件" : pf.message);
+            return null;
+        }
+        return pf;
+    }
+
+    /** 状态栏里给「这个文件」一个可读标签：优先片名，没有就报大小。 */
+    private String originLabel(BaiduPan.PlayFile pf) {
+        if (pf == null) return "未知文件";
+        if (pf.name != null && !pf.name.isEmpty()) return pf.name;
+        return humanSize(pf.size);
     }
 
     /**
@@ -628,25 +692,33 @@ public class PlayerActivity extends Activity {
             fail("本地文件播放失败：" + describe(error) + localHint(error));
             return;
         }
-        // 直链可能已过期（8h）或被风控掐断 -> 换一条新直链再试一次
-        // （v1.26 起不再降级到转码流：那条路对 mkv 基本不通，徒增误导）
-        if (!retriedDlink && playFile != null && proxy != null) {
-            retriedDlink = true;
-            status("播放中断，正在重新获取直链…");
-            new Thread(() -> {
-                String d = BaiduPan.dlink(playFile.fsId, playFile.path);
-                if (d != null && !d.isEmpty()) {
-                    main.post(() -> {
-                        status("已换新直链，继续播放");
-                        startPlay(proxy.urlFor(d), pos);
-                    });
-                } else {
-                    main.post(() -> fail("换新直链也失败了：百度没返回可播地址"));
-                }
-            }, "player-relink").start();
+        // 直链可能已过期（8h）或被风控掐断 —— v1.27 起不再「换一条直链就当修好了」：
+        // 重跑整条原画流程（重新定位 → 重新转存 → 重新取 dlink → 重新挂代理），
+        // 每一次都还是原画。换链只治直链过期，治不了风控/接口抖动/定位出错。
+        if (playFile != null) {
+            status("原画播放中断，正在重新获取原画…");
+            main.post(() -> acquireOriginal(pos, "播放中断"));
             return;
         }
         fail("原画播放失败：" + describe(error));
+    }
+
+    /**
+     * 原画重试额度归还。
+     *
+     * <p>连续播满 {@link #ORIGIN_BUDGET_REFILL_MS} 说明手上这一档原画确实是通的，
+     * 把 {@link #originTries} 清零，让长片中途被掐断时还有额度可用。因为「归还」
+     * 必须先真的播出满 30 秒，所以不会出现「失败 → 重试」的死循环。</p>
+     */
+    private void refillOriginBudgetIfHealthy() {
+        if (originTries == 0 || player == null) return;
+        try {
+            if (player.getPlaybackState() == Player.STATE_READY
+                    && player.getCurrentPosition() >= ORIGIN_BUDGET_REFILL_MS) {
+                originTries = 0;
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     /**
