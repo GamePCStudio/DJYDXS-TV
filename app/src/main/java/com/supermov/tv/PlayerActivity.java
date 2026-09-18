@@ -25,6 +25,7 @@ import androidx.media3.common.MimeTypes;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
+import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
@@ -262,7 +263,7 @@ public class PlayerActivity extends Activity {
         reqFname = nz(getIntent().getStringExtra("fname"));
 
         player = new ExoPlayer.Builder(this)
-                .setMediaSourceFactory(new DefaultMediaSourceFactory(httpFactory()))
+                .setMediaSourceFactory(new DefaultMediaSourceFactory(dataSourceFactory()))
                 .setAudioAttributes(new AudioAttributes.Builder()
                         .setUsage(C.USAGE_MEDIA)
                         .build(), true)
@@ -352,7 +353,22 @@ public class PlayerActivity extends Activity {
         player.setPlayWhenReady(true);
     }
 
-    /** 播放器侧 HTTP 头：原画走代理不需要它，但 M3U8 的分片请求必须自带 UA=netdisk。 */
+    /**
+     * 交给 ExoPlayer 的数据源工厂（v1.22-local-datasource）。
+     *
+     * <p>DefaultHttpDataSource 只认 http/https：把 file:// 丢给它，会在 openConnection() 里
+     * 把 FileURLConnection 强转成 HttpURLConnection 抛 ClassCastException，
+     * 表现为 ERROR_CODE_IO_UNSPECIFIED（「本地文件播放失败：网络连接失败/超时」）。
+     * 全片都下载完了、文件权限也正常，却一按播放就报错，就是这里。</p>
+     *
+     * <p>DefaultDataSource 按 URI 的 scheme 分流：file:// 给 FileDataSource，
+     * content:// 给 ContentDataSource，http/https（含 M3U8 分片）才落到下面的 httpFactory。</p>
+     */
+    private DefaultDataSource.Factory dataSourceFactory() {
+        return new DefaultDataSource.Factory(this, httpFactory());
+    }
+
+    /** 只负责网络那一路的 HTTP 头：原画走代理不需要它，但 M3U8 的分片请求必须自带 UA=netdisk。 */
     private DefaultHttpDataSource.Factory httpFactory() {
         DefaultHttpDataSource.Factory f = new DefaultHttpDataSource.Factory()
                 .setUserAgent("netdisk")
@@ -556,7 +572,10 @@ public class PlayerActivity extends Activity {
         }
         if (code.contains("NETWORK_CONNECTION_FAILED") || code.contains("NETWORK_CONNECTION_TIMEOUT")
                 || code.contains("IO_UNSPECIFIED") || code.contains("TIMEOUT")) {
-            return "网络连接失败/超时";
+            // 本地文件根本没走网络：报「网络连接失败」只会把人带偏（v1.22-local-datasource）
+            return localFile.isEmpty()
+                    ? "网络连接失败/超时"
+                    : "本地文件读取失败（文件损坏或所在存储不可读）";
         }
         if (code.contains("DECODER_INIT_FAILED") || code.contains("DECODING_FAILED")
                 || code.contains("DECODING_FORMAT_UNSUPPORTED")
@@ -587,6 +606,9 @@ public class PlayerActivity extends Activity {
         }
         if (code.contains("DECODER") || code.contains("DECODING")) {
             return "\n这台盒子解不了该编码，可换别的版本再下载";
+        }
+        if (code.contains("IO_UNSPECIFIED")) {
+            return "\n文件可能没下完整或已被挪走，删除后重新下载一次再试";
         }
         return "";
     }

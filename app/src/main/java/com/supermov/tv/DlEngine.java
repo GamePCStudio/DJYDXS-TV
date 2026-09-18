@@ -54,6 +54,10 @@ public final class DlEngine {
     private static final int BUF = 128 * 1024;
     /** 直链要带的 UA：百度官方客户端标识，缺失直接 403。 */
     private static final String NETDISK_UA = "netdisk";
+    /** 速度 EMA 权重：ETA 拿速度当分母，用瞬时值会一秒钟跳一个样。 */
+    private static final double SPEED_EMA = 0.25;
+    /** 速度有效期：这么久没有新采样（任务收尾 / 暂停）就把速度当 0，别拿旧速度瞎估。 */
+    private static final long SPEED_STALE_MS = 4000;
 
     /** 队列/进度变化回调（可能在任意线程触发，UI 侧自行 post 到主线程）。 */
     public interface Observer {
@@ -74,6 +78,14 @@ public final class DlEngine {
     private final List<Observer> observers = new ArrayList<>();
 
     private Thread worker;
+    /**
+     * worker 是否活着（含"正在挑任务"这段）。
+     *
+     * <p>它和「往队列里加任务」必须在同一把锁（{@link #tasks}）里改，否则会出现：
+     * worker 刚判定队列为空、还没来得及置位，主线程入队后调 {@link #start()} 看到
+     * worker 还活着就不新建 —— 那个任务从此没人接手。判定逻辑见 {@link #loop()}。</p>
+     */
+    private volatile boolean workerAlive = false;
     private volatile boolean stopping = false;
     private volatile boolean drained = true;
     private volatile Dl current;
@@ -93,6 +105,11 @@ public final class DlEngine {
     private final Object rateLock = new Object();
     private long rateWindowStart = 0;
     private long rateWindowBytes = 0;
+
+    /** 平滑后的下载速度（字节/秒），ETA 的分母。 */
+    private volatile double smoothBps = 0;
+    /** 最后一次速度采样时刻：太久没更新说明已经停下。 */
+    private volatile long smoothAt = 0;
 
     private DlEngine() {
     }
@@ -126,11 +143,14 @@ public final class DlEngine {
         Log.d(TAG, "dl init tasks=" + tasks.size() + " rateLimit=" + rateLimitBps);
     }
 
-    /** 启动 worker（幂等）。 */
+    /**
+     * 启动 worker（幂等）。{@code workerAlive} 与队列同锁，见 {@link #loop()}。
+     */
     public void start() {
         stopping = false;
-        synchronized (this) {
-            if (worker != null && worker.isAlive()) return;
+        synchronized (tasks) {
+            if (workerAlive) return;
+            workerAlive = true;
             worker = new Thread(this::loop, "dl-worker");
             worker.setDaemon(true);
             worker.start();
@@ -158,6 +178,118 @@ public final class DlEngine {
 
     public String note() {
         return note;
+    }
+
+    // ==================== 队列剩余 / 预计完成时间 ====================
+
+    /** 队列剩余量的估算中间结果。 */
+    private static final class Plan {
+        /** 已确定还要下的字节（total 已知的那部分）。 */
+        long known;
+        /** total 还没探测到的待下任务数。 */
+        int unknown;
+        /** 单个任务的参考体积，用来估 unknown 那部分。 */
+        long refBytes;
+        /** RUNNING + QUEUED 的任务数。 */
+        int active;
+
+        long estimate() {
+            return known + (long) unknown * refBytes;
+        }
+
+        /** 含估算成分 -> 文案上要标「左右」。 */
+        boolean approx() {
+            return unknown > 0;
+        }
+    }
+
+    /**
+     * 统计队列还剩多少要下。
+     *
+     * <p>只算会被自动接着下的任务（RUNNING + QUEUED），暂停 / 失败的不算 —— 那些要等用户点继续。
+     * 入队时 {@code total} 一般已经从网盘清单带过来了（多集剧逐集体积都是现成的），
+     * 所以这个数基本就是准的；少数还没探测到体积的，按「参考体积 × 个数」估。</p>
+     */
+    private Plan plan() {
+        Plan p = new Plan();
+        Dl cur = current;
+        long sumTotal = 0;
+        int nTotal = 0;
+        for (Dl t : snapshot()) {
+            if (t.status != Dl.RUNNING && t.status != Dl.QUEUED) continue;
+            p.active++;
+            if (t.total > 0) {
+                long left = t.total - t.done;
+                if (left > 0) p.known += left;
+                sumTotal += t.total;
+                nTotal++;
+            } else {
+                p.unknown++;
+            }
+        }
+        if (cur != null && cur.total > 0) {
+            p.refBytes = cur.total;              // 优先拿正在下的这部当参考
+        } else if (nTotal > 0) {
+            p.refBytes = sumTotal / nTotal;      // 退一步：已探测任务的平均体积
+        }
+        return p;
+    }
+
+    /** 队列还要下多少字节（含对未探测任务的估算）。 */
+    public long remainBytes() {
+        return plan().estimate();
+    }
+
+    /**
+     * 有效下载速度（字节/秒）：限速时按额度封顶（真实吞吐不会超过它）；
+     * 停手超过 {@link #SPEED_STALE_MS} 视为 0。
+     */
+    public double speedBps() {
+        long at = smoothAt;
+        if (at <= 0 || System.currentTimeMillis() - at > SPEED_STALE_MS) return 0;
+        double v = smoothBps;
+        long limit = rateLimitBps;
+        if (limit > 0 && v > limit) v = limit;
+        return v > 0 ? v : 0;
+    }
+
+    /** 预计全部下完还要多久（毫秒）；{@code <=0} = 算不出来（没在下 / 拿不到速度）。 */
+    public long etaMs() {
+        Dl cur = current;
+        if (cur == null || cur.status != Dl.RUNNING) return 0;
+        Plan p = plan();
+        long remain = p.estimate();
+        if (remain <= 0) return 0;
+        double sp = speedBps();
+        if (sp <= 0) return 0;
+        double ms = remain * 1000.0 / sp;
+        if (ms <= 0 || ms > Long.MAX_VALUE / 4) return 0;
+        return (long) ms;
+    }
+
+    /**
+     * 拼在顶部信息「N 线程」后面的尾巴：
+     * {@code · 队列剩 4.5GB · 预计约 12 分钟 · 后面还有 2 个}。
+     *
+     * <p>没有下载中的任务、或暂时算不出速度就返回空串 —— 宁可少显示一段，
+     * 也别显示一个每秒乱跳的数字。任务体积还没探测到时，「队列剩」写作「队列剩约」。</p>
+     */
+    public String etaSuffix() {
+        Dl cur = current;
+        if (cur == null || cur.status != Dl.RUNNING) return "";
+        Plan p = plan();
+        StringBuilder sb = new StringBuilder();
+        long remain = p.estimate();
+        if (remain > 0) {
+            // 「队列剩」而不是「剩」：前面那个 1.2GB/2.8GB 是当前这一部，
+            // 这个数是整条队列（含后面排队的），得说清楚
+            sb.append(p.approx() ? " · 队列剩约 " : " · 队列剩 ").append(human(remain));
+        }
+        long ms = etaMs();
+        if (ms > 0) sb.append(" · 预计 ").append(duration(ms));   // duration() 自带「约」，别叠成「约…左右」
+        int next = p.active - 1;
+        if (next > 0) sb.append(" · 后面还有 ").append(next).append(" 个");
+        return sb.toString();
     }
 
     // ==================== 观察者 ====================
@@ -459,11 +591,26 @@ public final class DlEngine {
 
     // ==================== worker ====================
 
+    /**
+     * 单 worker 顺序消费队列 —— **同一时刻只有一个任务在下载**（每个任务内部再开 4 条连接）。
+     *
+     * <p>一个任务收尾后（成功 / 失败 / 暂停）循环回到这里拿下一个 QUEUED，所以队列是自动接着下的。</p>
+     *
+     * <p>「判定队列空 -> 退出」必须和 {@link #enqueue} 的入队落在同一把锁里：否则会出现
+     * worker 刚判定空、还没置 {@code workerAlive=false}，主线程入队后 {@link #start()}
+     * 看到 worker 还活着就不新建 —— 新任务从此没人接手，要手动点「继续」才动。</p>
+     */
     private void loop() {
         Log.d(TAG, "dl worker start");
         while (!stopping) {
-            Dl t = takeNextQueued();
-            if (t == null) break;
+            Dl t;
+            synchronized (tasks) {
+                t = takeNextQueued();
+                if (t == null) {
+                    workerAlive = false;   // 与 enqueue 的 add 互斥：谁后到谁负责
+                    break;
+                }
+            }
             current = t;
             cancel.set(false);
             notifyChanged();
@@ -491,12 +638,35 @@ public final class DlEngine {
             }
             persist(t);
             current = null;
+            smoothBps = 0;        // 换任务了：上一个任务的速度不能拿来算这一个的 ETA
+            smoothAt = 0;
             notifyChanged();
         }
         note = "";
         drained = true;
         notifyChanged();
+        synchronized (tasks) {
+            workerAlive = false;
+        }
+        // 兜底：万一刚好在「我决定退出」和「置位」之间有人入队（那会儿 start() 看到我还活着
+        // 就没新建），这里自己再拉一次，保证队列不会被晾着。
+        boolean again;
+        synchronized (tasks) {
+            again = !stopping && hasQueuedLocked();
+        }
+        if (again) {
+            Log.d(TAG, "dl worker exit but queue refilled -> restart");
+            start();
+        }
         Log.d(TAG, "dl worker exit");
+    }
+
+    /** 必须在 {@code synchronized (tasks)} 里调用。 */
+    private boolean hasQueuedLocked() {
+        for (Dl t : tasks) {
+            if (t.status == Dl.QUEUED) return true;
+        }
+        return false;
     }
 
     private Dl takeNextQueued() {
@@ -618,13 +788,18 @@ public final class DlEngine {
                 long bytes = totalDone.get();
                 long dt = now - lastTime;
                 double speed = dt > 0 ? (bytes - lastBytes) * 1000.0 / dt : 0;
+                if (speed < 0) speed = 0;
+                // 速度做 EMA：ETA 的分母用瞬时值会一秒跳一个样
+                smoothBps = smoothBps <= 0 ? speed : smoothBps + (speed - smoothBps) * SPEED_EMA;
+                smoothAt = now;
                 lastBytes = bytes;
                 lastTime = now;
                 t.done = bytes;
                 note = "下载中 " + (total > 0 ? (bytes * 100 / total) : 0) + "%"
                         + " · " + human(bytes) + "/" + human(total)
                         + " · " + mbps(speed)
-                        + (segs > 1 ? " · " + segs + " 连接" : "");
+                        + (segs > 1 ? " · " + segs + " 线程" : "")
+                        + etaSuffix();
                 if (now - lastPersist > 2000) {
                     lastPersist = now;
                     persist(t);
@@ -1063,5 +1238,22 @@ public final class DlEngine {
         }
         if (bytes >= 1024) return (bytes / 1024) + "KB";
         return bytes + "B";
+    }
+
+    /**
+     * 剩余时长的口语化表达：{@code 约 12 分钟} / {@code 约 1 小时 5 分}。
+     *
+     * <p>故意只给到「分钟」这个粒度 —— ETA 本来就是估的，写成 {@code 12:34} 反而像精确值。</p>
+     */
+    public static String duration(long ms) {
+        long sec = ms / 1000;
+        if (sec < 30) return "不到 1 分钟";
+        if (sec < 90) return "约 1 分钟";
+        long min = (sec + 30) / 60;              // 四舍五入到分钟
+        if (min < 60) return "约 " + min + " 分钟";
+        long h = min / 60;
+        long m = min % 60;
+        if (h < 10 && m > 0) return "约 " + h + " 小时 " + m + " 分";
+        return "约 " + h + " 小时";
     }
 }

@@ -55,6 +55,10 @@ public class OptionAdapter extends RecyclerView.Adapter<OptionAdapter.VH> {
         String text = o.title + (o.sub == null || o.sub.isEmpty() ? "" : "\n" + o.sub);
         h.tv.setText(text);
         h.tv.setTextColor(o.highlight ? 0xFF1E88E5 : 0xFFC6CBD2);
+        // 同上：焦点与点击都落在条目根这一个 View 上。
+        // 若让内部 TextView 可聚焦，它在 7.1.2 上会抢走焦点并吞掉确认键 → 点了没反应。
+        h.itemView.setFocusable(true);
+        h.itemView.setClickable(true);
         h.itemView.setOnClickListener(v -> {
             if (listener != null) listener.onClick(o, h.getAdapterPosition());
         });

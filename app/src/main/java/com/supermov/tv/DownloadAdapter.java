@@ -49,7 +49,10 @@ public class DownloadAdapter extends RecyclerView.Adapter<DownloadAdapter.VH> {
         Dl t = items.get(position);
 
         h.title.setText(t.fileName == null || t.fileName.isEmpty() ? t.name : t.fileName);
-        h.state.setText(t.statusText()
+        String state = (t.status == Dl.QUEUED && t.queuePos > 0)
+                ? "排队中 · 第 " + t.queuePos + " 位"     // 串行队列：排在谁后面一目了然
+                : t.statusText();
+        h.state.setText(state
                 + (t.total > 0 ? " · " + DlEngine.human(t.done) + "/" + DlEngine.human(t.total) : ""));
         h.pb.setProgress(t.percent());
         h.path.setText(t.dir == null || t.dir.isEmpty() ? "" : t.dir);

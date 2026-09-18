@@ -37,6 +37,13 @@ public class Dl {
     public String error = "";
     public long created;
 
+    /**
+     * 队列位次（**仅 UI 用，不落库**）：QUEUED 时是它在排队里的名次（从 1 起），其余状态为 0。
+     *
+     * <p>用来在下载页显示「排队中 · 第 2 位」—— 让「同一时刻只有一个在下」这件事看得见。</p>
+     */
+    public int queuePos;
+
     public boolean active() {
         return status == QUEUED || status == RUNNING;
     }

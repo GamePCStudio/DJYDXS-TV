@@ -414,6 +414,12 @@ public class MainActivity extends Activity {
             }
             final List<Site.Movie> raw = new ArrayList<>(res.data);
             final int pageCount = res.pageCount;
+            // 诊断：本条日志能一次分清「压根没解析到条目」和「解析到了但被摘光」，
+            // 省得下次只能靠「有没有探测请求」反推。
+            android.util.Log.d("SupeMov", "list fid=" + fid + " typeid=" + ftypeid
+                    + " page=" + page + " kw=" + (kw == null ? "" : kw)
+                    + " parsed=" + raw.size() + " pageCount=" + pageCount
+                    + " probe=" + ((raw.isEmpty() || gen != loadGen) ? "skip" : "run"));
 
             // ① 先出画：不等百度链接探测
             main.post(() -> {
@@ -423,8 +429,14 @@ public class MainActivity extends Activity {
                 totalPages = Math.max(1, pageCount);
                 if (page == 1) movieAdapter.setItems(raw);
                 else movieAdapter.addItems(raw);
-                if (movieAdapter.getItemCount() > 0) tvEmpty.setVisibility(View.GONE);
-                else showEmpty();
+                if (movieAdapter.getItemCount() > 0) {
+                    // 「加载中…」正拿着焦点时把它隐藏，焦点会掉到空处（遥控器上就是「焦点消失」）
+                    boolean hadEmptyFocus = tvEmpty.isFocused();
+                    tvEmpty.setVisibility(View.GONE);
+                    if (hadEmptyFocus) rvList.requestFocus();
+                } else {
+                    showEmpty();
+                }
             });
 
             if (raw.isEmpty() || gen != loadGen) return;
@@ -443,11 +455,18 @@ public class MainActivity extends Activity {
                 }
                 main.post(() -> {
                     if (gen != loadGen) return;
+                    // 摘条目可能正好摘掉当前聚焦的那张海报：电视上焦点会掉到空处，先记下来
+                    boolean hadListFocus = rvList.findFocus() != null;
                     if (!drop.isEmpty()) movieAdapter.dropTids(drop);
                     // 探测顺带把海报 / 日期·片长补进了 Movie 对象（原地改的），
                     // 必须重绑一次才会渲染出来 —— 否则角标要等下次进这个版块才出现
                     movieAdapter.refreshAll();
                     if (movieAdapter.getItemCount() == 0) showEmpty();
+                    if (hadListFocus && rvList.findFocus() == null) {
+                        if (!rvList.requestFocus() && tvEmpty.getVisibility() == View.VISIBLE) {
+                            tvEmpty.requestFocus();
+                        }
+                    }
                 });
             });
         });

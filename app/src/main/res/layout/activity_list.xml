@@ -78,6 +78,7 @@
             android:text="加载中…"
             android:textColor="#FF9AA0A6"
             android:textSize="13sp"
+            android:focusable="true"
             android:visibility="gone" />
     </FrameLayout>
 </LinearLayout>

@@ -108,6 +108,11 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
         } else {
             h.ivPic.setImageDrawable(null);
         }
+        // 条目根必须**自己**可聚焦 + 可点击：Android 8.0(API 26) 之前没有 FOCUSABLE_AUTO
+        // （「可点击即自动可聚焦」这一条），只把监听器挂在容器上，7.1.2 这类机器上
+        // 海报条目根本拿不到焦点、按确认也没反应。显式声明，任何版本行为一致。
+        h.itemView.setFocusable(true);
+        h.itemView.setClickable(true);
         h.itemView.setOnClickListener(v -> {
             if (listener != null) listener.onClick(m);
         });

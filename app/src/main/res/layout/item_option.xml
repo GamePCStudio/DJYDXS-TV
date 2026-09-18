@@ -6,7 +6,10 @@
     android:paddingStart="5dp"
     android:paddingEnd="5dp"
     android:paddingTop="3dp"
-    android:paddingBottom="5dp">
+    android:paddingBottom="5dp"
+    android:focusable="true"
+    android:clickable="true"
+    android:descendantFocusability="blocksDescendants">
 
     <TextView
         android:id="@+id/tvOption"
@@ -19,7 +22,8 @@
         android:paddingBottom="6dp"
         android:textColor="#FFC6CBD2"
         android:textSize="10.5sp"
-        android:focusable="true"
-        android:clickable="true"
+        android:focusable="false"
+        android:clickable="false"
+        android:duplicateParentState="true"
         android:maxLines="1" />
 </LinearLayout>

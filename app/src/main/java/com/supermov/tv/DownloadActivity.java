@@ -106,6 +106,9 @@ public class DownloadActivity extends Activity implements DlEngine.Observer {
         DlEngine.get().addObserver(this);
         // 下载管理页在前台 = 用户正盯着进度看，此时不限速
         DlEngine.get().setRateLimit(0);
+        // 队列里还有排队的就接着下：进程被杀 / 服务被回收之后再回到这一页，
+        // 不该让用户以为「它停下了」还要手动点一次「全部开始」。
+        DlEngine.get().start();
         refresh();
     }
 
@@ -126,6 +129,11 @@ public class DownloadActivity extends Activity implements DlEngine.Observer {
     private void refresh() {
         if (isFinishing()) return;
         List<Dl> list = DlEngine.get().snapshot();
+        // 排队位次：让串行队列在列表里看得见（第 2 位要等第 1 位下完）
+        int pos = 0;
+        for (Dl t : list) {
+            t.queuePos = (t.status == Dl.QUEUED) ? ++pos : 0;
+        }
         adapter.setItems(list);
         boolean empty = list.isEmpty();
         tvEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
