@@ -2,7 +2,7 @@ name: Build Android TV APK (release-signed)
 
 on:
   push:
-    branches: [ main, master, DJYDXS2Nexio ]
+    branches: [ main, master, DJYDXS2Nexio, DJYDXS3Nexio ]
   workflow_dispatch:
 
 jobs:

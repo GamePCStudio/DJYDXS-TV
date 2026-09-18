@@ -52,8 +52,6 @@ public class MainActivity extends Activity {
     private boolean loading = false;
     /** 载入请求代号：每次点击 +1，旧请求回来时对不上号就丢弃（「最新一次点击说了算」）。 */
     private volatile int loadGen = 0;
-    /** 百度链接探测专用线程池：跑在它上面，才不会把「下一次点击」的列表请求堵在同一个线程后面。 */
-    private final ExecutorService probePool = Executors.newSingleThreadExecutor();
     private String searchKeyword = ""; // 空 = 浏览版块；非空 = 搜索模式
     private int currentTypeid = 0;      // 版块内主题分类过滤（0=全部）
     private int currentFilterIndex = 0; // 选中的过滤器下标
@@ -75,7 +73,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         CookieStore.init(this);
         Settings.init(this);
-        Site.ensureForumCookie(); // 注入内置论坛 Cookie，解锁会员版块
+        MovieStore.init(this); // 打开 SuperMOV.db（内嵌 / 已在线更新）—— 全部内容都来自这里
         setContentView(R.layout.activity_list);
 
         btnSearch = findViewById(R.id.btnSearch);
@@ -87,14 +85,14 @@ public class MainActivity extends Activity {
         // 分类行
         rvCats.setLayoutManager(new LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false));
         catAdapter = new OptionAdapter();
-        for (Site.Category c : Site.categories()) {
+        for (MovieStore.Category c : MovieStore.categories()) {
             catOptions.add(new OptionAdapter.Option(c.name));
         }
         catOptions.add(new OptionAdapter.Option("⚙ 设置"));
         catOptions.add(new OptionAdapter.Option("⬇ 下载"));
         catAdapter.setItems(catOptions);
         catAdapter.setOnClick((o, pos) -> {
-            int catCount = Site.categories().size();
+            int catCount = MovieStore.categories().size();
             if (pos == catCount) {
                 startActivity(new Intent(this, SettingsActivity.class));
             } else if (pos == catCount + 1) {
@@ -103,7 +101,7 @@ public class MainActivity extends Activity {
             } else if (pos >= 0 && pos < catCount) {
                 pushHistory(); // 返回键可回到上一个版块
                 searchKeyword = "";
-                currentFid = Site.categories().get(pos).fid;
+                currentFid = MovieStore.categories().get(pos).fid;
                 currentTypeid = 0;
                 currentFilterIndex = 0;
                 markCat(pos);
@@ -118,9 +116,9 @@ public class MainActivity extends Activity {
         rvFilters.setLayoutManager(new LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false));
         filterAdapter = new OptionAdapter();
         filterAdapter.setOnClick((o, pos) -> {
-            List<Site.Filter> fs = Site.filtersFor(currentFid);
+            List<MovieStore.Filter> fs = MovieStore.filtersFor(currentFid);
             if (pos < 0 || pos >= fs.size()) return;
-            Site.Filter f = fs.get(pos);
+            MovieStore.Filter f = fs.get(pos);
             if (f.typeid == currentTypeid) return;
             pushHistory(); // 返回键可回到上一个过滤状态
             currentTypeid = f.typeid;
@@ -165,7 +163,7 @@ public class MainActivity extends Activity {
         });
 
         // 默认加载第一个版块
-        currentFid = Site.categories().get(0).fid;
+        currentFid = MovieStore.categories().get(0).fid;
         buildFilterRow(); // currentFid 就绪后重建过滤器行
         loadPage(1);
 
@@ -262,9 +260,9 @@ public class MainActivity extends Activity {
 
     /** 按当前版块重建过滤器行（每版块过滤器不同；搜索模式隐藏）。 */
     private void buildFilterRow() {
-        List<Site.Filter> fs = Site.filtersFor(currentFid);
+        List<MovieStore.Filter> fs = MovieStore.filtersFor(currentFid);
         List<OptionAdapter.Option> opts = new ArrayList<>();
-        for (Site.Filter f : fs) {
+        for (MovieStore.Filter f : fs) {
             OptionAdapter.Option o = new OptionAdapter.Option(f.name);
             o.highlight = (f.typeid == currentTypeid);
             opts.add(o);
@@ -286,14 +284,14 @@ public class MainActivity extends Activity {
         currentFid = prev.fid;
         // 恢复分类高亮
         int catPos = 0;
-        List<Site.Category> cs = Site.categories();
+        List<MovieStore.Category> cs = MovieStore.categories();
         for (int i = 0; i < cs.size(); i++) {
             if (cs.get(i).fid == currentFid) { catPos = i; break; }
         }
         markCat(catPos);
         // 恢复过滤器高亮（按 typeid 找回下标）
         currentFilterIndex = 0;
-        List<Site.Filter> fs = Site.filtersFor(currentFid);
+        List<MovieStore.Filter> fs = MovieStore.filtersFor(currentFid);
         for (int i = 0; i < fs.size(); i++) {
             if (fs.get(i).typeid == currentTypeid) { currentFilterIndex = i; break; }
         }
@@ -315,7 +313,7 @@ public class MainActivity extends Activity {
      * 并且那里才处理得了「一个分享里多个文件 / 多层文件夹」的选择与分流。
      * 之前这里直接弹「转存」对话框，导致点影片永远只有转存一条路。</p>
      */
-    private void openDetail(Site.Movie m) {
+    private void openDetail(MovieStore.Movie m) {
         Intent it = new Intent(this, DetailActivity.class);
         it.putExtra("fid", m.fid);
         it.putExtra("tid", m.tid);
@@ -325,7 +323,7 @@ public class MainActivity extends Activity {
     }
 
     /** 长按海报：快捷转存（保留原来的快速通道，不用先进详情页）。 */
-    private void confirmTransfer(Site.Movie m) {
+    private void confirmTransfer(MovieStore.Movie m) {
         if (!CookieStore.hasBaiduLogin()) {
             Toast.makeText(this, "未授权百度网盘，请先到 设置→百度网盘扫码", Toast.LENGTH_LONG).show();
             startActivity(new Intent(this, QrActivity.class));
@@ -343,14 +341,14 @@ public class MainActivity extends Activity {
         dlg.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus();
     }
 
-    private void doQuickTransfer(Site.Movie m) {
+    private void doQuickTransfer(MovieStore.Movie m) {
         Toast.makeText(this, "转存中…", Toast.LENGTH_SHORT).show();
         final int fid = m.fid;
         final String tid = m.tid;
         final String name = m.name;
         pool.execute(() -> {
             // 解析分享链接
-            Site.Detail d = Site.detail(fid, tid);
+            MovieStore.Detail d = MovieStore.detail(fid, tid);
             String url = "", pwd = "";
             if (d != null && !d.boxes.isEmpty()) {
                 url = d.boxes.get(0).url;
@@ -405,23 +403,21 @@ public class MainActivity extends Activity {
             tvEmpty.setText("加载中…");
         }
         pool.execute(() -> {
-            Site.lastLoadError = "";
-            Site.Paged<List<Site.Movie>> res;
+            MovieStore.lastLoadError = "";
+            MovieStore.Paged<List<MovieStore.Movie>> res;
             if (kw != null && !kw.isEmpty()) {
-                res = Site.search(kw, page);
+                res = MovieStore.search(kw, page);
             } else {
-                res = Site.category(fid, page, ftypeid);
+                res = MovieStore.category(fid, page, ftypeid);
             }
-            final List<Site.Movie> raw = new ArrayList<>(res.data);
+            final List<MovieStore.Movie> raw = new ArrayList<>(res.data);
             final int pageCount = res.pageCount;
-            // 诊断：本条日志能一次分清「压根没解析到条目」和「解析到了但被摘光」，
-            // 省得下次只能靠「有没有探测请求」反推。
             android.util.Log.d("SupeMov", "list fid=" + fid + " typeid=" + ftypeid
                     + " page=" + page + " kw=" + (kw == null ? "" : kw)
-                    + " parsed=" + raw.size() + " pageCount=" + pageCount
-                    + " probe=" + ((raw.isEmpty() || gen != loadGen) ? "skip" : "run"));
+                    + " got=" + raw.size() + " pageCount=" + pageCount);
 
-            // ① 先出画：不等百度链接探测
+            // 数据库本地查询，一次就能出画，不用再分「先出画、后探测」两段。
+            // （旧版要逐个帖子请求论坛确认有没有百度链接，才不得不那样做。）
             main.post(() -> {
                 if (gen != loadGen) return; // 已被更新的点击取代（新的那次会自己画）
                 loading = false;
@@ -438,51 +434,18 @@ public class MainActivity extends Activity {
                     showEmpty();
                 }
             });
-
-            if (raw.isEmpty() || gen != loadGen) return;
-
-            // ② 再筛选：没有百度网盘分享链接的条目摘掉（独立线程池，不挡住下一次点击的加载）
-            final List<Site.Movie> before = new ArrayList<>(raw);
-            probePool.execute(() -> {
-                Site.filterBaiduOnly(raw, 8);
-                // 差集 = 被摘掉的那批。**只能传「要删的 tid」**：翻到第 2 页时 items 里
-                // 还躺着第 1 页的条目，若按白名单「只留本页 tid」，第 1 页会被一起清空。
-                final java.util.Set<String> alive = new java.util.HashSet<>();
-                for (Site.Movie m : raw) if (m.tid != null) alive.add(m.tid);
-                final java.util.Set<String> drop = new java.util.HashSet<>();
-                for (Site.Movie m : before) {
-                    if (m.tid != null && !alive.contains(m.tid)) drop.add(m.tid);
-                }
-                main.post(() -> {
-                    if (gen != loadGen) return;
-                    // 摘条目可能正好摘掉当前聚焦的那张海报：电视上焦点会掉到空处，先记下来
-                    boolean hadListFocus = rvList.findFocus() != null;
-                    if (!drop.isEmpty()) movieAdapter.dropTids(drop);
-                    // 探测顺带把海报 / 日期·片长补进了 Movie 对象（原地改的），
-                    // 必须重绑一次才会渲染出来 —— 否则角标要等下次进这个版块才出现
-                    movieAdapter.refreshAll();
-                    if (movieAdapter.getItemCount() == 0) showEmpty();
-                    if (hadListFocus && rvList.findFocus() == null) {
-                        if (!rvList.requestFocus() && tvEmpty.getVisibility() == View.VISIBLE) {
-                            tvEmpty.requestFocus();
-                        }
-                    }
-                });
-            });
         });
     }
 
-    /** 列表为空时的那句提示（登录失效 / 搜索太频繁 / 真的没内容）。 */
+    /** 列表为空时的那句提示（数据库未就位 / 版块为空 / 搜索无结果）。 */
     private void showEmpty() {
         tvEmpty.setVisibility(View.VISIBLE);
-        if ("login".equals(Site.lastLoadError)) {
-            tvEmpty.setText("论坛登录已过期，请到 设置 → 论坛登录 重新登录");
-            Toast.makeText(this, "论坛登录已过期，请到 设置 → 论坛登录 重新登录", Toast.LENGTH_LONG).show();
-        } else if ("flood".equals(Site.lastLoadError)) {
-            tvEmpty.setText("搜索太频繁，请等 10 秒后再试");
-            Toast.makeText(this, "搜索太频繁，请等 10 秒后再试", Toast.LENGTH_SHORT).show();
+        if (!MovieStore.isReady()) {
+            tvEmpty.setText("影片数据库未就位，请重启应用");
+        } else if (searchKeyword != null && !searchKeyword.isEmpty()) {
+            tvEmpty.setText("没有找到「" + searchKeyword + "」");
         } else {
-            tvEmpty.setText("没有内容");
+            tvEmpty.setText("这个版块暂时没有内容");
         }
     }
 

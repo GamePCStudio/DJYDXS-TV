@@ -200,8 +200,12 @@ public class SettingsActivity extends Activity {
         group.addView(option("最近转存：" + (Settings.lastTransfer().isEmpty() ? "无" : "有记录"),
                 "详情页转存后更新", null));
 
+        // ③.4 影片数据库 —— App 的全部内容都来自它，出问题等于没内容，所以给个能自查的入口
+        group.addView(option("影片数据库：" + dbSummary(),
+                "点击检查在线更新（800915.xyz）", v -> checkDbUpdate()));
+
         // ③.5 连接诊断
-        group.addView(option("连接诊断", "测试论坛/百度接口连通性", v -> runDiag()));
+        group.addView(option("连接诊断", "测试影片库/百度接口连通性", v -> runDiag()));
 
         // ⑤ 解除授权
         if (authed) {
@@ -767,13 +771,13 @@ public class SettingsActivity extends Activity {
         Toast.makeText(this, "诊断中…", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
             final StringBuilder sb = new StringBuilder();
-            // 论坛首页
-            Http.Resp r1 = Http.get(Site.BASE + "/forum.php");
-            boolean forumOk = r1.code == 200 && !Site.isLoginWall(r1.body);
-            sb.append("论坛: ").append(r1.code == 0 ? "网络不可达" : ("HTTP " + r1.code))
-              .append(forumOk ? " (已登录)" : (r1.code == 200 ? " (被登录墙拦截)" : ""));
+            // 影片数据库（内容全部来自这里，它出问题等于整个 App 没内容）
+            sb.append("影片数据库: ").append(MovieStore.isReady() ? MovieDb.describe(this) : "未就位");
             sb.append("\n");
-            // 百度二维码接口
+            int cats = MovieStore.categories().size();
+            sb.append("版块数: ").append(cats);
+            sb.append("\n");
+            // 百度二维码接口（扫码授权链路）
             Http.Resp r2 = Http.get("https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=skip");
             String qrHint = "";
             if (r2.code == 200 && r2.body.contains("sign")) qrHint = " (正常)";
@@ -781,16 +785,44 @@ public class SettingsActivity extends Activity {
             sb.append("\n");
             // 百度网盘登录态
             sb.append("百度登录态: ").append(CookieStore.hasBaiduLogin() ? "已授权" : "未授权");
-            sb.append("\n");
-            // 论坛 Cookie
-            String auth = CookieStore.get(Site.BASE + "/", "cTo3_2132_auth");
-            sb.append("论坛Cookie: ").append(auth == null || auth.isEmpty() ? "未注入" : "已内置");
             runOnUiThread(() -> new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
                     .setTitle("连接诊断")
                     .setMessage(sb.toString())
                     .setPositiveButton("好", null)
                     .show());
         }).start();
+    }
+
+    /** 设置页上那行数据库摘要。 */
+    private String dbSummary() {
+        if (!MovieStore.isReady()) return "未就位";
+        return "数据 v" + MovieDb.installedDbVersion(this);
+    }
+
+    /**
+     * 检查影片数据库的在线更新。
+     *
+     * <p>远端清单放在 {@code https://800915.xyz/db/SuperMOV.json}。该地址当前<b>还没上线</b>，
+     * 所以拿不到清单属于正常情况 —— DbUpdater 内部把 404 / 超时 / 解析失败一律当「没有更新」
+     * 静默处理，这里只会照实回报结果，不会当成错误弹红字。</p>
+     */
+    private void checkDbUpdate() {
+        Toast.makeText(this, "检查影片数据库更新…", Toast.LENGTH_SHORT).show();
+        DbUpdater.checkAndUpdate(this, (updated, local, remote, message) -> runOnUiThread(() -> {
+            String extra = "";
+            if (updated) {
+                // 换了库必须重开连接，否则还在读旧的数据库句柄
+                MovieStore.reload();
+                extra = "\n\n已重新载入，返回首页即可看到新增内容。";
+            }
+            new AlertDialog.Builder(SettingsActivity.this, android.R.style.Theme_DeviceDefault_Dialog)
+                    .setTitle("影片数据库")
+                    .setMessage(message + extra)
+                    .setPositiveButton("好", (d, w) -> {
+                        if (updated) rebuild();
+                    })
+                    .show();
+        }));
     }
 
     private TextView sectionLabel(String text) {

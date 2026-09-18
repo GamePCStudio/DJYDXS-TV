@@ -59,7 +59,7 @@ public class DetailActivity extends Activity {
     private TextView tvTransferDir;
     private TextView tvTransferResult;
 
-    private Site.Detail detail;
+    private MovieStore.Detail detail;
     private String movieName = "";
     private String picUrl = "";
     private String shareUrl = "";
@@ -81,6 +81,7 @@ public class DetailActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        MovieStore.init(this);
         setContentView(R.layout.activity_detail);
 
         ivPic = findViewById(R.id.ivDetailPic);
@@ -101,7 +102,7 @@ public class DetailActivity extends Activity {
         loadPic();
 
         pool.execute(() -> {
-            Site.Detail d = Site.detail(fid, tid);
+            MovieStore.Detail d = MovieStore.detail(fid, tid);
             main.post(() -> bindDetail(d));
         });
 
@@ -116,29 +117,32 @@ public class DetailActivity extends Activity {
         ImageLoader.load(picUrl, ivPic);
     }
 
-    private void bindDetail(Site.Detail d) {
+    private void bindDetail(MovieStore.Detail d) {
         detail = d;
-        if (d == null || (d.movie.name.isEmpty() && d.boxes.isEmpty())) {
-            tvName.setText("加载失败");
-            tvContent.setText("详情获取失败（Cookie 失效或网络问题）。");
+        // 判断依据从「网页抓没抓到」换成了「库里有没有这条记录」：
+        // 现在只有「库里有 / 库里没有」两种可能，不再有 Cookie 失效、限流这类中间态。
+        if (d == null || d.movie.tid.isEmpty()) {
+            tvName.setText("没有这部影片");
+            tvContent.setText("库里没有这部影片的记录。\n可能还没收录，或需要更新影片数据库（设置 → 影片数据库）。");
             setActionsVisible(false);
             return;
         }
         if (d.movie.name != null && !d.movie.name.isEmpty()) movieName = d.movie.name;
-        // 片名与「日期 · 片长」并到同一行（原来是上下两行，白占一行纵向空间）
+        // 片名与「年份 · 片长 · 集数」并到同一行（原来是上下两行，白占一行纵向空间）
         setTitle(movieName, d.movie.remarks);
-        // 资料区（到「◎上映日期」为止）与它下面的整块正文分两个 TextView：
-        // 后者在布局里锁死 maxLines=8 —— 8 是屏幕折行后的行数，只能在布局层限，文本层裁不了
-        String[] parts = Site.splitAtUpcoming(d.movie.content);
-        tvContent.setText(parts[0].isEmpty() ? "（无简介）" : parts[0]);
-        if (parts.length > 1 && !parts[1].isEmpty()) {
-            tvIntro.setText(parts[1]);
+        // 资料区与简介是数据库里的两个独立字段，直接各归各的 TextView。
+        // 简介那块在布局里锁死 maxLines=8 —— 8 是屏幕折行后的行数，只能在布局层限。
+        String info = d.movie.content == null ? "" : d.movie.content.trim();
+        tvContent.setText(info.isEmpty() ? "（本片暂无资料）" : info);
+        String intro = d.movie.intro == null ? "" : d.movie.intro.trim();
+        if (!intro.isEmpty()) {
+            tvIntro.setText(intro);
             tvIntro.setVisibility(View.VISIBLE);
         } else {
             tvIntro.setText("");
             tvIntro.setVisibility(View.GONE);
         }
-        // 列表页没给海报时，用详情页解析出来的
+        // 列表页没给海报时，用库里记录的
         if (picUrl.isEmpty() && d.movie.pic != null && !d.movie.pic.isEmpty()) {
             picUrl = d.movie.pic;
             loadPic();
@@ -150,7 +154,7 @@ public class DetailActivity extends Activity {
             setActionsVisible(false);
             return;
         }
-        Site.Box first = d.boxes.get(0);
+        MovieStore.Box first = d.boxes.get(0);
         shareUrl = first.url;
         sharePwd = first.pwd;
 
@@ -160,10 +164,23 @@ public class DetailActivity extends Activity {
         tvTransferDir.setText("网盘转存目录：" + Settings.saveDir()
                 + "\n下载落盘目录：" + Settings.downloadDir()
                 + "\n（均可在 设置 中修改）");
+
+        // 这里用库里的剧集清单先给个「这部片到底有多大、多少集」的底数 ——
+        // 全部来自本地数据库，不需要任何网络请求。原来这个信息要等“定位网盘文件”
+        // 跑完才拿得到，且会被 MAX_FILES 上限截断（《海贼王》1175 集只能看到 300）。
+        StringBuilder tip = new StringBuilder();
+        if (!d.episodes.isEmpty()) {
+            long total = 0;
+            for (MovieStore.Episode e : d.episodes) total += e.size;
+            tip.append("库内已收录 ").append(d.episodes.size()).append(" 个视频文件");
+            if (total > 0) tip.append("，共 ").append(MovieStore.humanSize(total));
+        }
         String last = Settings.lastTransfer();
         if (last != null && !last.isEmpty()) {
-            tvTransferResult.setText("最近转存：" + humanLast(last));
+            if (tip.length() > 0) tip.append('\n');
+            tip.append("最近转存：").append(humanLast(last));
         }
+        tvTransferResult.setText(tip.toString());
     }
 
     private void setActionsVisible(boolean visible) {

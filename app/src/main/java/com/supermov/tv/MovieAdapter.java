@@ -16,24 +16,24 @@ import java.util.List;
 public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
 
     public interface OnClick {
-        void onClick(Site.Movie m);
+        void onClick(MovieStore.Movie m);
     }
 
     public interface OnLongClick {
-        void onLongClick(Site.Movie m);
+        void onLongClick(MovieStore.Movie m);
     }
 
-    private final List<Site.Movie> items = new ArrayList<>();
+    private final List<MovieStore.Movie> items = new ArrayList<>();
     private OnClick listener;
     private OnLongClick longListener;
 
-    public void setItems(List<Site.Movie> list) {
+    public void setItems(List<MovieStore.Movie> list) {
         items.clear();
         if (list != null) items.addAll(list);
         notifyDataSetChanged();
     }
 
-    public void addItems(List<Site.Movie> list) {
+    public void addItems(List<MovieStore.Movie> list) {
         if (list == null) return;
         int start = items.size();
         items.addAll(list);
@@ -69,7 +69,7 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
     /**
      * 重新绑定当前所有条目。
      *
-     * <p>后台探测是**原地改** {@link Site.Movie}（补海报、补「日期 · 片长」角标），
+     * <p>后台探测是**原地改** {@link MovieStore.Movie}（补海报、补「日期 · 片长」角标），
      * {@link #setItems} 只拷了引用、不会收到任何通知 —— 不重绑的话，补好的角标
      * 要等下次进这个版块才看得见。</p>
      *
@@ -96,7 +96,7 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
 
     @Override
     public void onBindViewHolder(@NonNull VH h, int pos) {
-        Site.Movie m = items.get(pos);
+        MovieStore.Movie m = items.get(pos);
         h.tvName.setText(m.name);
         // 年月日 角标（图片内底部），无内容时隐藏
         String rem = m.remarks == null ? "" : m.remarks.trim();

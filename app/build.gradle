@@ -12,8 +12,8 @@ android {
         // media3 1.10.0 起要求 API 23（Android 6.0）+；1.8.1 是最后支持 API 21 的版本
         minSdk 23
         targetSdk 34
-        versionCode 27
-        versionName "1.27"
+        versionCode 28
+        versionName "1.28"
     }
 
     signingConfigs {
@@ -49,6 +49,15 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_11
         targetCompatibility JavaVersion.VERSION_11
+    }
+
+    // assets/SuperMOV.db 必须「不压缩」打包。
+    // 库是 SQLite 文件，首次运行要整体复制到私有目录再打开；被 aapt 压缩后，
+    // 个别设备上走 AssetManager 的 fd/mmap 路径会失败或被截断，表现为
+    // 「开发机好好的、个别盒子一启动就崩」这种极难定位的问题。
+    // 代价：APK 里多占约 2.4 MB（未压缩原样）。
+    androidResources {
+        noCompress += 'db'
     }
 }
 

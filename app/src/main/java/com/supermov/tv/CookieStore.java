@@ -8,7 +8,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** 持久化 Cookie jar：论坛 Cookie + 百度 BDUSS/STOKEN 等。 */
+/** 持久化 Cookie jar：目前只服务百度网盘（BDUSS / STOKEN / BDCLND）。 */
 public final class CookieStore {
     private static final Map<String, Map<String, String>> JAR = new HashMap<>();
     private static SharedPreferences prefs;
@@ -155,7 +155,6 @@ public final class CookieStore {
     private static String bucketKey(String host) {
         if (host == null) return "other";
         if (host.endsWith("baidu.com")) return "baidu.com";
-        if (host.endsWith("4kzimu.top")) return "4kzimu.top";
         return host;
     }
 

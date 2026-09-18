@@ -68,11 +68,6 @@
             android:configChanges="orientation|screenSize|keyboardHidden" />
 
         <activity
-            android:name=".WebLoginActivity"
-            android:exported="false"
-            android:configChanges="orientation|screenSize|keyboardHidden" />
-
-        <activity
             android:name=".QrActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden" />
