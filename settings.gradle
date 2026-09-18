@@ -13,4 +13,40 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "DJYDXS TV"
+
+// ---------------------------------------------------------------------------
+// NEXIO media3 fork：源码 composite build（方案 A）
+//
+// 把标准的 androidx.media3:* 坐标整体替换成 johnneerdael/media 里的源码工程，
+// 于是 app 侧的依赖写法一个字都不用改，解析出来的却是 fork 的 ExoPlayer
+// （带 DV7→DV8.1 转换、Kodi 级 IEC61937 直通、FireOS 修复）。
+//
+// fork 顶层 build.gradle 里有 `gradle.parent != null` 分支，说明它本来就为
+// 「被主工程 includeBuild」设计（产物隔离到 buildout-composite/），
+// 所以源码方案是它官方支持的用法。
+//
+// 前置：media/ 是 git 子模块，先把它拉下来再构建：
+//     git submodule update --init --depth 1 media
+// ---------------------------------------------------------------------------
+def mediaDir = file('media')
+if (!new File(mediaDir, 'settings.gradle').exists()) {
+    throw new GradleException(
+            "缺少 media3 fork 源码: ${mediaDir}\n" +
+            "请先执行: git submodule update --init --depth 1 media")
+}
+
+includeBuild('media') {
+    dependencySubstitution {
+        substitute module('androidx.media3:media3-common')          using project(':lib-common')
+        substitute module('androidx.media3:media3-container')       using project(':lib-container')
+        substitute module('androidx.media3:media3-datasource')      using project(':lib-datasource')
+        substitute module('androidx.media3:media3-decoder')         using project(':lib-decoder')
+        substitute module('androidx.media3:media3-extractor')       using project(':lib-extractor')
+        substitute module('androidx.media3:media3-database')        using project(':lib-database')
+        substitute module('androidx.media3:media3-exoplayer')       using project(':lib-exoplayer')
+        substitute module('androidx.media3:media3-exoplayer-hls')   using project(':lib-exoplayer-hls')
+        substitute module('androidx.media3:media3-ui')              using project(':lib-ui')
+    }
+}
+
 include ':app'

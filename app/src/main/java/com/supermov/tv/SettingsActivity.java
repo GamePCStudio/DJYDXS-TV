@@ -61,6 +61,57 @@ public class SettingsActivity extends Activity {
                         + "下载管理页面内下载不限速；退出该页面后按此限速",
                 v -> showDlLimitDialog()));
 
+        // ②.7 播放 · 音频（v1.25：NEXIO 内核带来的直通/解码开关）
+        group.addView(sectionLabel("播放 · 音频"));
+        group.addView(option("音频输出: " + audioModeName(Settings.audioMode()),
+                audioModeHint(),
+                v -> showAudioModeDialog()));
+        group.addView(option("源码直通编码: " + passthroughSummary(),
+                "只在「源码直通」模式下生效。勾选功放能点亮的格式\n"
+                        + "AC-3 / E-AC-3 命中率最高；DTS-HD / TrueHD / AC-4 多数国产盒子没有"
+                        + "授权解码器，勾了可能「有画面没声音」",
+                v -> showPassthroughCodecDialog()));
+        group.addView(option("最大声道数: " + Settings.audioMaxChannels() + " ch",
+                "2 = 立体声 / 6 = 5.1 / 8 = 7.1\n按功放实际声道数选，选大了可能被降混或干脆没声",
+                v -> showMaxChannelDialog()));
+        group.addView(option("直通失败自动回退: " + onOff(Settings.passthroughFallback()),
+                "开：直通建音频轨失败时自动改用解码重播，不会一播就崩\n"
+                        + "关：失败就停在错误上（排查设备到底支不支持时用）",
+                v -> {
+                    Settings.setPassthroughFallback(!Settings.passthroughFallback());
+                    rebuild();
+                }));
+        group.addView(option("首选音轨语言: " + langName(Settings.audioPreferredLang()),
+                "多音轨时优先挑这个语种；「不指定」= 跟随片源默认轨",
+                v -> showAudioLangDialog()));
+
+        // ②.8 播放 · 视频
+        group.addView(sectionLabel("播放 · 视频"));
+        group.addView(option("画面比例: " + resizeName(Settings.videoResize()),
+                "适应屏幕 = 保留原始比例、可能有黑边（推荐）\n"
+                        + "拉伸 / 裁剪 = 填满屏幕，前者会变形，后者会切掉边缘",
+                v -> showResizeDialog()));
+        group.addView(option("在线清晰度上限: " + qualityName(Settings.qualityCap()),
+                "原画优先 = 先取原画直链，失败才降级转码流（推荐）\n"
+                        + "选 1080p / 720p 会直接走云端转码流，省带宽但清晰度打折",
+                v -> showQualityDialog()));
+        group.addView(option("硬解失败回退软解: " + onOff(Settings.decoderFallback()),
+                "开：盒子硬解不了该编码时自动换别的解码器再试\n"
+                        + "关：直接报解码失败（排查不支持编码时用）",
+                v -> {
+                    Settings.setDecoderFallback(!Settings.decoderFallback());
+                    rebuild();
+                }));
+        group.addView(option("字幕字号: " + subSizeName(Settings.subSize()),
+                "以屏幕高度为基准；电视上离得远，建议「大」",
+                v -> showSubSizeDialog()));
+        group.addView(option("记住播放进度: " + onOff(Settings.rememberPos()),
+                "关掉后不再自动续播，每次从头开始（已记录的进度不会被删）",
+                v -> {
+                    Settings.setRememberPos(!Settings.rememberPos());
+                    rebuild();
+                }));
+
         // ③ 状态（真实会话校验异步更新）
         group.addView(sectionLabel("状态"));
         final TextView statCard = option("授权状态：" + (authed ? "检测中…" : "未授权"),
@@ -242,6 +293,212 @@ public class SettingsActivity extends Activity {
                 .create();
         dlg.show();
         dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).requestFocus();
+    }
+
+    // ---------- 播放 · 音频 ----------
+
+    private String audioModeName(int mode) {
+        if (mode == Settings.AUDIO_MODE_PASSTHROUGH) return "源码直通（送功放）";
+        if (mode == Settings.AUDIO_MODE_PCM) return "强制解码（PCM）";
+        return "自动（跟随设备）";
+    }
+
+    private String audioModeHint() {
+        int mode = Settings.audioMode();
+        if (mode == Settings.AUDIO_MODE_PASSTHROUGH) {
+            return "位流原样送 HDMI，由功放解码 —— 功放面板显示 DD / DD+ / DTS 才算成功\n"
+                    + "本机强制声明支持下列编码，因此即使盒子不上报也能试";
+        }
+        if (mode == Settings.AUDIO_MODE_PCM) {
+            return "全部解成 PCM 再输出 —— 兼容性最好，但 5.1 可能被降混成立体声";
+        }
+        return "不干预，按设备上报的能力决定直通还是解码（缺省，最稳）";
+    }
+
+    private String passthroughSummary() {
+        if (Settings.audioMode() != Settings.AUDIO_MODE_PASSTHROUGH) {
+            return "已勾 " + Settings.passthroughCodecCount() + " 项 · 当前模式不生效";
+        }
+        int n = Settings.passthroughCodecCount();
+        if (n == 0) return "一个都没勾 —— 等于全部解码";
+        return "已勾 " + n + " 项";
+    }
+
+    private void showAudioModeDialog() {
+        final int[] modes = {
+                Settings.AUDIO_MODE_AUTO,
+                Settings.AUDIO_MODE_PASSTHROUGH,
+                Settings.AUDIO_MODE_PCM};
+        final String[] labels = new String[modes.length];
+        for (int i = 0; i < modes.length; i++) {
+            labels[i] = (modes[i] == Settings.audioMode() ? "● " : "○ ") + audioModeName(modes[i]);
+        }
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(
+                this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("音频输出")
+                .setItems(labels, (d, which) -> {
+                    Settings.setAudioMode(modes[which]);
+                    Toast.makeText(this, "音频输出已改为 " + audioModeName(modes[which]),
+                            Toast.LENGTH_SHORT).show();
+                    rebuild();
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        dlg.show();
+    }
+
+    /**
+     * 直通编码多选。
+     *
+     * <p>勾一下立刻落盘（不需要按「完成」才生效），这样即使用户直接按返回键退出，
+     * 改动也已经保存了。</p>
+     */
+    private void showPassthroughCodecDialog() {
+        final String[] all = Settings.PT_ALL;
+        final String[] labels = new String[all.length];
+        final boolean[] checked = new boolean[all.length];
+        for (int i = 0; i < all.length; i++) {
+            labels[i] = Settings.ptLabel(all[i]);
+            checked[i] = Settings.passthroughCodec(all[i]);
+        }
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(
+                this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("源码直通编码")
+                .setMultiChoiceItems(labels, checked, (d, which, isChecked) ->
+                        Settings.setPassthroughCodec(all[which], isChecked))
+                .setPositiveButton("完成", (d, w) -> rebuild())
+                .create();
+        dlg.show();
+    }
+
+    private void showMaxChannelDialog() {
+        final int[] presets = {2, 6, 8};
+        final String[] labels = new String[presets.length];
+        for (int i = 0; i < presets.length; i++) {
+            labels[i] = (presets[i] == Settings.audioMaxChannels() ? "● " : "○ ")
+                    + presets[i] + " ch"
+                    + (presets[i] == 2 ? "（立体声）" : (presets[i] == 6 ? "（5.1）" : "（7.1）"))
+                    + (presets[i] == Settings.AUDIO_MAX_CH_DEFAULT ? "（缺省）" : "");
+        }
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(
+                this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("最大声道数")
+                .setItems(labels, (d, which) -> {
+                    Settings.setAudioMaxChannels(presets[which]);
+                    Toast.makeText(this, "最大声道数已设为 " + Settings.audioMaxChannels() + " ch",
+                            Toast.LENGTH_SHORT).show();
+                    rebuild();
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        dlg.show();
+    }
+
+    private void showAudioLangDialog() {
+        final String[] codes = {"", "zh", "en", "ja", "yue"};
+        final String[] labels = new String[codes.length];
+        for (int i = 0; i < codes.length; i++) {
+            labels[i] = (codes[i].equals(Settings.audioPreferredLang()) ? "● " : "○ ")
+                    + langName(codes[i]);
+        }
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(
+                this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("首选音轨语言")
+                .setItems(labels, (d, which) -> {
+                    Settings.setAudioPreferredLang(codes[which]);
+                    rebuild();
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        dlg.show();
+    }
+
+    private String langName(String code) {
+        if (code == null || code.isEmpty()) return "不指定";
+        if ("zh".equals(code)) return "中文";
+        if ("en".equals(code)) return "英语";
+        if ("ja".equals(code)) return "日语";
+        if ("yue".equals(code)) return "粤语";
+        return code;
+    }
+
+    // ---------- 播放 · 视频 ----------
+
+    private void showResizeDialog() {
+        final int[] modes = {Settings.RESIZE_FIT, Settings.RESIZE_FILL, Settings.RESIZE_ZOOM};
+        final String[] labels = new String[modes.length];
+        for (int i = 0; i < modes.length; i++) {
+            labels[i] = (modes[i] == Settings.videoResize() ? "● " : "○ ") + resizeName(modes[i]);
+        }
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(
+                this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("画面比例")
+                .setItems(labels, (d, which) -> {
+                    Settings.setVideoResize(modes[which]);
+                    rebuild();
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        dlg.show();
+    }
+
+    private String resizeName(int mode) {
+        if (mode == Settings.RESIZE_FILL) return "拉伸填满（会变形）";
+        if (mode == Settings.RESIZE_ZOOM) return "裁剪填满（切边缘）";
+        return "适应屏幕（推荐）";
+    }
+
+    private void showQualityDialog() {
+        final int[] caps = {Settings.QUALITY_ORIGINAL, Settings.QUALITY_1080, Settings.QUALITY_720};
+        final String[] labels = new String[caps.length];
+        for (int i = 0; i < caps.length; i++) {
+            labels[i] = (caps[i] == Settings.qualityCap() ? "● " : "○ ") + qualityName(caps[i]);
+        }
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(
+                this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("在线清晰度上限")
+                .setItems(labels, (d, which) -> {
+                    Settings.setQualityCap(caps[which]);
+                    rebuild();
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        dlg.show();
+    }
+
+    private String qualityName(int cap) {
+        if (cap == Settings.QUALITY_1080) return "≤ 1080p 转码流";
+        if (cap == Settings.QUALITY_720) return "≤ 720p 转码流";
+        return "原画优先";
+    }
+
+    private void showSubSizeDialog() {
+        final int[] sizes = {0, 1, 2, 3};
+        final String[] labels = new String[sizes.length];
+        for (int i = 0; i < sizes.length; i++) {
+            labels[i] = (sizes[i] == Settings.subSize() ? "● " : "○ ") + subSizeName(sizes[i]);
+        }
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(
+                this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("字幕字号")
+                .setItems(labels, (d, which) -> {
+                    Settings.setSubSize(sizes[which]);
+                    rebuild();
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        dlg.show();
+    }
+
+    private String subSizeName(int size) {
+        if (size == 0) return "小";
+        if (size == 1) return "中";
+        if (size == 3) return "特大";
+        return "大（缺省）";
+    }
+
+    private static String onOff(boolean on) {
+        return on ? "开" : "关";
     }
 
     private void runDiag() {

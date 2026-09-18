@@ -2,15 +2,33 @@ name: Build Android TV APK (release-signed)
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, DJYDXS2Nexio ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # composite build 要现编 media3 源码，比「直接下 AAR」慢不少，给足时间
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # media/ 是 johnneerdael/media（NEXIO media3 fork）的 git 子模块，pin 在某个 commit 上。
+      # 这里不用 actions/checkout 的 submodules: recursive —— 那会把整个 androidx/media
+      # monorepo 全量克隆。改成「按 .gitmodules 的 URL + gitlink 里的 sha 做单 commit 浅拉取」，
+      # 这样即使 fork 的 main 后来往前走了，这里依然取得到 pin 住的那一个 commit。
+      - name: Fetch media3 fork submodule (single commit, shallow)
+        run: |
+          set -e
+          url=$(git config -f .gitmodules --get submodule.media.url)
+          sha=$(git rev-parse HEAD:media)
+          echo "media3 fork: $url @ $sha"
+          git init -q media
+          git -C media remote add origin "$url"
+          git -C media fetch -q --depth 1 origin "$sha"
+          git -C media checkout -q FETCH_HEAD
+          ls media/settings.gradle
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -48,6 +66,6 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DJYDXS-TV-release-apk
+          name: DJYDXS-TV-release-apk-${{ github.ref_name }}
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error

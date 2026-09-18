@@ -315,5 +315,313 @@ public final class Settings {
         } catch (Throwable ignored) {
         }
     }
+
+    // ==================== 播放 · 音频（v1.25 · DJYDXS2Nexio）====================
+    //
+    // 这一组设置只影响「声音怎么出 HDMI」：
+    //   自动 / 源码直通（位流原样送功放）/ 强制解码（一律解成 PCM）。
+    // 具体怎么落到 media3 上，全部在 PlaybackEngine 里实现，这里只存值。
+
+    private static final String K_AUDIO_MODE = "audio_mode";
+    /** 跟随设备能力（缺省）：不干预，功放能点亮就点亮 */
+    public static final int AUDIO_MODE_AUTO = 0;
+    /** 源码直通：伪造能力表强制把位流送出去 */
+    public static final int AUDIO_MODE_PASSTHROUGH = 1;
+    /** 强制解码：全部解成 PCM 再输出（盒子自身解码） */
+    public static final int AUDIO_MODE_PCM = 2;
+
+    public static int audioMode() {
+        if (p() == null) return AUDIO_MODE_AUTO;
+        int v;
+        try {
+            v = p().getInt(K_AUDIO_MODE, AUDIO_MODE_AUTO);
+        } catch (Throwable e) {
+            return AUDIO_MODE_AUTO;
+        }
+        if (v < AUDIO_MODE_AUTO || v > AUDIO_MODE_PCM) v = AUDIO_MODE_AUTO;
+        return v;
+    }
+
+    public static void setAudioMode(int mode) {
+        if (p() == null) return;
+        if (mode < AUDIO_MODE_AUTO || mode > AUDIO_MODE_PCM) mode = AUDIO_MODE_AUTO;
+        p().edit().putInt(K_AUDIO_MODE, mode).apply();
+    }
+
+    // ---- 源码直通要声明哪些编码（逗号分隔的 token）----
+
+    private static final String K_PT_CODECS = "audio_pt_codecs";
+
+    public static final String PT_AC3 = "ac3";
+    public static final String PT_EAC3 = "eac3";
+    public static final String PT_EAC3_JOC = "eac3joc";
+    public static final String PT_DTS = "dts";
+    public static final String PT_DTS_HD = "dtshd";
+    public static final String PT_TRUEHD = "truehd";
+    public static final String PT_AC4 = "ac4";
+
+    /** 设置页按这个顺序列出可选编码。 */
+    public static final String[] PT_ALL = {
+            PT_AC3, PT_EAC3, PT_EAC3_JOC, PT_DTS, PT_DTS_HD, PT_TRUEHD, PT_AC4};
+
+    /**
+     * 缺省开启 AC3 / E-AC3 / E-AC3(JOC) / DTS。
+     *
+     * <p>这四种国产盒子命中率最高；DTS-HD / TrueHD / AC-4 需要设备侧授权解码器，
+     * 乱勾的结果是「有画面没声音」，所以缺省不开，让用户按功放面板实测后再加。</p>
+     */
+    public static final String PT_DEFAULT = "ac3,eac3,eac3joc,dts";
+
+    /** 编码 token -> 中文名（设置页显示用）。 */
+    public static String ptLabel(String token) {
+        if (PT_AC3.equals(token)) return "AC-3（杜比数字 5.1）";
+        if (PT_EAC3.equals(token)) return "E-AC-3（杜比数字+ 5.1/7.1）";
+        if (PT_EAC3_JOC.equals(token)) return "E-AC-3 JOC（杜比全景声）";
+        if (PT_DTS.equals(token)) return "DTS（DTS 5.1）";
+        if (PT_DTS_HD.equals(token)) return "DTS-HD / DTS:X";
+        if (PT_TRUEHD.equals(token)) return "TrueHD（杜比无损）";
+        if (PT_AC4.equals(token)) return "AC-4";
+        return token;
+    }
+
+    public static String passthroughCodecs() {
+        if (p() == null) return PT_DEFAULT;
+        String v;
+        try {
+            v = p().getString(K_PT_CODECS, PT_DEFAULT);
+        } catch (Throwable e) {
+            return PT_DEFAULT;
+        }
+        return v == null ? PT_DEFAULT : v;
+    }
+
+    /** token 是否已勾选（不引入 Set，SharedPreferences 存的就是一串逗号分隔值）。 */
+    public static boolean passthroughCodec(String token) {
+        if (token == null || token.isEmpty()) return false;
+        String all = passthroughCodecs();
+        int from = 0;
+        while (from <= all.length()) {
+            int cut = all.indexOf(',', from);
+            String one = (cut < 0) ? all.substring(from) : all.substring(from, cut);
+            if (one.trim().equals(token)) return true;
+            if (cut < 0) break;
+            from = cut + 1;
+        }
+        return false;
+    }
+
+    /** 勾掉/勾上一种编码，其余保持原样（按 {@link #PT_ALL} 的固定顺序重排）。 */
+    public static void setPassthroughCodec(String token, boolean on) {
+        if (p() == null || token == null || token.isEmpty()) return;
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < PT_ALL.length; i++) {
+            String t = PT_ALL[i];
+            boolean keep = t.equals(token) ? on : passthroughCodec(t);
+            if (keep) {
+                if (sb.length() > 0) sb.append(',');
+                sb.append(t);
+            }
+        }
+        p().edit().putString(K_PT_CODECS, sb.toString()).apply();
+    }
+
+    /** 已勾选编码的个数（设置页展示摘要用）。 */
+    public static int passthroughCodecCount() {
+        int n = 0;
+        for (int i = 0; i < PT_ALL.length; i++) {
+            if (passthroughCodec(PT_ALL[i])) n++;
+        }
+        return n;
+    }
+
+    // ---- 最大声道数 ----
+
+    private static final String K_AUDIO_MAX_CH = "audio_max_channels";
+    public static final int AUDIO_MAX_CH_DEFAULT = 8;
+
+    public static int audioMaxChannels() {
+        if (p() == null) return AUDIO_MAX_CH_DEFAULT;
+        int v;
+        try {
+            v = p().getInt(K_AUDIO_MAX_CH, AUDIO_MAX_CH_DEFAULT);
+        } catch (Throwable e) {
+            return AUDIO_MAX_CH_DEFAULT;
+        }
+        if (v != 2 && v != 6 && v != 8) v = AUDIO_MAX_CH_DEFAULT;
+        return v;
+    }
+
+    public static void setAudioMaxChannels(int ch) {
+        if (p() == null) return;
+        if (ch != 2 && ch != 6 && ch != 8) ch = AUDIO_MAX_CH_DEFAULT;
+        p().edit().putInt(K_AUDIO_MAX_CH, ch).apply();
+    }
+
+    // ---- 直通失败自动回退 ----
+
+    private static final String K_PT_FALLBACK = "audio_pt_fallback";
+
+    /** 缺省开：直通建轨失败时自动改用解码重播，避免一播就崩。 */
+    public static boolean passthroughFallback() {
+        if (p() == null) return true;
+        try {
+            return p().getBoolean(K_PT_FALLBACK, true);
+        } catch (Throwable e) {
+            return true;
+        }
+    }
+
+    public static void setPassthroughFallback(boolean on) {
+        if (p() == null) return;
+        p().edit().putBoolean(K_PT_FALLBACK, on).apply();
+    }
+
+    // ---- 首选音轨语言 ----
+
+    private static final String K_AUDIO_LANG = "audio_pref_lang";
+
+    /** 首选音轨语言（ISO 639-1 两字母码）；空串 = 不指定，跟随片源默认轨。 */
+    public static String audioPreferredLang() {
+        if (p() == null) return "";
+        try {
+            String v = p().getString(K_AUDIO_LANG, "");
+            return v == null ? "" : v;
+        } catch (Throwable e) {
+            return "";
+        }
+    }
+
+    public static void setAudioPreferredLang(String lang) {
+        if (p() == null) return;
+        p().edit().putString(K_AUDIO_LANG, lang == null ? "" : lang).apply();
+    }
+
+    // ==================== 播放 · 视频（v1.25）====================
+
+    // ---- 画面比例（取值与 AspectRatioFrameLayout 的 RESIZE_MODE_* 对齐）----
+
+    private static final String K_VIDEO_RESIZE = "video_resize";
+    /** 适应屏幕（RESIZE_MODE_FIT） */
+    public static final int RESIZE_FIT = 0;
+    /** 拉伸填满（RESIZE_MODE_FILL） */
+    public static final int RESIZE_FILL = 3;
+    /** 裁剪填满（RESIZE_MODE_ZOOM） */
+    public static final int RESIZE_ZOOM = 4;
+
+    public static int videoResize() {
+        if (p() == null) return RESIZE_FIT;
+        int v;
+        try {
+            v = p().getInt(K_VIDEO_RESIZE, RESIZE_FIT);
+        } catch (Throwable e) {
+            return RESIZE_FIT;
+        }
+        if (v != RESIZE_FIT && v != RESIZE_FILL && v != RESIZE_ZOOM) v = RESIZE_FIT;
+        return v;
+    }
+
+    public static void setVideoResize(int mode) {
+        if (p() == null) return;
+        if (mode != RESIZE_FIT && mode != RESIZE_FILL && mode != RESIZE_ZOOM) mode = RESIZE_FIT;
+        p().edit().putInt(K_VIDEO_RESIZE, mode).apply();
+    }
+
+    // ---- 在线清晰度上限 ----
+
+    private static final String K_QUALITY_CAP = "quality_cap";
+    /** 原画优先（缺省）：先取原画直链，失败才降级转码流 */
+    public static final int QUALITY_ORIGINAL = 0;
+    /** 直接走 ≤1080p 转码流 */
+    public static final int QUALITY_1080 = 1;
+    /** 直接走 ≤720p 转码流 */
+    public static final int QUALITY_720 = 2;
+
+    public static int qualityCap() {
+        if (p() == null) return QUALITY_ORIGINAL;
+        int v;
+        try {
+            v = p().getInt(K_QUALITY_CAP, QUALITY_ORIGINAL);
+        } catch (Throwable e) {
+            return QUALITY_ORIGINAL;
+        }
+        if (v < QUALITY_ORIGINAL || v > QUALITY_720) v = QUALITY_ORIGINAL;
+        return v;
+    }
+
+    public static void setQualityCap(int cap) {
+        if (p() == null) return;
+        if (cap < QUALITY_ORIGINAL || cap > QUALITY_720) cap = QUALITY_ORIGINAL;
+        p().edit().putInt(K_QUALITY_CAP, cap).apply();
+    }
+
+    // ---- 硬解失败回退软解 ----
+
+    private static final String K_DECODER_FALLBACK = "decoder_fallback";
+
+    public static boolean decoderFallback() {
+        if (p() == null) return true;
+        try {
+            return p().getBoolean(K_DECODER_FALLBACK, true);
+        } catch (Throwable e) {
+            return true;
+        }
+    }
+
+    public static void setDecoderFallback(boolean on) {
+        if (p() == null) return;
+        p().edit().putBoolean(K_DECODER_FALLBACK, on).apply();
+    }
+
+    // ---- 字幕字号（占屏幕高度的比例）----
+
+    private static final String K_SUB_SIZE = "sub_size";
+    /** 缺省 = 「大」，与 v1.24 之前的观感一致（0.066 屏高） */
+    public static final int SUB_SIZE_DEFAULT = 2;
+
+    public static int subSize() {
+        if (p() == null) return SUB_SIZE_DEFAULT;
+        int v;
+        try {
+            v = p().getInt(K_SUB_SIZE, SUB_SIZE_DEFAULT);
+        } catch (Throwable e) {
+            return SUB_SIZE_DEFAULT;
+        }
+        if (v < 0 || v > 3) v = SUB_SIZE_DEFAULT;
+        return v;
+    }
+
+    public static void setSubSize(int size) {
+        if (p() == null) return;
+        if (size < 0 || size > 3) size = SUB_SIZE_DEFAULT;
+        p().edit().putInt(K_SUB_SIZE, size).apply();
+    }
+
+    /** 字幕字号档位 -> media3 的「占屏幕高度比例」。 */
+    public static float subFraction() {
+        int v = subSize();
+        if (v == 0) return 0.040f;    // 小
+        if (v == 1) return 0.0533f;   // 中（media3 默认）
+        if (v == 3) return 0.080f;    // 特大
+        return 0.066f;                // 大（缺省）
+    }
+
+    // ---- 记住播放进度 ----
+
+    private static final String K_REMEMBER_POS = "remember_pos";
+
+    /** 关掉之后：不再写也不再读续播进度（进度记录不会清，只是不用）。 */
+    public static boolean rememberPos() {
+        if (p() == null) return true;
+        try {
+            return p().getBoolean(K_REMEMBER_POS, true);
+        } catch (Throwable e) {
+            return true;
+        }
+    }
+
+    public static void setRememberPos(boolean on) {
+        if (p() == null) return;
+        p().edit().putBoolean(K_REMEMBER_POS, on).apply();
+    }
 }
 
