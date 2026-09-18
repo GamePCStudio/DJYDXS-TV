@@ -72,7 +72,9 @@ public class SettingsActivity extends Activity {
                         + "授权解码器，勾了可能「有画面没声音」",
                 v -> showPassthroughCodecDialog()));
         group.addView(option("最大声道数: " + Settings.audioMaxChannels() + " ch",
-                "2 = 立体声 / 6 = 5.1 / 8 = 7.1\n按功放实际声道数选，选大了可能被降混或干脆没声",
+                "2 = 立体声 / 6 = 5.1 / 8 = 7.1\n"
+                        + "实测显示：选 8 时这台盒子建轨会被 AudioFlinger 拒（status -12）→ 没声，"
+                        + "所以缺省是 6；接功放时优先 6，只有 7.1 功放且确实出声再试 8",
                 v -> showMaxChannelDialog()));
         group.addView(option("直通失败自动回退: " + onOff(Settings.passthroughFallback()),
                 "开：直通建音频轨失败时自动改用解码重播，不会一播就崩\n"
@@ -84,6 +86,11 @@ public class SettingsActivity extends Activity {
         group.addView(option("首选音轨语言: " + langName(Settings.audioPreferredLang()),
                 "多音轨时优先挑这个语种；「不指定」= 跟随片源默认轨",
                 v -> showAudioLangDialog()));
+
+        group.addView(option("音频诊断",
+                "有画面没声音先看这里：设备真实直通能力 / 系统里的音频解码器 / 上次音频失败原因\n"
+                        + "（media3 在「直通不了又没有解码器」时会静默丢弃音轨：画面照播、不报错、也没声）",
+                v -> showAudioDiag()));
 
         // ②.8 播放 · 视频
         group.addView(sectionLabel("播放 · 视频"));
@@ -411,6 +418,21 @@ public class SettingsActivity extends Activity {
                 .setNegativeButton("取消", null)
                 .create();
         dlg.show();
+    }
+
+    /** 音频诊断：把「设备能直通什么 / 有没有解码器 / 上次为什么失败」一次摊开。 */
+    private void showAudioDiag() {
+        String report;
+        try {
+            report = PlaybackEngine.deviceCapsReport(this);
+        } catch (Throwable e) {
+            report = "诊断失败: " + e;
+        }
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("音频诊断")
+                .setMessage(report)
+                .setPositiveButton("好", null)
+                .show();
     }
 
     private String langName(String code) {

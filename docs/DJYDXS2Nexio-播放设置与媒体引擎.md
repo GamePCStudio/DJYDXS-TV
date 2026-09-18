@@ -256,3 +256,44 @@ lib-database  lib-exoplayer(+compileReleaseKotlin)  lib-exoplayer-hls  lib-ui
   这正是「伪造 AudioCapabilities 让 ExoPlayer 选择直通」能成立的前提。
 - `FireOsStreamInfo` —— Fire OS 设备上的音频流信息读取修正。
 
+---
+
+## 九、真机问题归因与修复（2026-09-18 18:12–18:15 · 设备 192.168.11.136）
+
+用户实测反馈 4 个问题，logcat（`C:\美影固件\小米Debug\23136`，3236 行）逐条对上了证据。
+
+### 9.1 证据链
+
+| # | 现象 | 日志证据 | 结论 |
+| --- | --- | --- | --- |
+| 1 | 设置页能往下移，但最下面的选项看不到 | `activity_settings.xml` 根布局是 `layout_height="wrap_content"` 的 `LinearLayout`，**根本没有 ScrollView** | 条目超出屏高后被直接裁掉：焦点能移过去（View 确实存在），屏幕永远不显示。v1.25 新增 9 条后必然触发 |
+| 2 | 直通全勾 7 项后，TrueHD / DTS-HD 影片从「能播」变成「提示转码 → 播不了」 | `AudioTrackAudioOutputProvider.getAudioTrackMinBufferSize:521` 抛 `IllegalStateException`（`checkState`），media3 包成 `ERROR_CODE_FAILED_RUNTIME_CHECK`（`Unexpected runtime error`） | 错误码名里**既没有 AUDIO_TRACK 也看不出是音频** → `isAudioTrackFailure` 判 false → 被当成「原画播放失败」丢给百度云端转码；而转码对 mkv 不可用 → 彻底没路 |
+| 3 | 勾 DTS-HD 后 DTS-HD 影片播不了 | `AudioFlinger could not create track, status: -12`；`AudioTrack init failed 0 Config(48000, 252, 8, 2250000) Format(... DTS-HD MA 5.1, audio/vnd.dts.hd ...)`；HAL 侧 `adev_open_output_stream(... ch=0x003f ...)` + `for raw audio output, force alsa stereo output` | 声明 8 声道后 media3 去建 8ch 轨，被 AudioFlinger 拒（-12）；HAL 只肯开 6ch 且把 raw output 强制成 stereo。**这台设备吃不下 8 声道** |
+| 4 | Auto / PCM 模式下 TrueHD 影片「有画面、没声音」 | 18:13:40→18:13:52 整段只出现 `OMX.amlogic.avc.decoder.awesome`（视频解码器），**没有任何音频解码器**，也没有 `onPlayerError`；同期 `AudioCapabilities: Unsupported mime audio/ac3 / eac3 / truehd / dtshd`（`audio/dts` 不在列表里，所以 DTS 能通） | 设备既直通不了、系统里又没有对应解码器 → `DefaultTrackSelector` **静默丢弃这条音轨**：画面照播、不报错、没声音。这正是「片源没问题但没声」的真相 |
+| 5 | 转码兜底也失败（`转码流也不可用`） | `api/streaming?type=M3U8_AUTO_720` 返回 **200 且 bodyLen=109737**，但 `streamingUrl` 既没命中 4 个 key、**也没打 errno 日志** | 说明 `new JSONObject(body)` 直接抛异常被 `catch (Throwable)` 静默吞掉（原代码 catch 里没有日志），失败原因完全丢失 |
+
+补充：`MediaCodecAudioRenderer` 在 18:14:34 / 18:14:49 两次报
+`AudioSink$InitializationException: ... Cannot create AudioTrack`
+（`AudioOutputProvider$InitializationException` ← `UnsupportedOperationException` ←
+`AudioTrack$Builder.build()`），与第 3 条同源。
+
+### 9.2 本轮修复
+
+| 文件 | 改动 | 为什么 |
+| --- | --- | --- |
+| `res/layout/activity_settings.xml` | 按 `activity_detail.xml` 的既有写法**包一层 ScrollView**（`fillViewport`），底部留 72dp | 直接解决「滚到底也看不到」。底部留白保证最后一条能完整滚进可视区 |
+| `PlayerActivity.isAudioTrackFailure` | 除错误码名含 `AUDIO_TRACK` 外，再**顺着 cause 链扫堆栈**，命中 `androidx.media3.exoplayer.audio.` 或消息含 `Cannot create AudioTrack` 即判定为音频失败 | 让第 2 条的 `ERROR_CODE_FAILED_RUNTIME_CHECK` 也能走进「改用解码重播」，不再误跳转码死路。该判定不依赖 media3 版本 |
+| `PlayerActivity.handlePlaybackError` | 音频失败统一记入诊断；回退被关掉时提示「音频输出失败」而不是「原画播放失败」 | 提示不再把人引到网络/清晰度方向 |
+| `Settings.AUDIO_MAX_CH_DEFAULT` | 8 → **6** | 第 3 条的 -12 就是 8 声道请求引出来的；缺省 6 才开得出声 |
+| `SettingsActivity` | 新增**「音频诊断」**入口；声道数提示改成实测口径 | 一键看「设备真实直通能力 / 系统音频解码器 / 上次音频失败原因」，第 4 条那种「静默丢轨」不用再抓 logcat |
+| `PlaybackEngine.deviceCapsReport()` / `noteAudioError()` | 新诊断报告：当前设置 + `AudioCapabilities.supportsEncoding()` 逐项 + `MediaCodecList` 枚举音频解码器 + 上次失败 | 把「为什么没声」的两个前提条件摊开 |
+| `BaiduPan.streamingUrl` | JSON 解析失败不再静默：打出异常/bodyLen/body 开头；再加**正则兜底**在原始响应里捞含 `m3u8` 的 http 地址 | 第 5 条：先让失败可见，同时多一条取流路径 |
+
+### 9.3 给这台盒子（小米 / Amlogic，Android 7.1）的建议组合
+
+- 音频输出 = **源码直通**
+- 源码直通编码：**只勾 AC-3 与 DTS**；E-AC-3 / E-AC-3 JOC / DTS-HD / TrueHD / AC-4 先不勾
+  （设备上报这三类既不支持直通，也没有解码器；勾了只会让「能播」变成「不能播」）
+- 最大声道数 = **6**
+- 直通失败自动回退 = 开
+- 拿不准就先点**「音频诊断」**，看设备上报的能力表与解码器清单再决定勾什么

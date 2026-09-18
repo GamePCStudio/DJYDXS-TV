@@ -154,6 +154,115 @@ public final class PlaybackEngine {
         return Settings.audioMode() == Settings.AUDIO_MODE_PASSTHROUGH;
     }
 
+    // ---------- 音频诊断 ----------
+
+    /** 上一次音频输出失败的简述（由 PlayerActivity 失败时写入，供设置页诊断用）。 */
+    private static volatile String lastAudioError = "";
+
+    /** 记录一次音频输出失败（只用于诊断显示）。 */
+    public static void noteAudioError(String what) {
+        if (what != null && !what.isEmpty()) lastAudioError = what;
+    }
+
+    /**
+     * 设备音频能力「体检报告」。
+     *
+     * <p>排查「有画面、没声音」时先看这里。media3 只有在下面二者之一成立时才会给音轨建
+     * 渲染器：① 能力表说这个编码能直通；② 系统里有对应的解码器。两者都不成立时，
+     * {@code DefaultTrackSelector} 会**直接不选这条音轨** —— 画面照播、不报错、也没声音，
+     * 最容易误判成「片源问题」。这个报告把这两件事都摊开，省掉一轮抓 logcat。</p>
+     */
+    public static String deviceCapsReport(Context ctx) {
+        StringBuilder sb = new StringBuilder();
+
+        sb.append("【当前设置】\n");
+        sb.append("音频输出: ").append(modeName(Settings.audioMode())).append('\n');
+        sb.append("声明直通: ").append(Settings.passthroughCodecCount()).append(" 项 · ")
+                .append(Settings.passthroughCodecs()).append('\n');
+        sb.append("最大声道: ").append(Settings.audioMaxChannels()).append(" ch\n");
+        sb.append('\n');
+
+        sb.append("【设备上报的直通能力】\n");
+        try {
+            @SuppressWarnings("deprecation")
+            AudioCapabilities caps = AudioCapabilities.getCapabilities(ctx);
+            sb.append(capsLine(caps, "AC-3", C.ENCODING_AC3));
+            sb.append(capsLine(caps, "E-AC-3", C.ENCODING_E_AC3));
+            sb.append(capsLine(caps, "E-AC-3 JOC(Atmos)", C.ENCODING_E_AC3_JOC));
+            sb.append(capsLine(caps, "AC-4", C.ENCODING_AC4));
+            sb.append(capsLine(caps, "DTS", C.ENCODING_DTS));
+            sb.append(capsLine(caps, "DTS-HD", C.ENCODING_DTS_HD));
+            sb.append(capsLine(caps, "TrueHD", C.ENCODING_DOLBY_TRUEHD));
+            sb.append("设备最大声道: ").append(caps.getMaxChannelCount()).append('\n');
+        } catch (Throwable e) {
+            sb.append("读取失败: ").append(e).append('\n');
+        }
+        sb.append('\n');
+
+        sb.append("【系统里的压缩音频解码器】\n");
+        sb.append(decoderReport());
+        sb.append('\n');
+
+        sb.append("【上次音频失败】\n");
+        sb.append(lastAudioError.isEmpty() ? "（本次运行还没有音频失败）" : lastAudioError);
+        return sb.toString();
+    }
+
+    private static String capsLine(AudioCapabilities caps, String label, int encoding) {
+        boolean ok;
+        try {
+            ok = caps.supportsEncoding(encoding);
+        } catch (Throwable e) {
+            return label + ": 查询异常\n";
+        }
+        return label + ": " + (ok ? "支持" : "不支持") + '\n';
+    }
+
+    /** 枚举系统里的音频解码器：没有解码器又直通不了，那条音轨就会被静默丢弃。 */
+    private static String decoderReport() {
+        final String[][] want = {
+                {"audio/mp4a-latm", "AAC"},
+                {"audio/ac3", "AC-3"},
+                {"audio/eac3", "E-AC-3"},
+                {"audio/truehd", "TrueHD"},
+                {"audio/vnd.dts", "DTS"},
+                {"audio/vnd.dts.hd", "DTS-HD"},
+                {"audio/ac4", "AC-4"},
+        };
+        StringBuilder sb = new StringBuilder();
+        try {
+            android.media.MediaCodecList list =
+                    new android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS);
+            for (android.media.MediaCodecInfo ci : list.getCodecInfos()) {
+                if (ci == null || ci.isEncoder()) continue;
+                String[] types;
+                try {
+                    types = ci.getSupportedTypes();
+                } catch (Throwable e) {
+                    continue;
+                }
+                if (types == null) continue;
+                for (String t : types) {
+                    for (String[] w : want) {
+                        if (w[0].equalsIgnoreCase(t)) {
+                            sb.append(w[1]).append(" -> ").append(ci.getName()).append('\n');
+                        }
+                    }
+                }
+            }
+        } catch (Throwable e) {
+            return "枚举失败: " + e + '\n';
+        }
+        if (sb.length() == 0) sb.append("（一个压缩音频解码器都没有 —— 只能靠直通）\n");
+        return sb.toString();
+    }
+
+    private static String modeName(int mode) {
+        if (mode == Settings.AUDIO_MODE_PASSTHROUGH) return "源码直通";
+        if (mode == Settings.AUDIO_MODE_PCM) return "强制解码（PCM）";
+        return "自动（跟随设备）";
+    }
+
     /** 直通模式的 RenderersFactory：只改了音频 sink 的来源。 */
     public static final class EngineRenderersFactory extends DefaultRenderersFactory {
 

@@ -608,8 +608,19 @@ public class PlayerActivity extends Activity {
         Log.d(TAG, "playback error code=" + error.getErrorCodeName() + " msg=" + error.getMessage());
         // 源码直通建不出音频轨（盒子/功放真不支持这个格式）-> 换解码重播，
         // 别让用户对着一句英文错误码发呆。只在直通模式且没关回退时才做。
-        if (isAudioTrackFailure(error) && PlaybackEngine.shouldFallbackToDecode(forcedDecode)) {
+        final boolean audioFail = isAudioTrackFailure(error);
+        if (audioFail) {
+            // 留给设置页的「音频诊断」，这类问题不该再让人去抓 logcat
+            PlaybackEngine.noteAudioError(error.getErrorCodeName() + " / " + describe(error));
+        }
+        if (audioFail && PlaybackEngine.shouldFallbackToDecode(forcedDecode)) {
             rebuildWithDecode();
+            return;
+        }
+        // 音频问题但回退被关掉（或已经回退过一次）：说清楚是音频的锅，
+        // 别再报「原画播放失败」把人引到网络/清晰度上去
+        if (audioFail) {
+            fail("音频输出失败（已关掉自动回退）：" + describe(error));
             return;
         }
         final long pos = player.getCurrentPosition();
@@ -656,8 +667,30 @@ public class PlayerActivity extends Activity {
             code = e.getErrorCodeName();
         } catch (Throwable ignored) {
         }
-        if (code == null) code = "";
-        return code.contains("AUDIO_TRACK");
+        if (code != null && code.contains("AUDIO_TRACK")) return true;
+        // 还有一类更隐蔽的：直通路径上 AudioSink 内部抛的异常
+        // （AudioTrackAudioOutputProvider.getAudioTrackMinBufferSize 里的 checkState、
+        //  AudioTrack$Builder.build() 抛的 "Cannot create AudioTrack"），
+        // media3 会把它包成 ExoPlaybackException: Unexpected runtime error —— 错误码名
+        // ERROR_CODE_FAILED_RUNTIME_CHECK 里既没有 AUDIO_TRACK、也看不出是音频。
+        // 不认出来的话，音频问题会被当成「原画播放失败」丢给百度云端转码，而转码对 mkv
+        // 常常不可用 —— 用户看到的就是「原画要转码，转码也播不了」，彻底没路走。
+        // 只能顺着 cause 链看堆栈落在哪个包（这套判定与 media3 版本无关）。
+        Throwable t = e;
+        for (int depth = 0; t != null && depth < 12; depth++) {
+            String m = t.getMessage();
+            if (m != null && m.contains("Cannot create AudioTrack")) return true;
+            StackTraceElement[] st = t.getStackTrace();
+            if (st != null) {
+                for (StackTraceElement f : st) {
+                    String cn = f.getClassName();
+                    if (cn != null && cn.startsWith("androidx.media3.exoplayer.audio.")) return true;
+                }
+            }
+            Throwable next = t.getCause();
+            t = (next == t) ? null : next;
+        }
+        return false;
     }
 
     /**
@@ -714,7 +747,7 @@ public class PlayerActivity extends Activity {
             main.post(() -> {
                 if (finishing) return;
                 if (url.isEmpty()) {
-                    fail("转码流也不可用（可能受会员权限限制或接口已变动）");
+                    fail("转码流不可用：百度没返回可播地址（mkv 转码常受限，已记日志）");
                     return;
                 }
                 long pos = player.getCurrentPosition();

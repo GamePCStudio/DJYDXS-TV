@@ -437,7 +437,17 @@ public final class Settings {
     // ---- 最大声道数 ----
 
     private static final String K_AUDIO_MAX_CH = "audio_max_channels";
-    public static final int AUDIO_MAX_CH_DEFAULT = 8;
+    /**
+     * 缺省 6（5.1）而不是 8（7.1）。
+     *
+     * <p>实测（小米/Amlogic 盒子，18:14:34 logcat）：声明 8 声道后 media3 会去建
+     * {@code Config(48000, 252, 8, 2250000)} 的 AudioTrack，AudioFlinger 直接回
+     * {@code could not create track, status: -12}（ENOMEM），同时 HAL 只肯开
+     * {@code ch=0x3f}(6ch) 并且「for raw audio output, force alsa stereo output」。
+     * 也就是说这台设备根本吃不下 8 声道的 PCM/直通轨 —— 缺省 6 才能开出声；
+     * 真接了 7.1 功放且 HAL 支持，再手动调到 8。</p>
+     */
+    public static final int AUDIO_MAX_CH_DEFAULT = 6;
 
     public static int audioMaxChannels() {
         if (p() == null) return AUDIO_MAX_CH_DEFAULT;

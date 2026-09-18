@@ -920,19 +920,44 @@ public final class BaiduPan {
                     + "&path=" + enc(path)
                     + "&clienttype=0&app_id=250528&web=1&channel=chunlei&check_blue=1&vip=2";
             Http.Resp r = Http.get(u);
-            JSONObject o = new JSONObject(r.body);
-            String[] keys = {"m3u8_url", "m3u8", "url", "dlink"};
-            for (String k : keys) {
-                String v = o.optString(k, "");
-                if (!v.isEmpty() && v.startsWith("http")) {
-                    android.util.Log.d("SupeMov", "streaming(" + type + ") key=" + k);
-                    return v;
+            String body = r.body == null ? "" : r.body;
+
+            // 优先按 JSON 找；解析不了（body 被截断 / 返回的是 HTML 风控页）就退到正则，
+            // 两者都不成也要把原因打出来 —— 之前这里 catch 完直接 return ""，
+            // 日志里只剩一句「转码流不可用」，等于什么都没说。
+            try {
+                JSONObject o = new JSONObject(body);
+                String[] keys = {"m3u8_url", "m3u8", "url", "dlink"};
+                for (String k : keys) {
+                    String v = o.optString(k, "");
+                    if (!v.isEmpty() && v.startsWith("http")) {
+                        android.util.Log.d("SupeMov", "streaming(" + type + ") key=" + k);
+                        return v;
+                    }
+                }
+                android.util.Log.w("SupeMov", "streaming(" + type + ") 无地址 key, errno="
+                        + o.opt("errno") + " keys=" + o.keys());
+            } catch (Throwable e) {
+                android.util.Log.w("SupeMov", "streaming(" + type + ") JSON 解析失败: " + e
+                        + " bodyLen=" + body.length()
+                        + " head=" + body.substring(0, Math.min(160, body.length())));
+            }
+            // 兜底：直接在原始响应里捞一个含 m3u8 的 http 地址
+            // （JSON 结构变了、body 被截断也还能捞到；不写复杂正则，避免转义出错）
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("https?://[^\"'<> ]+").matcher(body);
+            while (m.find()) {
+                String hit = m.group();
+                if (hit.contains("m3u8")) {
+                    android.util.Log.d("SupeMov", "streaming(" + type + ") 正则兜底命中");
+                    return hit;
                 }
             }
-            android.util.Log.d("SupeMov", "streaming(" + type + ") errno=" + o.opt("errno")
-                    + " keys=" + o.keys());
+            android.util.Log.w("SupeMov", "streaming(" + type + ") 未取到地址 code=" + r.code
+                    + " bodyLen=" + body.length());
             return "";
         } catch (Throwable e) {
+            android.util.Log.w("SupeMov", "streaming(" + type + ") 异常: " + e);
             return "";
         }
     }
