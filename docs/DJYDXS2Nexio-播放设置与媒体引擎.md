@@ -142,9 +142,9 @@ CI：推送到 `DJYDXS2Nexio` 会自动触发（`build.yml` 已加该分支）�
 
 ## 六、验收清单
 
-- [ ] CI 里 `Fetch media3 fork submodule` 步骤通过，打印出 fork URL + sha
-- [ ] `assembleRelease` 成功产出 APK
-- [ ] `:app:dependencies` 中 `androidx.media3:media3-exoplayer` → `project :lib-exoplayer`
+- [x] CI 里 `Fetch media3 fork submodule` 步骤通过，打印出 fork URL + sha
+- [x] `assembleRelease` 成功产出 APK（run 35326634505，BUILD SUCCESSFUL in 2m 40s）
+- [x] 产物中确认走的是 **fork 源码**而非 Maven AAR（见第八节 dex 取证）
 - [ ] 设置页出现「播放 · 音频」「播放 · 视频」两个分区，所有项可点、可存、重进仍在
 - [ ] 音频输出 = 自动：与改前行为一致（不回归）
 - [ ] 音频输出 = 源码直通：接功放时面板显示 DD / DD+ / DTS（不是 PCM / STEREO）
@@ -167,3 +167,92 @@ fork 的真正「杀手锏」都还没接，属于第二步增量：
 3. **FFmpeg 软解**（`lib-decoder-ffmpeg`：VC-1 / AV1 兜底）。
 4. **HDMI 路由变化重建 Player**（`AudioManager.registerAudioDeviceCallback` +
    `ACTION_HDMI_AUDIO_PLUG`），解决「先开盒子后开功放导致降混」的经典问题。
+
+---
+
+## 八、构建验证（2026-09-18 实测）
+
+### 8.1 先修了一个「假成功」的构建隐患
+
+第一次推送后 CI（run 35325474634）失败。根因**不在** Gradle/AGP 版本号写错，而在仓库自带的
+`gradlew` 是个自定义 shim：
+
+```sh
+# 旧 gradlew（问题版）
+APP_HOME=$(cd "$(dirname "$0")/.." && pwd)      # ← 多了一层 ..，目录定位本身就是错的
+if [ -f "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" ]; then
+  exec java -jar "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" "$@"   # ← 无 Main-Class，也会失败
+else
+  exec gradle "$@"                               # ← jar 从未提交，于是静默用了 runner 预装的 gradle
+fi
+```
+
+- `gradle/wrapper/` 下**只有 `.properties`，`gradle-wrapper.jar` 从来没进过仓库**；
+- 于是走 `else` 分支 `exec gradle`，静默使用 ubuntu-latest 预装的 **Gradle 9.7.1**；
+- 而 **AGP 8.13.2 在 Gradle ≥ 9.6 上会因 `InternalProblems` 内部 API 被移除而失败**
+  （AGP 8.13+ 尚未适配 Gradle 9.6+）。main 分支此前用 AGP 8.9.1 不碰这个 API，
+  所以在同一个 runner 上「同样没有 wrapper jar」却一直是绿的 —— 这就是它一直没被发现的原因。
+
+修复（commit `28d4e8f`）：
+
+1. 提交官方 `gradle-wrapper.jar`（Gradle 8.13.0，43705 字节）；
+2. `gradlew` / `gradlew.bat` 改为调用 `org.gradle.wrapper.GradleWrapperMain`，
+   并且用 **`-classpath`** 而不是 `java -jar`（官方 wrapper jar 的 MANIFEST **没有 `Main-Class`**，
+   `java -jar` 必然报 "no main manifest attribute"）；
+3. 修正 `APP_HOME`（sh 版去掉多余的 `..`；bat 版用 `%~dp0` 去掉结尾反斜杠）；
+4. 保留「jar 缺失时回退系统 gradle」的兜底分支，但只作为最后手段。
+
+交叉验证：fork 自己的 `gradle/wrapper/gradle-wrapper.properties` 用的是
+**`gradle-8.13-all.zip`**，其 `build.gradle` 用 **AGP 8.13.2 + Kotlin 2.3.0** ——
+与本次选定的组合完全一致，是 fork 官方验证过的搭配。
+
+### 8.2 本次构建结果（run 35326634505）
+
+| 项目 | 结果 |
+| --- | --- |
+| 实际使用 Gradle | **8.13**（日志：`Downloading gradle-8.13-bin.zip` / `Welcome to Gradle 8.13!`） |
+| 结果 | `BUILD SUCCESSFUL in 2m 40s`，360 actionable tasks（305 executed / 55 from cache） |
+| 错误 | 0（只有 `Note: ... deprecated API`，来自 `AudioCapabilities` 兼容构造等预期项） |
+| 产物 | `DJYDXS-TV-release-apk-DJYDXS2Nexio.zip` → `app-release.apk`，5,596,783 字节，3 个 dex，无 native so |
+| 手动触发 | `gh workflow run build.yml --ref DJYDXS2Nexio -R GamePCStudio/DJYDXS-TV` |
+
+### 8.3 参与源码编译的 fork 模块（证明 composite 替换真的生效）
+
+`:media:` 前缀下实际执行了编译的模块共 9 个，与 `settings.gradle` 的 `dependencySubstitution`
+清单一一对应：
+
+```
+lib-common  lib-container  lib-datasource  lib-decoder  lib-extractor
+lib-database  lib-exoplayer(+compileReleaseKotlin)  lib-exoplayer-hls  lib-ui
+```
+
+（`lib-exoplayer` 的依赖闭包已经核对过：全部是 `project(modulePrefix + 'lib-*')` 写法，
+都在替换表内，不存在「漏替换某个模块 → 源码与 1.11.0 AAR 混编」的风险。）
+
+### 8.4 产物取证：APK 里确实是 fork 的代码
+
+只看「构建成功」不够——如果替换没命中，Gradle 会安静地去 google() 下 1.10.0 AAR，
+构建照样绿。所以做了一次类名级取证：拿上游 `androidx/media@1.10.0` 与 fork 的
+`libraries/exoplayer` 源文件列表做差集，得到 **5 个 fork 独有类**，然后在 APK 的 dex 里搜类描述符：
+
+| 类（fork 独有） | 在 APK 中 |
+| --- | --- |
+| `androidx.media3.exoplayer.audio.DolbyPassthroughAudioTrack` | ✅ classes.dex |
+| `androidx.media3.exoplayer.audio.FireOsStreamInfo` | ✅ classes.dex |
+| `androidx.media3.exoplayer.audio.PassthroughAudioDiagnostics` | ✅ classes.dex |
+| `androidx.media3.exoplayer.audio.RendererClockAwareAudioSink` | ✅ classes.dex |
+| `androidx.media3.exoplayer.text.CueGroupSubtitleTranslator` | ✅ classes.dex |
+| 本次新写的 `com.supermov.tv.PlaybackEngine` / `Settings` | ✅ classes3.dex |
+
+这 5 个类在上游 1.10.0 中**不存在**，只可能来自 fork 源码 → 方案 A 的替换已确凿生效。
+
+### 8.5 fork 独有类给出的实现线索（对后续直通很有用）
+
+- `PassthroughAudioDiagnostics` —— fork 自带的直通诊断，排查「为什么没直通」时应优先接它，
+  比自己在 `AudioSink` 外面猜要准得多。
+- `RendererClockAwareAudioSink` —— 直通（尤其是高码率 TrueHD/DTS-HD）时的时间轴对齐问题，
+  fork 用感知 renderer clock 的 sink 解决，说明「直通后音画不同步」不应再靠外部补偿。
+- `DolbyPassthroughAudioTrack` —— 杜比系直通走的是自定义 AudioTrack 实现，
+  这正是「伪造 AudioCapabilities 让 ExoPlayer 选择直通」能成立的前提。
+- `FireOsStreamInfo` —— Fire OS 设备上的音频流信息读取修正。
+
