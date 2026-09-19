@@ -2,7 +2,6 @@ package com.supermov.tv;
 
 import android.app.Activity;
 import android.app.ActivityOptions;
-import android.content.Context;
 import android.content.Intent;
 
 /**
@@ -28,7 +27,7 @@ public final class PageTransition {
      * 返回键触发 finish 时，系统对父 Activity 自动播放反向滑出。
      */
     public static void open(Activity from, Intent it) {
-        from.startActivity(it, enterOptions(from));
+        from.startActivity(it, enterOptions(from).toBundle());
     }
 
     /** 便捷重载：按目标类构造 Intent 再启动。 */
