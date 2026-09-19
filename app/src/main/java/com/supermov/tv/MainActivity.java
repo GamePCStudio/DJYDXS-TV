@@ -12,9 +12,11 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -42,6 +44,12 @@ public class MainActivity extends Activity {
     private TextView btnSearch;
     private TextView tvEmpty;
     private ImageView ivBackdrop; // LAMPA 效果①：全屏背景层
+
+    // LAMPA 效果④：首页 Hero 大条目（第一屏大卡）—— 各控件句柄
+    private View heroRoot;
+    private PosterView heroPoster;
+    private TextView heroTitle, heroMeta, heroIntro, heroDouban, heroImdb;
+    private TextView heroBtnPlay, heroBtnDetail;
 
     private OptionAdapter catAdapter;
     private OptionAdapter filterAdapter;
@@ -143,6 +151,18 @@ public class MainActivity extends Activity {
         // LAMPA 效果①：焦点海报变更 → 全屏背景层交叉淡入
         movieAdapter.setOnFocusPoster(this::onFocusPoster);
         rvList.setAdapter(movieAdapter);
+
+        // LAMPA 效果④：首页 Hero 大条目（第一屏大卡），随首页第一页数据填充
+        heroRoot = findViewById(R.id.heroCard);
+        heroPoster = findViewById(R.id.heroPoster);
+        heroTitle = findViewById(R.id.heroTitle);
+        heroMeta = findViewById(R.id.heroMeta);
+        heroIntro = findViewById(R.id.heroIntro);
+        heroDouban = findViewById(R.id.heroDouban);
+        heroImdb = findViewById(R.id.heroImdb);
+        heroBtnPlay = findViewById(R.id.heroBtnPlay);
+        heroBtnDetail = findViewById(R.id.heroBtnDetail);
+
         rvList.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
             public void onScrolled(@NonNull RecyclerView rv, int dx, int dy) {
@@ -326,7 +346,8 @@ public class MainActivity extends Activity {
         it.putExtra("tid", m.tid);
         it.putExtra("name", m.name);
         it.putExtra("pic", m.pic);
-        startActivity(it);
+        // LAMPA 效果③：页面栈 from-below 进入过渡（下方滑入 + 淡入）
+        PageTransition.open(this, it);
     }
 
     /** 长按海报：快捷转存（保留原来的快速通道，不用先进详情页）。 */
@@ -416,6 +437,71 @@ public class MainActivity extends Activity {
         dlg.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus();
     }
 
+    // =========================================================================
+    // LAMPA 效果④：首页 Hero 大条目（第一屏大卡）
+    // 数据源：当前版块第一页第一条影片（intro/genres/ratingDouban/ratingImdb 都在 Movie 上）。
+    // 搜索模式（keyword 非空）时隐藏 Hero，让位给结果墙。
+    // =========================================================================
+
+    private MovieStore.Movie firstMovie(List<MovieStore.Movie> raw) {
+        return (raw != null && !raw.isEmpty()) ? raw.get(0) : null;
+    }
+
+    private void fillHero(MovieStore.Movie m) {
+        if (heroRoot == null) return;
+        if (m == null || searchKeyword != null && !searchKeyword.isEmpty()) {
+            // 无数据或搜索模式：隐藏大卡
+            heroRoot.setVisibility(View.GONE);
+            return;
+        }
+        heroRoot.setVisibility(View.VISIBLE);
+
+        heroTitle.setText(m.name);
+        String meta = String.join(" · ", new String[]{
+                m.year, m.genres, m.classification
+        });
+        meta = meta.replaceAll("(\\s*·\\s*)+", " · ").trim();
+        heroMeta.setText(meta.isEmpty() ? " " : meta);
+
+        String intro = m.intro == null ? "" : m.intro.trim();
+        heroIntro.setText(intro.isEmpty() ? " " : intro);
+        heroIntro.setVisibility(intro.isEmpty() ? View.GONE : View.VISIBLE);
+
+        if (m.hasDouban && m.ratingDouban > 0) {
+            heroDouban.setVisibility(View.VISIBLE);
+            heroDouban.setText("豆瓣 " + m.ratingDouban);
+        } else {
+            heroDouban.setVisibility(View.GONE);
+        }
+        if (m.hasImdb && m.ratingImdb > 0) {
+            heroImdb.setVisibility(View.VISIBLE);
+            heroImdb.setText("IMDb " + m.ratingImdb);
+        } else {
+            heroImdb.setVisibility(View.GONE);
+        }
+
+        // 海报：复用 ImageLoader（灰底占位 → 淡入）
+        if (m.pic != null && !m.pic.isEmpty()) {
+            heroPoster.setTag(m.pic);
+            ImageLoader.load(m.pic, heroPoster);
+        } else {
+            heroPoster.setImageDrawable(null);
+        }
+
+        // 按钮：播放 / 详情 都跳同一详情页（在线播放入口在详情页）
+        heroRoot.setOnClickListener(v -> openDetail(m));
+        heroRoot.setOnLongClickListener(v -> { confirmTransfer(m); return true; });
+        heroBtnPlay.setOnClickListener(v -> openDetail(m));
+        heroBtnDetail.setOnClickListener(v -> openDetail(m));
+        // 整卡 + 两个按钮都可聚焦（TV 遥控器）
+        heroRoot.setFocusable(true);
+        heroRoot.setClickable(true);
+        heroBtnPlay.setFocusable(true);
+        heroBtnPlay.setClickable(true);
+        heroBtnDetail.setFocusable(true);
+        heroBtnDetail.setClickable(true);
+    }
+
     /**
      * 载入某一页。**先出画、后筛选**，两段式：
      *
@@ -463,8 +549,13 @@ public class MainActivity extends Activity {
                 loading = false;
                 currentPage = page;
                 totalPages = Math.max(1, pageCount);
-                if (page == 1) movieAdapter.setItems(raw);
-                else movieAdapter.addItems(raw);
+                if (page == 1) {
+                    movieAdapter.setItems(raw);
+                    // LAMPA 效果④：首页第一屏填充 Hero 大条目（第一页第一条 + 简介 + 评分）
+                    fillHero(firstMovie(raw));
+                } else {
+                    movieAdapter.addItems(raw);
+                }
                 if (movieAdapter.getItemCount() > 0) {
                     // 「加载中…」正拿着焦点时把它隐藏，焦点会掉到空处（遥控器上就是「焦点消失」）
                     boolean hadEmptyFocus = tvEmpty.isFocused();

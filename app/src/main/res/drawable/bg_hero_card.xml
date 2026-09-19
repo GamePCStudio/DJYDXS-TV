@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- LAMPA 效果④：首页 Hero 大条目卡片底（渐变 + 圆角，聚焦时白描边） -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#FF242830" />
+            <corners android:radius="12dp" />
+            <stroke android:width="2dp" android:color="#FFFFFFFF" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#FF1E2228" />
+            <corners android:radius="12dp" />
+        </shape>
+    </item>
+</selector>

@@ -140,7 +140,8 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
         // 的轻量入场对齐；海报/标题始终实显，不做 alpha 闪烁（闪烁=廉价感）。
         // LAMPA 效果①：焦点拿到/失去时回调全屏背景层（交叉淡入当前海报）。
         h.itemView.setOnFocusChangeListener((v, has) -> {
-            h.ivPic.setBackgroundResource(has ? R.drawable.bg_movie_focus : R.drawable.bg_movie_normal);
+            // 白描边焦点框：盖在海报之上的独立叠加层（focusFrame），可见性强，不会被图盖住
+            h.focusFrame.setVisibility(has ? View.VISIBLE : View.GONE);
             h.tvName.setTextColor(has ? 0xFF42A5F5 : 0xFFFFFFFF);
             if (focusPosterListener != null) {
                 focusPosterListener.onFocusPoster(has ? m.pic : null);
@@ -157,12 +158,14 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
         ImageView ivPic;
         TextView tvName;
         TextView tvBadge;
+        View focusFrame;
 
         VH(@NonNull View v) {
             super(v);
             ivPic = v.findViewById(R.id.ivPic);
             tvName = v.findViewById(R.id.tvName);
             tvBadge = v.findViewById(R.id.tvBadge);
+            focusFrame = v.findViewById(R.id.focusFrame);
         }
     }
 }

@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  LAMPA 效果④：首页 Hero 大条目（第一屏大卡）。
+  左：大图（2:3 竖版海报 centerCrop 填满）；右：片名 + 简介 + 评分 + 播放/详情按钮。
+  整卡聚焦时白描边（复用 bg_focus_ring 思路，这里用 selector 描边）。
+  数据源：MovieStore 当前版块第一页第一条（intro/genres/ratingDouban 都在 Movie 上）。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/heroCard"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:background="@drawable/bg_hero_card"
+    android:focusable="true"
+    android:clickable="true"
+    android:descendantFocusability="blocksDescendants"
+    android:clipChildren="false"
+    android:padding="10dp">
+
+    <!-- 左侧：大尺寸海报 -->
+    <com.supermov.tv.PosterView
+        android:id="@+id/heroPoster"
+        android:layout_width="150dp"
+        android:layout_height="wrap_content"
+        android:scaleType="centerCrop"
+        android:background="@drawable/bg_movie_normal" />
+
+    <!-- 右侧：信息区 -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:layout_marginStart="14dp"
+        android:orientation="vertical"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/heroTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFFFF"
+            android:maxLines="1"
+            android:ellipsize="end" />
+
+        <TextView
+            android:id="@+id/heroMeta"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="3dp"
+            android:textSize="11sp"
+            android:textColor="#FF42A5F5" />
+
+        <TextView
+            android:id="@+id/heroIntro"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textSize="11sp"
+            android:textColor="#FFC6CBD2"
+            android:maxLines="3"
+            android:ellipsize="end" />
+
+        <!-- 评分徽章（豆瓣 / IMDb，有哪个显示哪个） -->
+        <LinearLayout
+            android:id="@+id/heroRatings"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/heroDouban"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_rating_badge"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp"
+                android:paddingTop="2dp"
+                android:paddingBottom="2dp"
+                android:textSize="9sp"
+                android:textColor="#FFF5C518"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/heroImdb"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:background="@drawable/bg_rating_badge"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp"
+                android:paddingTop="2dp"
+                android:paddingBottom="2dp"
+                android:textSize="9sp"
+                android:textColor="#FF264289"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- 按钮行：播放 / 详情（焦点高亮） -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/heroBtnPlay"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_action_play"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:paddingTop="8dp"
+                android:paddingBottom="8dp"
+                android:text="▶ 播放"
+                android:textColor="#FFFFFFFF"
+                android:textSize="11sp"
+                android:focusable="true"
+                android:clickable="true" />
+
+            <TextView
+                android:id="@+id/heroBtnDetail"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_action_transfer"
+                android:paddingStart="14dp"
+                android:paddingEnd="14dp"
+                android:paddingTop="8dp"
+                android:paddingBottom="8dp"
+                android:text="ⓘ 详情"
+                android:textColor="#FFFFFFFF"
+                android:textSize="11sp"
+                android:focusable="true"
+                android:clickable="true" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>
