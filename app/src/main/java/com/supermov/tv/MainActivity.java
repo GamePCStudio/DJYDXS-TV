@@ -501,12 +501,13 @@ public class MainActivity extends Activity {
     // 数据源：没有横版 backdrop（库里只有竖海报），用竖海报 centerCrop 铺满 ——
     // 上下会被裁掉一些，但中间区域（最显眼）完整保留，视觉等价 LAMPA 的"呼吸感"。
     //
-    // 内存保护：单独一个 LruCache（maxSize=8，约 4MB）只给背景层用，
+    // 内存保护：单独一个 LruCache（maxSize=8MB，约 4 张背景图）只给背景层用，
     // 不复用 ImageLoader 的无上限 ConcurrentHashMap（那是海报墙用的，横图会 OOM）。
+    // LruCache 在 androidx.collection（appcompat 1.6.1 传递的 androidx.core 已带进来）。
     // =========================================================================
 
-    private final androidx.lru.LruCache<String, Bitmap> backdropCache =
-            new androidx.lru.LruCache<String, Bitmap>(8 * 1024 * 1024) {
+    private final androidx.collection.LruCache<String, Bitmap> backdropCache =
+            new androidx.collection.LruCache<String, Bitmap>(8 * 1024 * 1024) {
                 @Override
                 protected int sizeOf(String key, Bitmap value) {
                     return value.getByteCount();
