@@ -98,7 +98,7 @@
 - **ID 初提是个"顺手抄"**：`IMDB_RE = imdb\.com/title/(tt\d+)`、`DOUBAN_RE = douban\.com/subject/(\d+)`。注意它**只提 ID，不解析任何其它字段**。
 - **限制级在探测之前就拦掉**：`is_restricted=1 OR is_erotic=1` 直接进 `reject(reason='restricted')`，**不做网络探测**（省请求）。本次全量排除 197 部。
 
-> ⚠️ 这里有一个**需要留意的重复语义**：同步侧新加了 `movie.imdb_id / douban_id / tmdb_id / tmdb_type` 四列，而 v2 出包库里同一份信息存在 **`movie_ext_id` 表**。两套并存，见 §8.3。
+> ⚠️ 这里有一个**需要留意的重复语义**：同步侧新加了 `movie.imdb_id / douban_id / tmdb_id / tmdb_type` 四列，而 v2 出包库里同一份信息存在 **`movie_ext_id` 表**。两套并存，见 §8.2。
 
 ---
 
