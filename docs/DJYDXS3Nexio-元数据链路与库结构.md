@@ -548,16 +548,30 @@ WHERE COALESCE(m.src_deleted,0) = 0;
 
 **为什么必须走视图**：将来运营把基表拆成三张、把字段换成 JSON，**只要视图列名不变，App 一行都不用改**。配套纪律是 App 侧**禁止 SELECT 基表**。
 
-### 4.7 索引
+### 4.7 索引（16 个，已与真实库逐条核对）
 
-```
-idx_movie_year      movie(year)          idx_extid_source  movie_ext_id(source, id)
-idx_movie_titlecn   movie(title_cn)      idx_credit_movie  movie_credit(movie_id, role)
-idx_movie_uid       movie(uid)           idx_panvideo_ren  pan_video(rename_state)
-idx_movie_pin       movie(pin_top)       + movie.pan_status / classification / fid
-                                         + pan_link(src_tid / status / url)
-                                         + pan_video(pan_link_id / src_tid / rename_state)
-```
+| 表 | 索引 | 列 |
+|---|---|---|
+| `movie` | `idx_movie_year` | `year` |
+| | `idx_movie_titlecn` | `title_cn` |
+| | `idx_movie_uid` | `uid` |
+| | `idx_movie_pin` | `pin_top` ← 三期新增 |
+| | `idx_movie_fid` | `fid` |
+| | `idx_movie_class` | `classification` |
+| | `idx_movie_status` | `pan_status` |
+| `movie_ext_id` | `idx_extid_source` | `source, id` |
+| `movie_credit` | `idx_credit_movie` | `movie_id, role` |
+| `pan_link` | `idx_panlink_tid` | `src_tid` |
+| | `idx_panlink_status` | `status` |
+| | `idx_panlink_url` | `url` |
+| `pan_video` | `idx_panvideo_link` | `pan_link_id` |
+| | `idx_panvideo_tid` | `src_tid` |
+| | `idx_panvideo_ren` | `rename_state` |
+| `reject` | `idx_reject_reason` | `reason` |
+
+`idx_movie_pin` 是**两条升级路径 DDL 一致性**的一个实例：`db_upgrade_v2.py`（在线升级）建了它，
+而 `db_manual_entries.py`（离线出库）一开始漏了 —— 已补 `ensure_indexes()` 第 3b 步，
+并在两个脚本各加断言（详见三期文档 §5）。
 
 ---
 
