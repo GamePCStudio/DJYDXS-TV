@@ -65,8 +65,6 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'androidx.recyclerview:recyclerview:1.3.2'
     implementation 'com.google.code.gson:gson:2.10.1'
-    // LAMPA 效果①全屏背景层用：LRU 上限（只给背景图，不复用 ImageLoader 的无上限缓存）
-    implementation 'androidx.lru:lru:1.0.0'
 
     // ---- 在线播放：NEXIO media3 fork（源码 composite build，基线 1.10.0）----
     // 坐标名一个字没改，但 settings.gradle 里的 dependencySubstitution 会把它们
