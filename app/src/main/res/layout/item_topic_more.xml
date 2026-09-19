@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  专题行末尾的「更多」卡。
+
+  高度写死 176dp，是为了和 item_topic_card 算出来的高度对齐
+  （4 上内边距 + 4 外边距 + 144 海报 [96dp 宽 × 1.5] + 2 间距 + ≈14 片名 + 4 下内边距 + 4 下外边距）。
+  横向 RV 用 wrap_content 高度时，若让这一项 match_parent，测量期父高度还没定，
+  会被压成 0 —— 所以宁可写死一个贴近值。
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="112dp"
+    android:layout_height="176dp"
+    android:layout_gravity="center_vertical"
+    android:clipChildren="false"
+    android:focusable="true"
+    android:clickable="true"
+    android:descendantFocusability="blocksDescendants">
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_margin="4dp"
+        android:background="@drawable/bg_more_card">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:gravity="center">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="＋"
+                android:textColor="#FFFFFFFF"
+                android:textSize="22sp" />
+
+            <TextView
+                android:id="@+id/moreLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="更多"
+                android:textColor="#FFC6CBD2"
+                android:textSize="11sp" />
+        </LinearLayout>
+    </FrameLayout>
+</FrameLayout>

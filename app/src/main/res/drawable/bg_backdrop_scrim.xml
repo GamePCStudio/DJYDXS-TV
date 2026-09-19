@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  全屏背景图之上的压暗层（SAM-CINEMA 的 bg_mask 等价物）。
+
+  三层叠加，各管一段可读性：
+    ① 整屏 55% 压暗：专题行的片名、Hero 的小字压在任何画面上都读得出来；
+    ② 左→右渐隐：大标题那一侧再压厚一点，白字不会糊在亮部上；
+    ③ 上→下渐隐：底部收黑，最后一行专题自然沉入页脚，不会「突然被切掉」。
+
+  角度约定（GradientDrawable 的 angle）：0 = 左→右，90 = 下→上。
+  所以第 ③ 层要「上透下黑」，startColor（下端）才是黑。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- ① 整屏压暗 -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#8C0B0D0F" />
+        </shape>
+    </item>
+
+    <!-- ② 左侧加重（Hero 文字侧） -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="0"
+                android:startColor="#B3000000"
+                android:endColor="#00000000"
+                android:type="linear" />
+        </shape>
+    </item>
+
+    <!-- ③ 底部收黑 -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="90"
+                android:startColor="#CC0B0D0F"
+                android:endColor="#00000000"
+                android:type="linear" />
+        </shape>
+    </item>
+</layer-list>

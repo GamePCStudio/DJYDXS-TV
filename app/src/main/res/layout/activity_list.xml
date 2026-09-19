@@ -1,84 +1,148 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!--
+  首页。两种形态共用一套布局，靠 listPane / rvHome 的显隐切换：
+
+    A. 专题墙（默认）—— 背景层 + Hero 文字面板 + 多条横向专题行（SAM-CINEMA 形态）
+    B. 列表页        —— 原来的「分类 + 过滤器 + 7 列海报网格」
+                        （搜索、点版块、点行尾「更多」时进入）
+
+  B 形态一行没改：原来的四件套（rvFilters / rvMovies / emptyView）整体搬进 listPane，
+  连同分页、焦点兜底、返回栈全部复用，风险面最小。
+
+  背景层两张 ImageView 是刻意的：交叉淡入需要「新图在旧图下面，把旧图淡出」——
+  用一张图做 alpha 0→1 会先闪一下底色，两张图叠着就没有这个中间态。
+  bgBackdropB 在 bgBackdropA 之上，切换时总是改「当前在后面那张」，再淡出前面那张。
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:clipChildren="false"
-    android:padding="8dp">
+    android:background="#FF0B0D0F"
+    android:clipChildren="false">
 
-    <!-- 分类行 + 搜索按钮：分类横向滚动，搜索按钮在“设置”后面 -->
+    <ImageView
+        android:id="@+id/bgBackdropA"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="centerCrop" />
+
+    <ImageView
+        android:id="@+id/bgBackdropB"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="centerCrop" />
+
+    <!-- 压暗层：让背景「永远呼吸但内容永远可读」 -->
+    <View
+        android:id="@+id/bgScrim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/bg_backdrop_scrim" />
+
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
         android:clipChildren="false"
-        android:gravity="center_vertical">
+        android:padding="8dp">
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/recyclerView"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:clipChildren="false"
-            android:clipToPadding="false" />
-
-        <TextView
-            android:id="@+id/btnSearch"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:background="@drawable/bg_search_btn"
-            android:paddingStart="12dp"
-            android:paddingEnd="12dp"
-            android:paddingTop="7dp"
-            android:paddingBottom="7dp"
-            android:text="🔍 搜索"
-            android:textColor="#FFFFFFFF"
-            android:textSize="10.5sp"
-            android:textStyle="bold"
-            android:focusable="true"
-            android:clickable="true" />
-    </LinearLayout>
-
-    <View
-        android:layout_width="match_parent"
-        android:layout_height="1dp"
-        android:layout_marginTop="6dp"
-        android:background="#FF2A3038" />
-
-    <!-- 过滤器行：各版块的主题分类（每版块不同，搜索模式隐藏） -->
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/rvFilters"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:clipChildren="false"
-        android:clipToPadding="false" />
-
-    <!-- 影片区：列表 + 居中空态提示 -->
-    <FrameLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:layout_marginTop="6dp"
-        android:clipChildren="false">
-
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/rvMovies"
+        <!-- 顶栏：分类横向滚动 + 搜索按钮 -->
+        <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:clipChildren="false"
-            android:clipToPadding="false" />
-
-        <TextView
-            android:id="@+id/emptyView"
-            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:text="加载中…"
-            android:textColor="#FF9AA0A6"
-            android:textSize="13sp"
-            android:focusable="true"
-            android:visibility="gone" />
-    </FrameLayout>
-</LinearLayout>
+            android:orientation="horizontal"
+            android:clipChildren="false"
+            android:gravity="center_vertical">
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/recyclerView"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:clipChildren="false"
+                android:clipToPadding="false" />
+
+            <TextView
+                android:id="@+id/btnSearch"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_search_btn"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:paddingTop="7dp"
+                android:paddingBottom="7dp"
+                android:text="🔍 搜索"
+                android:textColor="#FFFFFFFF"
+                android:textSize="10.5sp"
+                android:textStyle="bold"
+                android:focusable="true"
+                android:clickable="true" />
+        </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="6dp"
+            android:background="#FF2A3038" />
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:layout_marginTop="6dp"
+            android:clipChildren="false">
+
+            <!-- A. 专题墙：第 0 项是 Hero 面板，其后每项一条专题行 -->
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/rvHome"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:descendantFocusability="afterDescendants" />
+
+            <!-- B. 列表页（搜索 / 版块 / 行尾「更多」进入），默认隐藏 -->
+            <LinearLayout
+                android:id="@+id/listPane"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:orientation="vertical"
+                android:clipChildren="false"
+                android:visibility="gone">
+
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/rvFilters"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:clipChildren="false"
+                    android:clipToPadding="false" />
+
+                <FrameLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:layout_marginTop="6dp"
+                    android:clipChildren="false">
+
+                    <androidx.recyclerview.widget.RecyclerView
+                        android:id="@+id/rvMovies"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:clipChildren="false"
+                        android:clipToPadding="false" />
+
+                    <TextView
+                        android:id="@+id/emptyView"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="center"
+                        android:text="加载中…"
+                        android:textColor="#FF9AA0A6"
+                        android:textSize="13sp"
+                        android:focusable="true"
+                        android:visibility="gone" />
+                </FrameLayout>
+            </LinearLayout>
+        </FrameLayout>
+    </LinearLayout>
+</FrameLayout>

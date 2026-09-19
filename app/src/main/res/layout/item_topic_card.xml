@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  专题行里的一张海报卡（SAM-CINEMA 的 item_vod2）。
+  与 item_movie 结构完全一致，只差宽度固定成 112dp —— 横向行里 layout_width 不能是 match_parent。
+
+  宽度与焦点的两条约束（详见 docs 里的 UI 研究报告 §3.3）：
+    · 根布局自己声明 focusable + clickable：API 26 之前没有 FOCUSABLE_AUTO，
+      只把监听器挂在容器上，7.1.2 这类机器上条目拿不到焦点；
+    · descendantFocusability="blocksDescendants"：内部 TextView 一个都不聚焦，
+      否则方向键会在「海报 → 片名」之间乱跳。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="112dp"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="4dp"
+    android:clipChildren="false"
+    android:focusable="true"
+    android:clickable="true"
+    android:descendantFocusability="blocksDescendants">
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_margin="4dp">
+
+        <com.supermov.tv.PosterView
+            android:id="@+id/ivPic"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:scaleType="centerCrop"
+            android:background="@drawable/bg_movie_normal" />
+
+        <!-- 图片内底部：年份 · 片长（渐变底衬） -->
+        <TextView
+            android:id="@+id/tvBadge"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:background="@drawable/bg_poster_badge"
+            android:paddingStart="5dp"
+            android:paddingEnd="5dp"
+            android:paddingTop="10dp"
+            android:paddingBottom="3dp"
+            android:textColor="#FFEEEEEE"
+            android:textSize="8sp"
+            android:maxLines="1"
+            android:ellipsize="end" />
+    </FrameLayout>
+
+    <TextView
+        android:id="@+id/tvName"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:layout_marginStart="4dp"
+        android:layout_marginEnd="4dp"
+        android:textColor="#FFFFFFFF"
+        android:textSize="10sp"
+        android:maxLines="1"
+        android:ellipsize="end" />
+</LinearLayout>

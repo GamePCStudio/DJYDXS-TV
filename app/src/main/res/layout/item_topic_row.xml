@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  一条专题行 = 行标题（左）+ 「更多 ›」（右）+ 横向海报行（下）。
+
+  clipChildren="false" 必须从这一层一路声明到横向 RV，否则聚焦放大的海报会被裁掉
+  （这是本项目踩过很多次的坑，见 UI 研究报告 §3.3 第 4 条）。
+
+  RecyclerView 的朝向在代码里设（LinearLayoutManager.HORIZONTAL）——
+  XML 上的 android:orientation 对 RecyclerView 不起作用（那是给 LinearLayout 的），
+  留着容易误导，所以这里不写。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:clipChildren="false"
+    android:paddingTop="2dp"
+    android:paddingBottom="2dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:clipChildren="false"
+        android:gravity="center_vertical"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp">
+
+        <TextView
+            android:id="@+id/topicTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textColor="#FFE8EBEF"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:maxLines="1"
+            android:ellipsize="end" />
+
+        <TextView
+            android:id="@+id/topicMore"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/bg_topic_more"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp"
+            android:text="更多 ›"
+            android:textColor="#FFFFFFFF"
+            android:textSize="10.5sp"
+            android:focusable="true"
+            android:clickable="true" />
+    </LinearLayout>
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rvTopicRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
+        android:descendantFocusability="afterDescendants" />
+</LinearLayout>

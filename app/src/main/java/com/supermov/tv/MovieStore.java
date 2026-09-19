@@ -157,6 +157,14 @@ public final class MovieStore {
         public String year = "";
         /** 上映日期 年-月-日，可能为空。 */
         public String releaseDate = "";
+        /**
+         * 片长（分钟），0 = 未知。
+         *
+         * <p>{@link #remarks} 里虽然也含片长，但那是「年 · 分钟 · N集」拼好的一整串，
+         * Hero 信息行要的是「地区 / 年份 / 类型 / 片长」这种逐项可控的形态，
+         * 拼串拆不出来，所以单列一个字段。</p>
+         */
+        public int runtimeMin;
         public String genres = "";
         public String region = "";
         public double ratingDouban;
@@ -389,9 +397,23 @@ public final class MovieStore {
         return out;
     }
 
-    /** 把一个 WHERE 条件 + 分页统一执行掉。 */
+    /** 把一个 WHERE 条件 + 分页统一执行掉（列表列集合 + 默认排序）。 */
     private static void queryPage(Paged<List<Movie>> out, String where,
                                   List<String> args, int page) {
+        queryPage(out, where, args, page, false, orderBy());
+    }
+
+    /**
+     * 同上，但可指定「列集合」与「排序」。
+     *
+     * @param withSynopsis 是否多取一列 synopsis（专题行要拿它填 Hero 简介），
+     *                     同时改用 {@link #readTopicRow} 读行 —— 列与读法必须成对，
+     *                     否则下标错位会读出「看起来像数据、其实是另一列」的静默脏值
+     * @param order        完整 ORDER BY 子句（调用方给，不再内部拼 {@link #orderBy()}）
+     */
+    private static void queryPage(Paged<List<Movie>> out, String where,
+                                  List<String> args, int page,
+                                  boolean withSynopsis, String order) {
         SQLiteDatabase q = database();
         if (q == null) {
             out.pageCount = 1;
@@ -413,9 +435,12 @@ public final class MovieStore {
             List<String> a2 = new ArrayList<>(args);
             a2.add(String.valueOf(PAGE_SIZE));
             a2.add(String.valueOf((p - 1) * PAGE_SIZE));
-            c = q.rawQuery("SELECT " + LIST_COLS + " FROM v_movie_app WHERE " + where
-                    + " ORDER BY " + orderBy() + " LIMIT ? OFFSET ?", toArray(a2));
-            while (c.moveToNext()) out.data.add(readListRow(c));
+            c = q.rawQuery("SELECT " + (withSynopsis ? DETAIL_COLS : LIST_COLS)
+                    + " FROM v_movie_app WHERE " + where
+                    + " ORDER BY " + order + " LIMIT ? OFFSET ?", toArray(a2));
+            while (c.moveToNext()) {
+                out.data.add(withSynopsis ? readTopicRow(c) : readListRow(c));
+            }
         } catch (Throwable e) {
             Log.d(TAG, "queryPage 查询失败: " + e);
         } finally {
@@ -502,6 +527,7 @@ public final class MovieStore {
         m.altNames = str(c, 6);
         m.year = str(c, 7);
         m.releaseDate = str(c, 8);
+        m.runtimeMin = (int) lng(c, 9);
         m.region = str(c, 10);
         m.genres = str(c, 11);
         m.ratingDouban = dbl(c, 12);
@@ -513,7 +539,7 @@ public final class MovieStore {
         m.panPwd = str(c, 18);
         m.videoCount = (int) lng(c, 19);
         m.totalSize = lng(c, 20);
-        m.remarks = buildRemarks(m.year, (int) lng(c, 9), m.videoCount);
+        m.remarks = buildRemarks(m.year, m.runtimeMin, m.videoCount);
         if (m.name.isEmpty()) m.name = m.nameEn;
         return m;
     }
@@ -521,6 +547,239 @@ public final class MovieStore {
     /** fid 是数据侧的真实版块号；fid<=0 视为不过滤（兜底）。 */
     private static String fidWhere(int fid) {
         return fid <= 0 ? "1=1" : "fid=" + fid;
+    }
+
+    // ==================================================================
+    // 专题行（SAM-CINEMA 式「背景 + Hero + 多条横向海报行」的数据源）
+    // ==================================================================
+
+    /**
+     * 一条专题行 = 一个维度 + 一串影片。
+     *
+     * <p>专题<b>不是</b>数据库里的表，而是用 SQL 在现有字段上<b>合成</b>出来的：
+     * 库里没有 topic 表，但版块（fid）、题材（genres JSON）、评分（rating_douban）、
+     * 上映日期（release_date）四样原料全都在 {@code v_movie_app} 里现成，
+     * 所以零表结构变更、零数据侧改动就能拼出 16 行。</p>
+     */
+    public static class Topic {
+        /** 行标题（界面上那行小字）。 */
+        public final String title;
+        /** 维度：{@code "fid"} 版块 ｜ {@code "genre"} 题材 ｜ {@code "top"} 豆瓣高分 ｜ {@code "new"} 最新上架。 */
+        public final String kind;
+        /** kind="fid" 时的版块号，其余为 0。 */
+        public final int fid;
+        /** kind="genre" 时的题材名，其余为空串。 */
+        public final String genre;
+        /** 首页展示的影片（最多 {@link #TOPIC_ROWSIZE} 条）。 */
+        public final List<Movie> movies = new ArrayList<>();
+
+        Topic(String title, String kind, int fid, String genre) {
+            this.title = title;
+            this.kind = kind;
+            this.fid = fid;
+            this.genre = genre == null ? "" : genre;
+        }
+    }
+
+    /** 专题行每行取多少条：横向滚两三屏的量，「更多」再展开全部。 */
+    public static final int TOPIC_ROWSIZE = 20;
+
+    /**
+     * 题材行只收「至少这么多部片子」的题材。
+     *
+     * <p>库里题材长尾很长（30 个标签），频次 &lt; 5 的（歌舞 4、西部 4、家庭 3、短片 2、
+     * 甚至数据侧误填的「测试」「杜比」「DTS」各 1 条）单独成行会变成一条只有一两张海报的
+     * 空横条，观感比没有还差。</p>
+     */
+    private static final int GENRE_MIN_COUNT = 5;
+
+    /** 题材行最多出几行。10 行 × 20 张 + 4 版块行 + 2 个榜单行 = 16 行专题墙。 */
+    private static final int GENRE_MAX_ROWS = 10;
+
+    /**
+     * 首页专题墙的全部行。
+     *
+     * <p>行序即界面顺序，刻意这样排：<b>版块行在前</b>（对应原来顶部的四个分类，
+     * 用户最熟悉）、<b>题材行居中</b>（探索性浏览）、<b>榜单行收尾</b>
+     * （豆瓣高分 / 最新上架，天然的「到底了」信号）。</p>
+     *
+     * <p>空行不出：某个版块 0 部、或某个题材全部片子都落在白名单之外时直接跳过，
+     * 免得首页出现一条什么都没的横条。整段包在 try/catch 里 —— 任何一行查失败
+     * 都只影响那一行，不会让首页整体空白。</p>
+     */
+    public static List<Topic> topics() {
+        List<Topic> out = new ArrayList<>();
+        SQLiteDatabase q = database();
+        if (q == null) return out;
+        long t0 = System.currentTimeMillis();
+        try {
+            // ① 版块行：白名单四个栏目各一行（表头行顺序 = CAT_FIDS 顺序）
+            Map<Integer, Integer> counts = new HashMap<>();
+            Cursor c = null;
+            try {
+                c = q.rawQuery("SELECT fid, COUNT(*) FROM v_movie_app WHERE " + whitelistWhere()
+                        + " GROUP BY fid", null);
+                while (c.moveToNext()) counts.put((int) lng(c, 0), (int) lng(c, 1));
+            } catch (Throwable e) {
+                Log.d(TAG, "topics 版块计数失败: " + e);
+            } finally {
+                if (c != null) c.close();
+            }
+            for (int i = 0; i < CAT_FIDS.length; i++) {
+                Integer n = counts.get(CAT_FIDS[i]);
+                if (n == null || n == 0) {
+                    Log.d(TAG, "专题行跳过空版块 " + CAT_NAMES[i] + " fid=" + CAT_FIDS[i]);
+                    continue;
+                }
+                Topic t = new Topic(CAT_NAMES[i], "fid", CAT_FIDS[i], "");
+                queryTopic(t);
+                if (!t.movies.isEmpty()) out.add(t);
+            }
+
+            // ② 题材行：白名单内出现频次最高的若干题材
+            for (String g : topGenres(GENRE_MIN_COUNT, GENRE_MAX_ROWS)) {
+                Topic t = new Topic(g, "genre", 0, g);
+                queryTopic(t);
+                if (!t.movies.isEmpty()) out.add(t);
+            }
+
+            // ③ 豆瓣高分（实测 208/321 部有分）
+            Topic top = new Topic("豆瓣高分", "top", 0, "");
+            queryTopic(top);
+            if (!top.movies.isEmpty()) out.add(top);
+
+            // ④ 最新上架（实测 316/321 部有上映日期）
+            Topic fresh = new Topic("最新上架", "new", 0, "");
+            queryTopic(fresh);
+            if (!fresh.movies.isEmpty()) out.add(fresh);
+        } catch (Throwable e) {
+            Log.d(TAG, "topics 构建失败: " + e);
+        }
+        Log.d(TAG, "专题墙 " + out.size() + " 行，用时 " + (System.currentTimeMillis() - t0) + "ms");
+        return out;
+    }
+
+    /**
+     * 界面只显示 {@link #CAT_FIDS} 这四个版块，专题行也只在它们里面取材。
+     *
+     * <p>库里 327 部有 6 部不属于任何白名单版块，若专题行不设这个边界，
+     * 会出现「首页看到一部片子，但四个栏目里都找不到它」的诡异体验。</p>
+     */
+    private static String whitelistWhere() {
+        StringBuilder sb = new StringBuilder("fid IN (");
+        for (int i = 0; i < CAT_FIDS.length; i++) {
+            if (i > 0) sb.append(',');
+            sb.append(CAT_FIDS[i]);
+        }
+        return sb.append(')').toString();
+    }
+
+    /** 白名单内出现频次最高的题材名（取前 max 个，且频次不低于 minCount）。 */
+    private static List<String> topGenres(int minCount, int max) {
+        List<String> out = new ArrayList<>();
+        Map<String, Integer> freq = new LinkedHashMap<>();
+        SQLiteDatabase q = database();
+        if (q == null) return out;
+        Cursor c = null;
+        try {
+            c = q.rawQuery("SELECT genres FROM v_movie_app WHERE " + whitelistWhere()
+                    + " AND genres IS NOT NULL AND genres != ''", null);
+            while (c.moveToNext()) {
+                for (String tag : parseTags(c.getString(0))) {
+                    Integer n = freq.get(tag);
+                    freq.put(tag, n == null ? 1 : n + 1);
+                }
+            }
+        } catch (Throwable e) {
+            Log.d(TAG, "topGenres 统计失败: " + e);
+        } finally {
+            if (c != null) c.close();
+        }
+        List<Map.Entry<String, Integer>> es = new ArrayList<>(freq.entrySet());
+        Collections.sort(es, (a, b) -> b.getValue() - a.getValue());
+        for (Map.Entry<String, Integer> e : es) {
+            if (out.size() >= max) break;
+            if (e.getValue() < minCount) continue;
+            out.add(e.getKey());
+        }
+        Log.d(TAG, "题材行取到 " + out.size() + " 个（门槛 ≥" + minCount + " 部）: " + out);
+        return out;
+    }
+
+    /** 把专题的维度翻译成 WHERE 条件（+ 绑定参数）。 */
+    private static void topicFilter(Topic t, StringBuilder where, List<String> args) {
+        if ("fid".equals(t.kind)) {
+            // 版块行直接锁 fid，不再叠白名单（fid 本身就在白名单里）
+            where.append("fid=").append(t.fid);
+            return;
+        }
+        where.append(whitelistWhere());
+        if ("genre".equals(t.kind)) {
+            // genres 是 JSON 数组字符串，用 "题材名" 带引号匹配，避免「动作」命中「动作片」这类前缀包含
+            where.append(" AND genres LIKE ?");
+            args.add("%\"" + t.genre + "\"%");
+        } else if ("top".equals(t.kind)) {
+            where.append(" AND rating_douban > 0");
+        } else {
+            where.append(" AND release_date IS NOT NULL AND release_date != ''");
+        }
+    }
+
+    /** 专题的 ORDER BY。 */
+    private static String topicOrder(Topic t) {
+        if ("top".equals(t.kind)) {
+            return "rating_douban DESC, rating_imdb DESC, "
+                    + "COALESCE(release_date,'') DESC, src_tid DESC";
+        }
+        if ("new".equals(t.kind)) {
+            return "COALESCE(release_date,'') DESC, COALESCE(year,0) DESC, src_tid DESC";
+        }
+        // 版块行 / 题材行沿用版块列表的排序：置顶优先，然后上映日期倒序
+        return orderBy();
+    }
+
+    /** 专题行条目 = 列表行 + synopsis（Hero 简介要用），所以列集合与读法都和列表不同。 */
+    private static Movie readTopicRow(Cursor c) {
+        Movie m = readListRow(c);
+        m.intro = str(c, IDX_SYNOPSIS);
+        return m;
+    }
+
+    /** 填一行的首页内容（取 {@link #TOPIC_ROWSIZE} 条，不分页）。 */
+    private static void queryTopic(Topic t) {
+        SQLiteDatabase q = database();
+        if (q == null) return;
+        StringBuilder where = new StringBuilder();
+        List<String> args = new ArrayList<>();
+        topicFilter(t, where, args);
+        args.add(String.valueOf(TOPIC_ROWSIZE));
+        Cursor c = null;
+        try {
+            c = q.rawQuery("SELECT " + DETAIL_COLS + " FROM v_movie_app WHERE " + where
+                    + " ORDER BY " + topicOrder(t) + " LIMIT ?", toArray(args));
+            while (c.moveToNext()) t.movies.add(readTopicRow(c));
+        } catch (Throwable e) {
+            Log.d(TAG, "专题行[" + t.title + "] 查询失败: " + e);
+        } finally {
+            if (c != null) c.close();
+        }
+    }
+
+    /**
+     * 行尾「更多」进去的那个列表页（分页取该行全部影片）。
+     *
+     * <p>复刻 SAM-CINEMA 的 {@code ItemVodMore}：行内只放 20 条，
+     * 想看完整个题材（剧情有 170 部）得靠这里。</p>
+     */
+    public static Paged<List<Movie>> topicPage(Topic t, int page) {
+        Paged<List<Movie>> out = new Paged<>();
+        out.data = new ArrayList<>();
+        if (t == null) return out;
+        StringBuilder where = new StringBuilder();
+        List<String> args = new ArrayList<>();
+        topicFilter(t, where, args);
+        queryPage(out, where.toString(), args, page, true, topicOrder(t));
+        return out;
     }
 
     // ==================================================================
@@ -576,12 +835,24 @@ public final class MovieStore {
         return d;
     }
 
+    /**
+     * synopsis 追加在 {@link #LIST_COLS} 之后，下标固定 = 21。
+     *
+     * <p>{@code LIST_COLS} 有 21 列（下标 0..20），追加的 synopsis 落在 21。</p>
+     *
+     * <p>⚠️ <b>顺手修掉的一处既有缺陷</b>：这里原先写的是 {@code str(c, 19)}，
+     * 而 19 是 {@code video_count} —— 于是详情页的「简介」区一直显示的是一个数字
+     * （该片的文件数），真正的剧情简介从没露过面。详情查询和专题行查询共用这个下标，
+     * 所以抽成常量，避免以后 {@code LIST_COLS} 再变长时又一次错位。</p>
+     */
+    private static final int IDX_SYNOPSIS = 21;
+
     /** 详情比列表多取一列：简介正文。 */
     private static final String DETAIL_COLS = LIST_COLS + ",synopsis";
 
     private static Movie readDetailRow(Cursor c) {
         Movie m = readListRow(c);
-        m.intro = str(c, 19);
+        m.intro = str(c, IDX_SYNOPSIS);
         return m;
     }
 

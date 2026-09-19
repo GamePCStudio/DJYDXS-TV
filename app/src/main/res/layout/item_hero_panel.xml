@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Hero 文字面板（SAM-CINEMA page_home 的 chipVod 收起态）。
+
+  SAM 的原版是「大标题 + 推荐角标 + 信息行 + 豆瓣分 + 简介」直接压在背景图上，
+  这里按本项目的字段能力对齐：
+    · 大标题     ← Movie.name（100% 覆盖），可聚焦可点击 → 进详情
+    · 豆瓣徽章   ← rating_douban（实测 208/321 = 65%，没有就整块隐藏）
+    · 信息行     ← 地区 / 年份 / 类型 / 片长（复刻 SAM 的 get_class_row()）
+    · 简介       ← synopsis（实测只有 95/321 = 30%，有则显示、无则收起，靠 View.GONE 让高度自适应）
+    · 播放 / 详情 ← 都进详情页（在线播放入口在详情页里，首页不直接起播）
+
+  面板整体 descendantFocusability="blocksDescendants"：焦点只在「大标题」和两个按钮上停，
+  中间的信息行/简介不可聚焦 —— 否则遥控器要在 Hero 里按三下才能出去。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/heroPanel"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:clipChildren="false"
+    android:paddingStart="12dp"
+    android:paddingEnd="12dp"
+    android:paddingTop="16dp"
+    android:paddingBottom="10dp"
+    android:descendantFocusability="blocksDescendants">
+
+    <TextView
+        android:id="@+id/heroTitleBig"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_hero_title"
+        android:paddingStart="6dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="2dp"
+        android:paddingBottom="2dp"
+        android:textColor="#FFFFFFFF"
+        android:textSize="26sp"
+        android:textStyle="bold"
+        android:maxLines="2"
+        android:ellipsize="end"
+        android:focusable="true"
+        android:clickable="true" />
+
+    <!-- 信息行：豆瓣徽章（可缺）+ 地区/年份/类型/片长 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:orientation="horizontal"
+        android:clipChildren="false"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/heroRating"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="8dp"
+            android:background="@drawable/bg_hero_badge"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp"
+            android:textColor="#FFF5C518"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/heroMeta"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textColor="#FFD7DCE3"
+            android:textSize="11.5sp"
+            android:maxLines="2"
+            android:ellipsize="end" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/heroIntro"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:textColor="#FFB9C0C9"
+        android:textSize="12sp"
+        android:maxLines="3"
+        android:ellipsize="end"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:orientation="horizontal"
+        android:clipChildren="false">
+
+        <TextView
+            android:id="@+id/heroBtnPlay"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_action_play"
+            android:paddingStart="18dp"
+            android:paddingEnd="18dp"
+            android:paddingTop="9dp"
+            android:paddingBottom="9dp"
+            android:text="▶ 播放"
+            android:textColor="#FFFFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:focusable="true"
+            android:clickable="true" />
+
+        <TextView
+            android:id="@+id/heroBtnDetail"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:background="@drawable/bg_action_transfer"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="9dp"
+            android:paddingBottom="9dp"
+            android:text="ⓘ 详情"
+            android:textColor="#FFFFFFFF"
+            android:textSize="12sp"
+            android:focusable="true"
+            android:clickable="true" />
+    </LinearLayout>
+</LinearLayout>

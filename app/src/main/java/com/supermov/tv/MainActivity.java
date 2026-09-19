@@ -5,13 +5,16 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.KeyEvent;
 import android.view.View;
 import android.widget.EditText;
-import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -26,18 +29,44 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * 首页：顶部标题+搜索按钮，分类一行横滚（胶囊样式），下方影片列表，无限翻页。
+ * 首页，两种形态：
+ *
+ * <ul>
+ *   <li><b>专题墙</b>（默认）—— 全屏横版背景层 + Hero 文字面板 + 多条横向专题行，
+ *       即 SAM-CINEMA {@code page_home} 的形态；</li>
+ *   <li><b>列表页</b>—— 原来的「分类 + 过滤器 + 7 列海报网格」。
+ *       搜索、点版块、点行尾「更多」时进入。这部分逻辑一行没动，
+ *       连同分页、空态兜底、返回栈全部复用。</li>
+ * </ul>
+ *
+ * <h3>焦点即预览</h3>
+ * 焦点落在任意一张海报上，Hero 的文字与全屏背景就换成那部片子（300ms 防抖）。
+ * 背景图优先用真正的 16:9 横图（{@link BackdropMap}），取不到才回落到竖海报居中裁剪。
  */
 public class MainActivity extends Activity {
 
     private final ExecutorService pool = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
+    /** 只给「焦点防抖」用，和 {@link #main} 分开：上面那个还跑着列表加载的 post，别互相踩。 */
+    private final Handler heroDebounce = new Handler(Looper.getMainLooper());
 
     private RecyclerView rvCats;
     private RecyclerView rvFilters;
     private RecyclerView rvList;
+    private LinearLayout listPane;
     private TextView btnSearch;
     private TextView tvEmpty;
+
+    /** 专题墙（竖向 RV，第 0 项是 Hero 面板）。 */
+    private RecyclerView rvHome;
+    private HomeAdapter homeAdapter;
+
+    /** 全屏背景层两张图：交叉淡入用「新图放后面、把前面那张淡出」。 */
+    private ImageView bgA, bgB;
+    /** 当前可见的是不是 bgA。初始 false —— 第一次换图会落在 bgA 上并把它设为可见。 */
+    private boolean bgTopIsA = false;
+    private String bgCurrentUrl = "";
+    private int bgGen = 0;
 
     private OptionAdapter catAdapter;
     private OptionAdapter filterAdapter;
@@ -56,15 +85,45 @@ public class MainActivity extends Activity {
     private int currentTypeid = 0;      // 版块内主题分类过滤（0=全部）
     private int currentFilterIndex = 0; // 选中的过滤器下标
 
-    /** 导航历史：搜索/切分类/切过滤器前压栈，返回键弹栈回到上一个页面状态。 */
+    /** true = 当前显示列表页；false = 显示专题墙。 */
+    private boolean listMode = false;
+    /** 列表页的数据来源：非 null 表示「从某条专题行的『更多』进来」，此时不用 fid/搜索。 */
+    private MovieStore.Topic listTopic;
+    /** 列表页空态提示里显示的名字。 */
+    private String listTitle = "";
+
+    /** 焦点停下后要切到的那部片子（配合 {@link #HERO_DEBOUNCE_MS} 防抖）。 */
+    private MovieStore.Movie pendingHero;
+    /** 首次进专题墙时把焦点落到大标题上一次，之后不再抢焦点。 */
+    private boolean firstHomeFocusDone = false;
+
+    /** 遥控器连按方向键时只对「停下来那一张」重渲染 Hero。SAM-CINEMA 原版用 500ms，这里取 300ms。 */
+    private static final int HERO_DEBOUNCE_MS = 300;
+
+    /** 导航历史：搜索/切分类/切过滤器/进专题列表前压栈，返回键弹栈回到上一个页面状态。 */
     private static class ViewState {
-        final String kw; final int fid; final int typeid;
-        ViewState(String kw, int fid, int typeid) { this.kw = kw; this.fid = fid; this.typeid = typeid; }
+        final String kw;
+        final int fid;
+        final int typeid;
+        final MovieStore.Topic topic;
+        final String title;
+        final boolean list;
+
+        ViewState(String kw, int fid, int typeid, MovieStore.Topic topic, String title, boolean list) {
+            this.kw = kw;
+            this.fid = fid;
+            this.typeid = typeid;
+            this.topic = topic;
+            this.title = title;
+            this.list = list;
+        }
     }
+
     private final java.util.ArrayDeque<ViewState> navHistory = new java.util.ArrayDeque<>();
 
     private void pushHistory() {
-        navHistory.addLast(new ViewState(searchKeyword, currentFid, currentTypeid));
+        navHistory.addLast(new ViewState(searchKeyword, currentFid, currentTypeid,
+                listTopic, listTitle, listMode));
         while (navHistory.size() > 30) navHistory.pollFirst();
     }
 
@@ -74,6 +133,7 @@ public class MainActivity extends Activity {
         CookieStore.init(this);
         Settings.init(this);
         MovieStore.init(this); // 打开 SuperMOV.db（内嵌 / 已在线更新）—— 全部内容都来自这里
+        BackdropMap.init(this); // 载入 assets/backdrops.json（TMDB id → 横版背景图，8.7KB）
         setContentView(R.layout.activity_list);
 
         btnSearch = findViewById(R.id.btnSearch);
@@ -81,6 +141,10 @@ public class MainActivity extends Activity {
         rvCats = findViewById(R.id.recyclerView);
         rvFilters = findViewById(R.id.rvFilters);
         rvList = findViewById(R.id.rvMovies);
+        listPane = findViewById(R.id.listPane);
+        rvHome = findViewById(R.id.rvHome);
+        bgA = findViewById(R.id.bgBackdropA);
+        bgB = findViewById(R.id.bgBackdropB);
 
         // 分类行
         rvCats.setLayoutManager(new LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false));
@@ -100,6 +164,9 @@ public class MainActivity extends Activity {
                 startActivity(new Intent(this, DownloadActivity.class));
             } else if (pos >= 0 && pos < catCount) {
                 pushHistory(); // 返回键可回到上一个版块
+                showListPane();
+                listTopic = null;
+                listTitle = "";
                 searchKeyword = "";
                 currentFid = MovieStore.categories().get(pos).fid;
                 currentTypeid = 0;
@@ -112,7 +179,7 @@ public class MainActivity extends Activity {
         rvCats.setAdapter(catAdapter);
         markCat(0);
 
-        // 过滤器行（各版块主题分类，搜索模式隐藏）
+        // 过滤器行（各版块主题分类，搜索模式与专题列表隐藏）
         rvFilters.setLayoutManager(new LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false));
         filterAdapter = new OptionAdapter();
         filterAdapter.setOnClick((o, pos) -> {
@@ -154,6 +221,13 @@ public class MainActivity extends Activity {
             }
         });
 
+        // 专题墙：第 0 项 Hero 面板，其后每条一项专题行
+        rvHome.setLayoutManager(new LinearLayoutManager(this));
+        homeAdapter = new HomeAdapter();
+        homeAdapter.setCallbacks(this::openDetail, this::confirmTransfer,
+                this::openTopicMore, this::onFocusMovie);
+        rvHome.setAdapter(homeAdapter);
+
         // 搜索按钮
         btnSearch.setOnClickListener(v -> showSearchDialog());
         btnSearch.setOnFocusChangeListener((v, has) -> {
@@ -162,10 +236,10 @@ public class MainActivity extends Activity {
             v.setScaleY(has ? 1.1f : 1f);
         });
 
-        // 默认加载第一个版块
+        // 默认：进专题墙
         currentFid = MovieStore.categories().get(0).fid;
         buildFilterRow(); // currentFid 就绪后重建过滤器行
-        loadPage(1);
+        loadHome();
 
         requestStartupPermissions();
     }
@@ -245,12 +319,15 @@ public class MainActivity extends Activity {
 
     private void startSearch(String kw) {
         pushHistory(); // 返回键可退出搜索结果、回到搜索前的页面
+        showListPane();
+        listTopic = null;
+        listTitle = "";
         searchKeyword = kw;
-        rvFilters.setVisibility(View.GONE); // 搜索模式无过滤器
+        buildFilterRow(); // 搜索模式内部会隐藏过滤器行
         reload();
     }
 
-    /** 刷新分类行高亮。 */
+    /** 刷新分类行高亮。pos < 0 = 都不高亮（专题列表不属于某个版块）。 */
     private void markCat(int pos) {
         for (int i = 0; i < catOptions.size(); i++) {
             catOptions.get(i).highlight = (i == pos);
@@ -258,7 +335,12 @@ public class MainActivity extends Activity {
         catAdapter.notifyDataSetChanged();
     }
 
-    /** 按当前版块重建过滤器行（每版块过滤器不同；搜索模式隐藏）。 */
+    /**
+     * 按当前版块重建过滤器行（每版块过滤器不同；搜索模式与专题列表隐藏）。
+     *
+     * <p>专题列表的过滤条件就是这条专题本身（比如「动作」那一行），
+     * 再叠一层题材过滤器没有意义，所以一并隐藏。</p>
+     */
     private void buildFilterRow() {
         List<MovieStore.Filter> fs = MovieStore.filtersFor(currentFid);
         List<OptionAdapter.Option> opts = new ArrayList<>();
@@ -268,35 +350,362 @@ public class MainActivity extends Activity {
             opts.add(o);
         }
         filterAdapter.setItems(opts);
-        rvFilters.setVisibility((searchKeyword == null || searchKeyword.isEmpty()) && !fs.isEmpty()
-                ? View.VISIBLE : View.GONE);
+        boolean browsing = listTopic == null
+                && (searchKeyword == null || searchKeyword.isEmpty());
+        rvFilters.setVisibility((browsing && !fs.isEmpty()) ? View.VISIBLE : View.GONE);
+    }
+
+    // ==================================================================
+    // 专题墙 ↔ 列表页 的切换
+    // ==================================================================
+
+    private void showHome() {
+        listMode = false;
+        listPane.setVisibility(View.GONE);
+        rvHome.setVisibility(View.VISIBLE);
+    }
+
+    private void showListPane() {
+        listMode = true;
+        rvHome.setVisibility(View.GONE);
+        listPane.setVisibility(View.VISIBLE);
+    }
+
+    /** 点专题行右侧的「更多 ›」：进这条专题的完整列表。 */
+    private void openTopicMore(MovieStore.Topic t) {
+        if (t == null) return;
+        pushHistory();
+        showListPane();
+        listTopic = t;
+        listTitle = t.title;
+        searchKeyword = "";
+        currentFid = t.fid; // fid 行是真实版块；题材 / 榜单行为 0
+        currentTypeid = 0;
+        currentFilterIndex = 0;
+        markCat(catIndexOfFid(t.fid));
+        buildFilterRow(); // 这里会把过滤器行藏掉（listTopic != null）
+        reload();
+    }
+
+    private int catIndexOfFid(int fid) {
+        List<MovieStore.Category> cs = MovieStore.categories();
+        for (int i = 0; i < cs.size(); i++) {
+            if (cs.get(i).fid == fid) return i;
+        }
+        return -1;
+    }
+
+    /** 拉专题墙数据并填充。放后台线程：16 行 × 各一趟 SQL，一次性算完再上屏。 */
+    private void loadHome() {
+        pool.execute(() -> {
+            final List<MovieStore.Topic> ts = MovieStore.topics();
+            MovieStore.Movie hero = null;
+            for (MovieStore.Topic t : ts) {
+                if (!t.movies.isEmpty()) {
+                    hero = t.movies.get(0);
+                    break;
+                }
+            }
+            final MovieStore.Movie first = hero;
+            main.post(() -> {
+                if (isFinishing()) return;
+                homeAdapter.setTopics(ts);
+                homeAdapter.showHero(first);
+                applyBackdrop(first);
+                if (!ts.isEmpty() && !firstHomeFocusDone && !listMode) {
+                    firstHomeFocusDone = true;
+                    // 焦点落到大标题：一上来就能看到「上键回大标题 / 下键潜海报区」这套协议
+                    rvHome.post(() -> {
+                        View hp = homeAdapter.heroPanelView();
+                        if (hp == null) return;
+                        TextView title = hp.findViewById(R.id.heroTitleBig);
+                        (title != null ? title : hp).requestFocus();
+                    });
+                }
+            });
+        });
+    }
+
+    // ==================================================================
+    // 焦点即预览：Hero 文案 + 全屏背景
+    // ==================================================================
+
+    /**
+     * 焦点落到某张海报。
+     *
+     * <p>防抖 300ms 再重渲染：遥控器连按方向键会一路刷过十几张海报，
+     * 每张都换一次背景的话，既打满线程池又只看到一片闪烁。
+     * 只有「停下来那一张」才有意义 —— 这与 SAM-CINEMA 的处理方式一致。</p>
+     */
+    private void onFocusMovie(MovieStore.Movie m) {
+        if (m == null) return;
+        pendingHero = m;
+        heroDebounce.removeCallbacks(heroApplyRunnable);
+        heroDebounce.postDelayed(heroApplyRunnable, HERO_DEBOUNCE_MS);
+    }
+
+    private final Runnable heroApplyRunnable = new Runnable() {
+        @Override
+        public void run() {
+            MovieStore.Movie m = pendingHero;
+            if (m == null || isFinishing()) return;
+            homeAdapter.showHero(m);
+            applyBackdrop(m);
+        }
+    };
+
+    /**
+     * 换全屏背景。
+     *
+     * <p>取图优先级：<b>TMDB 横版图</b>（16:9）→ <b>竖海报居中裁剪</b>。
+     * 前者实测覆盖 217/321 部（68%），剩下的是论坛自传图、没有 TMDB id、
+     * 或 TMDB 上确实没有 backdrop 的片子 —— 那些直接拿竖海报铺满，
+     * 中间区域完整保留，观感与改造前一致，不会开天窗。</p>
+     */
+    private void applyBackdrop(final MovieStore.Movie m) {
+        if (m == null) return;
+        final String poster = m.pic == null ? "" : m.pic;
+        final String backdrop = BackdropMap.backdropUrl(poster);
+        final String key = backdrop.isEmpty() ? poster : backdrop;
+        if (key.isEmpty() || key.equals(bgCurrentUrl)) return;
+        bgCurrentUrl = key;
+        final int gen = ++bgGen;
+
+        Bitmap hit = BackdropLoader.peek(key);
+        if (hit != null) {
+            swapBackdrop(hit);
+            return;
+        }
+        BackdropLoader.load(key, 0, 0, bmp -> {
+            if (gen != bgGen) return; // 已被更新的焦点取代
+            if (bmp != null) {
+                swapBackdrop(bmp);
+                return;
+            }
+            // 横图拉失败 → 回落竖海报。注意把 bgCurrentUrl 记成海报地址，
+            // 否则同一张挂掉的横图会在每次焦点经过时重试一遍。
+            if (!key.equals(poster) && !poster.isEmpty()) {
+                bgCurrentUrl = poster;
+                Bitmap p = BackdropLoader.peek(poster);
+                if (p != null) {
+                    swapBackdrop(p);
+                    return;
+                }
+                final int gen2 = bgGen;
+                BackdropLoader.load(poster, 0, 0, b2 -> {
+                    if (gen2 == bgGen && b2 != null) swapBackdrop(b2);
+                });
+            }
+        });
+    }
+
+    /**
+     * 把新图换上并交叉淡入。
+     *
+     * <p>两张 ImageView 叠着（bgB 在 bgA 之上），新图永远落在<b>当前在后面</b>的那张上，
+     * 再把前面那张淡出 —— 视觉上就是一次干净的交叉溶解。
+     * 若改成「单张图 alpha 0 → 1」，中间会露一下底色，快速切焦点时非常明显。</p>
+     */
+    private void swapBackdrop(Bitmap bmp) {
+        if (bmp == null || bgA == null || bgB == null) return;
+        ImageView incoming = bgTopIsA ? bgB : bgA;
+        ImageView outgoing = bgTopIsA ? bgA : bgB;
+        incoming.animate().cancel();
+        incoming.setImageBitmap(bmp);
+        incoming.setAlpha(1f);
+        boolean first = outgoing.getDrawable() == null;
+        bgTopIsA = !bgTopIsA;
+        if (first) return; // 首次没有旧图可淡出，直接上
+        outgoing.animate().cancel();
+        outgoing.animate().alpha(0f).setDuration(280).start();
+    }
+
+    // ==================================================================
+    // 遥控器上下键：Hero ↔ 专题行 ↔ 相邻专题行
+    // ==================================================================
+
+    /**
+     * 上下键做「行级」跳转。
+     *
+     * <p><b>为什么必须自己接管：</b>外层是竖向 RecyclerView，每条专题行里又嵌了一个横向
+     * RecyclerView。焦点落在横向行里的某张海报上时按上下键，系统焦点搜索只会在这条横向行
+     * 内部找目标（找不到就把事件交回父容器），父容器又只认得「行容器」这一层 ——
+     * 结果是上下键要么没反应、要么在同一行里绕圈。嵌套 RV 这个坑必须手动跨过去。</p>
+     *
+     * <p>协议（与 SAM-CINEMA 一致）：</p>
+     * <ul>
+     *   <li>第一行任一张海报按<b>上键</b> → 回到 Hero 大标题；</li>
+     *   <li>Hero 大标题按<b>下键</b> → 潜进第一行第一张海报；</li>
+     *   <li>行与行之间按上下键 → 跳到相邻行的<b>同一列</b>，位置感不丢。</li>
+     * </ul>
+     */
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent e) {
+        if (e.getAction() == KeyEvent.ACTION_DOWN) {
+            int code = e.getKeyCode();
+            int dir = 0;
+            if (code == KeyEvent.KEYCODE_DPAD_DOWN) dir = 1;
+            else if (code == KeyEvent.KEYCODE_DPAD_UP) dir = -1;
+            if (dir != 0 && moveFocusBetweenRows(dir)) return true;
+        }
+        return super.dispatchKeyEvent(e);
+    }
+
+    private boolean moveFocusBetweenRows(int dir) {
+        if (listMode || homeAdapter == null || homeAdapter.getItemCount() == 0) return false;
+        View f = getCurrentFocus();
+        if (f == null) return false;
+
+        // 情形一：焦点在某条专题行的海报上
+        RecyclerView rowRv = ancestorTopicRowRv(f);
+        if (rowRv != null) {
+            View rowItem = directChildOf(rvHome, rowRv);
+            if (rowItem == null) return false;
+            int pos = rvHome.getChildAdapterPosition(rowItem);
+            if (pos == RecyclerView.NO_POSITION) return false;
+            int col = rowRv.getChildAdapterPosition(f);
+            if (col < 0) col = 0;
+
+            if (dir > 0) {
+                if (pos + 1 < homeAdapter.getItemCount()) {
+                    focusTopicRow(pos + 1, col);
+                    return true;
+                }
+                return false; // 已在最后一行，没得再往下走
+            }
+            if (pos > HomeAdapter.HERO_INDEX + 1) {
+                focusTopicRow(pos - 1, col);
+                return true;
+            }
+            // 已在第一行 → 回 Hero 大标题
+            return focusHeroTitle();
+        }
+
+        // 情形二：焦点在 Hero 面板里
+        View hero = homeAdapter.heroPanelView();
+        if (hero != null && isInsideOrSelf(hero, f)) {
+            if (dir > 0) {
+                focusTopicRow(HomeAdapter.HERO_INDEX + 1, 0);
+                return true;
+            }
+            return false; // 向上交给顶栏（分类行 / 搜索按钮）
+        }
+        return false;
+    }
+
+    /** Hero 大标题拿焦点（顺带把 Hero 滚进视野）。 */
+    private boolean focusHeroTitle() {
+        View hero = homeAdapter.heroPanelView();
+        rvHome.scrollToPosition(HomeAdapter.HERO_INDEX);
+        if (hero == null) return false;
+        TextView title = hero.findViewById(R.id.heroTitleBig);
+        return (title != null ? title : hero).requestFocus();
+    }
+
+    /** 从焦点 View 往上找它所属的「专题行横向 RV」。不在任何行里则返回 null。 */
+    private RecyclerView ancestorTopicRowRv(View v) {
+        android.view.ViewParent p = v.getParent();
+        while (p instanceof View) {
+            if (p instanceof RecyclerView && ((View) p).getId() == R.id.rvTopicRow) {
+                return (RecyclerView) p;
+            }
+            p = ((View) p).getParent();
+        }
+        return null;
+    }
+
+    /** 从 v 一路向上，返回 parent 的直接子 View。 */
+    private View directChildOf(RecyclerView parent, View v) {
+        android.view.ViewParent p = v.getParent();
+        while (p instanceof View) {
+            if (p == parent) return v;
+            v = (View) p;
+            p = v.getParent();
+        }
+        return null;
+    }
+
+    private static boolean isInsideOrSelf(View ancestor, View v) {
+        if (ancestor == v) return true;
+        android.view.ViewParent p = v.getParent();
+        while (p instanceof View) {
+            if (p == ancestor) return true;
+            p = ((View) p).getParent();
+        }
+        return false;
+    }
+
+    /**
+     * 把焦点送到第 pos 项那条专题行的第 hintCol 列。
+     *
+     * <p>目标行可能还没被布局出来（RV 只保留可视区 + 少量缓存），所以要
+     * {@code scrollToPosition} 之后再 post 出去重试几次 —— 一次 post 未必够，
+     * 大跨度跳行时布局要过好几帧。</p>
+     */
+    private void focusTopicRow(int pos, int hintCol) {
+        if (homeAdapter == null || pos < 0 || pos >= homeAdapter.getItemCount()) return;
+        rvHome.scrollToPosition(pos);
+        postFocusRow(pos, hintCol, 0);
+    }
+
+    private void postFocusRow(final int pos, final int hintCol, final int attempt) {
+        if (isFinishing()) return;
+        rvHome.postDelayed(() -> {
+            if (isFinishing()) return;
+            RecyclerView.ViewHolder vh = rvHome.findViewHolderForAdapterPosition(pos);
+            RecyclerView inner = (vh == null) ? null
+                    : (RecyclerView) vh.itemView.findViewById(R.id.rvTopicRow);
+            if (inner == null || inner.getChildCount() == 0) {
+                if (attempt < 6) {
+                    postFocusRow(pos, hintCol, attempt + 1);
+                } else if (vh != null) {
+                    vh.itemView.requestFocus();
+                }
+                return;
+            }
+            int c = Math.min(Math.max(0, hintCol), inner.getChildCount() - 1);
+            View target = inner.getChildAt(c);
+            if (target != null && target.requestFocus()) return;
+            if (attempt < 6) postFocusRow(pos, hintCol, attempt + 1);
+        }, 40);
     }
 
     @Override
     public void onBackPressed() {
         ViewState prev = navHistory.pollLast();
         if (prev == null) {
-            super.onBackPressed(); // 没有历史了才退出程序
+            // 没有历史了：当前在列表页就先退回专题墙，真的到头了才退出程序
+            if (listMode) {
+                listTopic = null;
+                listTitle = "";
+                searchKeyword = "";
+                buildFilterRow();
+                showHome();
+                return;
+            }
+            super.onBackPressed();
             return;
         }
         searchKeyword = prev.kw == null ? "" : prev.kw;
         currentTypeid = prev.typeid;
         currentFid = prev.fid;
-        // 恢复分类高亮
-        int catPos = 0;
-        List<MovieStore.Category> cs = MovieStore.categories();
-        for (int i = 0; i < cs.size(); i++) {
-            if (cs.get(i).fid == currentFid) { catPos = i; break; }
-        }
-        markCat(catPos);
+        listTopic = prev.topic;
+        listTitle = prev.title == null ? "" : prev.title;
+        // 恢复分类高亮（专题列表 / 搜索时 fid 可能为 0，catIndexOfFid 会给 -1 = 都不亮）
+        markCat(catIndexOfFid(currentFid));
         // 恢复过滤器高亮（按 typeid 找回下标）
         currentFilterIndex = 0;
         List<MovieStore.Filter> fs = MovieStore.filtersFor(currentFid);
         for (int i = 0; i < fs.size(); i++) {
-            if (fs.get(i).typeid == currentTypeid) { currentFilterIndex = i; break; }
+            if (fs.get(i).typeid == currentTypeid) {
+                currentFilterIndex = i;
+                break;
+            }
         }
-        buildFilterRow(); // 搜索模式内部会隐藏，浏览模式恢复显示
-        reload();
+        if (prev.list) showListPane();
+        else showHome();
+        buildFilterRow(); // 搜索模式 / 专题列表内部会隐藏，浏览模式恢复显示
+        if (prev.list) reload();
     }
 
     private void reload() {
@@ -410,18 +819,11 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 载入某一页。**先出画、后筛选**，两段式：
+     * 载入列表页的某一页（专题墙走 {@link #loadHome()}）。
      *
-     * <ol>
-     *   <li>列表页 + 表格页解析完就先 setItems 把海报墙画出来（约 1 秒）；</li>
-     *   <li>再在后台逐帖探测「有没有百度网盘分享」，把没有的条目摘掉。</li>
-     * </ol>
+     * <p>三种数据来源，按优先级：专题列表 &gt; 搜索 &gt; 版块。</p>
      *
-     * <p>老实现是「把 36 个帖子全探测完才画」——一次版块切换要 5 秒多，屏幕上从头到尾
-     * 只有一句「加载中…」，看着像卡死；而且那个探测跑在 {@code pool}（单线程）上，
-     * 直接把后续请求堵在后面。</p>
-     *
-     * <p>另外用 {@link #loadGen} 实现「最新一次点击说了算」：新点击会让先前的请求作废，
+     * <p>用 {@link #loadGen} 实现「最新一次点击说了算」：新点击会让先前的请求作废，
      * 但**不会再像以前那样把用户的点击整个丢掉** —— 旧实现开头的 {@code if (loading) return;}
      * 遇上「正在加载下一页时点版块」，新点击直接被丢掉，停在「加载中…」再也不动。</p>
      */
@@ -431,6 +833,7 @@ public class MainActivity extends Activity {
         final String kw = searchKeyword;
         final int fid = currentFid;
         final int ftypeid = currentTypeid;
+        final MovieStore.Topic topic = listTopic;
         if (page == 1) {
             tvEmpty.setVisibility(View.VISIBLE);
             tvEmpty.setText("加载中…");
@@ -438,7 +841,9 @@ public class MainActivity extends Activity {
         pool.execute(() -> {
             MovieStore.lastLoadError = "";
             MovieStore.Paged<List<MovieStore.Movie>> res;
-            if (kw != null && !kw.isEmpty()) {
+            if (topic != null) {
+                res = MovieStore.topicPage(topic, page);
+            } else if (kw != null && !kw.isEmpty()) {
                 res = MovieStore.search(kw, page);
             } else {
                 res = MovieStore.category(fid, page, ftypeid);
@@ -446,7 +851,8 @@ public class MainActivity extends Activity {
             final List<MovieStore.Movie> raw = new ArrayList<>(res.data);
             final int pageCount = res.pageCount;
             android.util.Log.d("SupeMov", "list fid=" + fid + " typeid=" + ftypeid
-                    + " page=" + page + " kw=" + (kw == null ? "" : kw)
+                    + " page=" + page + " topic=" + (topic == null ? "" : topic.title)
+                    + " kw=" + (kw == null ? "" : kw)
                     + " got=" + raw.size() + " pageCount=" + pageCount);
 
             // 数据库本地查询，一次就能出画，不用再分「先出画、后探测」两段。
@@ -470,11 +876,13 @@ public class MainActivity extends Activity {
         });
     }
 
-    /** 列表为空时的那句提示（数据库未就位 / 版块为空 / 搜索无结果）。 */
+    /** 列表为空时的那句提示（数据库未就位 / 版块为空 / 搜索无结果 / 专题为空）。 */
     private void showEmpty() {
         tvEmpty.setVisibility(View.VISIBLE);
         if (!MovieStore.isReady()) {
             tvEmpty.setText("影片数据库未就位，请重启应用");
+        } else if (listTopic != null) {
+            tvEmpty.setText("「" + listTitle + "」暂时没有内容");
         } else if (searchKeyword != null && !searchKeyword.isEmpty()) {
             tvEmpty.setText("没有找到「" + searchKeyword + "」");
         } else {
