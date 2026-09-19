@@ -11,9 +11,10 @@ import android.content.Intent;
  * 新页从屏幕下方滑入 + 淡入（about 250ms），返回时父页从下方滑入、子页向上滑出。
  * 电视端"有方向感的页面推进"，替代默认硬切。</p>
  *
- * <p>用原生 {@link ActivityOptions#makeClipRectAnimation}（API 21+，minSdk 24 可用），
- * 零第三方依赖。进入 = 下方滑入（clipFromY = 屏高 → 0）；
- * 返回时 Android 自动对父 Activity 做 {@code makeRelinkAnimation} 反向滑出。</p>
+ * <p>用原生 {@link ActivityOptions#makeScaleUpAnimation}（API 21+，本 App minSdk 24 直接可用），
+ * 零第三方依赖。进入 = 从屏幕中心 scale-up + 淡入（约 250ms）；
+ * 返回时 Android 自动对父 Activity 做反向动画。
+ * （makeClipRectAnimation 是 API 33+，本 App 兼容 Android 7.x，不能用。）</p>
  */
 public final class PageTransition {
 
@@ -42,9 +43,10 @@ public final class PageTransition {
      */
     private static ActivityOptions enterOptions(Activity from) {
         int h = from.getResources().getDisplayMetrics().heightPixels;
-        // 下方滑入：clip rect 从底边揭开（makeScaleUpAnimation 是 API21+ 全平台可用，
-        // 这里直接用它；makeClipRectAnimation 是 API33+，本 App 兼容到 7.x 不能用）
-        ActivityOptions opts = ActivityOptions.makeScaleUpAnimation(from, 0, h / 2, 0, 0);
+        int w = from.getResources().getDisplayMetrics().widthPixels;
+        // from-below：scale-up 从屏幕中心（API21+ 全平台可用，TV 7.x 兼容）
+        ActivityOptions opts = ActivityOptions.makeScaleUpAnimation(
+                from, null, w / 2, h / 2, w, h);
         return opts;
     }
 }
