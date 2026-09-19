@@ -11,7 +11,7 @@
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_margin="6dp">
+        android:layout_margin="4dp">
 
         <com.supermov.tv.PosterView
             android:id="@+id/ivPic"
@@ -19,16 +19,6 @@
             android:layout_height="wrap_content"
             android:scaleType="centerCrop"
             android:background="@drawable/bg_movie_normal" />
-
-        <!-- LAMPA 效果②：白描边焦点框（叠加层，盖在海报之上才看得见）。
-             平时 GONE；焦点拿到时 VISIBLE。FrameLayout 子 View 顺序：后声明的在上，
-             所以白框压在 ivPic/tvBadge 之上 —— 对齐 LAMPA .card__view::after 的外扩白圈。 -->
-        <View
-            android:id="@+id/focusFrame"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:background="@drawable/bg_focus_ring"
-            android:visibility="gone" />
 
         <!-- 图片内底部：日期 · 片长（渐变底衬） -->
         <TextView

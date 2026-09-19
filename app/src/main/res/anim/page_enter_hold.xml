@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- LAMPA 效果③：返回时子 Activity（被 finish 的上层页）保持不动（淡出由对方窗口处理） -->
-<set xmlns:android="http://schemas.android.com/apk/res/android"
-    android:duration="250">
-    <alpha android:fromAlpha="1.0" android:toAlpha="1.0" />
-</set>

@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- LAMPA 效果④：评分徽章底（豆瓣金 / IMDb 蓝 由文字色区分，这里给通用半透明圆角底） -->
-<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <solid android:color="#33FFFFFF" />
-    <corners android:radius="4dp" />
-</shape>

@@ -5,8 +5,6 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -14,8 +12,6 @@ import android.os.Looper;
 import android.view.View;
 import android.widget.EditText;
 import android.widget.FrameLayout;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -42,13 +38,6 @@ public class MainActivity extends Activity {
     private RecyclerView rvList;
     private TextView btnSearch;
     private TextView tvEmpty;
-    private ImageView ivBackdrop; // LAMPA 效果①：全屏背景层
-
-    // LAMPA 效果④：首页 Hero 大条目（第一屏大卡）—— 各控件句柄
-    private View heroRoot;
-    private PosterView heroPoster;
-    private TextView heroTitle, heroMeta, heroIntro, heroDouban, heroImdb;
-    private TextView heroBtnPlay, heroBtnDetail;
 
     private OptionAdapter catAdapter;
     private OptionAdapter filterAdapter;
@@ -92,7 +81,6 @@ public class MainActivity extends Activity {
         rvCats = findViewById(R.id.recyclerView);
         rvFilters = findViewById(R.id.rvFilters);
         rvList = findViewById(R.id.rvMovies);
-        ivBackdrop = findViewById(R.id.ivBackdrop); // LAMPA 效果①：全屏背景层
 
         // 分类行
         rvCats.setLayoutManager(new LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false));
@@ -147,21 +135,7 @@ public class MainActivity extends Activity {
         movieAdapter = new MovieAdapter();
         movieAdapter.setOnClick(this::openDetail);
         movieAdapter.setOnLongClick(this::confirmTransfer);
-        // LAMPA 效果①：焦点海报变更 → 全屏背景层交叉淡入
-        movieAdapter.setOnFocusPoster(this::onFocusPoster);
         rvList.setAdapter(movieAdapter);
-
-        // LAMPA 效果④：首页 Hero 大条目（第一屏大卡），随首页第一页数据填充
-        heroRoot = findViewById(R.id.heroCard);
-        heroPoster = findViewById(R.id.heroPoster);
-        heroTitle = findViewById(R.id.heroTitle);
-        heroMeta = findViewById(R.id.heroMeta);
-        heroIntro = findViewById(R.id.heroIntro);
-        heroDouban = findViewById(R.id.heroDouban);
-        heroImdb = findViewById(R.id.heroImdb);
-        heroBtnPlay = findViewById(R.id.heroBtnPlay);
-        heroBtnDetail = findViewById(R.id.heroBtnDetail);
-
         rvList.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
             public void onScrolled(@NonNull RecyclerView rv, int dx, int dy) {
@@ -345,8 +319,7 @@ public class MainActivity extends Activity {
         it.putExtra("tid", m.tid);
         it.putExtra("name", m.name);
         it.putExtra("pic", m.pic);
-        // LAMPA 效果③：页面栈 from-below 进入过渡（下方滑入 + 淡入）
-        PageTransition.open(this, it);
+        startActivity(it);
     }
 
     /** 长按海报：快捷转存（保留原来的快速通道，不用先进详情页）。 */
@@ -436,71 +409,6 @@ public class MainActivity extends Activity {
         dlg.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus();
     }
 
-    // =========================================================================
-    // LAMPA 效果④：首页 Hero 大条目（第一屏大卡）
-    // 数据源：当前版块第一页第一条影片（intro/genres/ratingDouban/ratingImdb 都在 Movie 上）。
-    // 搜索模式（keyword 非空）时隐藏 Hero，让位给结果墙。
-    // =========================================================================
-
-    private MovieStore.Movie firstMovie(List<MovieStore.Movie> raw) {
-        return (raw != null && !raw.isEmpty()) ? raw.get(0) : null;
-    }
-
-    private void fillHero(MovieStore.Movie m) {
-        if (heroRoot == null) return;
-        if (m == null || searchKeyword != null && !searchKeyword.isEmpty()) {
-            // 无数据或搜索模式：隐藏大卡
-            heroRoot.setVisibility(View.GONE);
-            return;
-        }
-        heroRoot.setVisibility(View.VISIBLE);
-
-        heroTitle.setText(m.name);
-        String meta = String.join(" · ", new String[]{
-                m.year, m.genres, m.classification
-        });
-        meta = meta.replaceAll("(\\s*·\\s*)+", " · ").trim();
-        heroMeta.setText(meta.isEmpty() ? " " : meta);
-
-        String intro = m.intro == null ? "" : m.intro.trim();
-        heroIntro.setText(intro.isEmpty() ? " " : intro);
-        heroIntro.setVisibility(intro.isEmpty() ? View.GONE : View.VISIBLE);
-
-        if (m.hasDouban && m.ratingDouban > 0) {
-            heroDouban.setVisibility(View.VISIBLE);
-            heroDouban.setText("豆瓣 " + m.ratingDouban);
-        } else {
-            heroDouban.setVisibility(View.GONE);
-        }
-        if (m.hasImdb && m.ratingImdb > 0) {
-            heroImdb.setVisibility(View.VISIBLE);
-            heroImdb.setText("IMDb " + m.ratingImdb);
-        } else {
-            heroImdb.setVisibility(View.GONE);
-        }
-
-        // 海报：复用 ImageLoader（灰底占位 → 淡入）
-        if (m.pic != null && !m.pic.isEmpty()) {
-            heroPoster.setTag(m.pic);
-            ImageLoader.load(m.pic, heroPoster);
-        } else {
-            heroPoster.setImageDrawable(null);
-        }
-
-        // 按钮：播放 / 详情 都跳同一详情页（在线播放入口在详情页）
-        heroRoot.setOnClickListener(v -> openDetail(m));
-        heroRoot.setOnLongClickListener(v -> { confirmTransfer(m); return true; });
-        heroBtnPlay.setOnClickListener(v -> openDetail(m));
-        heroBtnDetail.setOnClickListener(v -> openDetail(m));
-        // 整卡 + 两个按钮都可聚焦（TV 遥控器）
-        heroRoot.setFocusable(true);
-        heroRoot.setClickable(true);
-        heroBtnPlay.setFocusable(true);
-        heroBtnPlay.setClickable(true);
-        heroBtnDetail.setFocusable(true);
-        heroBtnDetail.setClickable(true);
-    }
-
     /**
      * 载入某一页。**先出画、后筛选**，两段式：
      *
@@ -548,13 +456,8 @@ public class MainActivity extends Activity {
                 loading = false;
                 currentPage = page;
                 totalPages = Math.max(1, pageCount);
-                if (page == 1) {
-                    movieAdapter.setItems(raw);
-                    // LAMPA 效果④：首页第一屏填充 Hero 大条目（第一页第一条 + 简介 + 评分）
-                    fillHero(firstMovie(raw));
-                } else {
-                    movieAdapter.addItems(raw);
-                }
+                if (page == 1) movieAdapter.setItems(raw);
+                else movieAdapter.addItems(raw);
                 if (movieAdapter.getItemCount() > 0) {
                     // 「加载中…」正拿着焦点时把它隐藏，焦点会掉到空处（遥控器上就是「焦点消失」）
                     boolean hadEmptyFocus = tvEmpty.isFocused();
@@ -582,91 +485,5 @@ public class MainActivity extends Activity {
     private boolean kwEquals(String kw) {
         return (searchKeyword == null ? "" : searchKeyword)
                 .equals(kw == null ? "" : kw);
-    }
-
-    // =========================================================================
-    // LAMPA 效果①：全屏背景层（焦点海报交叉淡入）
-    //
-    // 焦点移到哪张海报，全屏就淡入那张海报（centerCrop 铺满 + 半透明压暗）。
-    // 数据源：没有横版 backdrop（库里只有竖海报），用竖海报 centerCrop 铺满 ——
-    // 上下会被裁掉一些，但中间区域（最显眼）完整保留，视觉等价 LAMPA 的"呼吸感"。
-    //
-    // 内存保护：单独一个 LruCache（maxSize=8MB，约 4 张背景图）只给背景层用，
-    // 不复用 ImageLoader 的无上限 ConcurrentHashMap（那是海报墙用的，横图会 OOM）。
-    // LruCache 在 androidx.collection（appcompat 1.6.1 传递的 androidx.core 已带进来）。
-    // =========================================================================
-
-    private final androidx.collection.LruCache<String, Bitmap> backdropCache =
-            new androidx.collection.LruCache<String, Bitmap>(8 * 1024 * 1024) {
-                @Override
-                protected int sizeOf(String key, Bitmap value) {
-                    return value.getByteCount();
-                }
-            };
-
-    private String currentBackdropUrl = ""; // 当前背景层显示的图（防重复加载）
-    private int backdropGen = 0;           // 代号：快速切换焦点时作废旧请求（「最新一次说了算」）
-
-    private void onFocusPoster(String picUrl) {
-        if (ivBackdrop == null) return;
-        if (picUrl == null || picUrl.isEmpty()) {
-            // 焦点离开海报墙（移到分类行/搜索按钮）：清掉背景，回到纯底色
-            currentBackdropUrl = "";
-            ivBackdrop.setImageDrawable(null);
-            return;
-        }
-        if (picUrl.equals(currentBackdropUrl)) return; // 同一张不重复加载
-        currentBackdropUrl = picUrl;
-        final int gen = ++backdropGen;
-
-        // 命中缓存 → 立即设（瞬切，同 LAMPA 的快切换）
-        Bitmap cached = backdropCache.get(picUrl);
-        if (cached != null) {
-            ivBackdrop.setImageBitmap(cached);
-            return;
-        }
-
-        // 未命中 → 后台下载 + 交叉淡入（旧图保留到新图到位再切换，避免闪屏）
-        final ImageView bg = ivBackdrop;
-        pool.execute(() -> {
-            Bitmap bmp = fetchBackdrop(picUrl);
-            if (bmp == null || gen != backdropGen) return; // 失败或被更新焦点取代
-            backdropCache.put(picUrl, bmp);
-            main.post(() -> {
-                if (gen != backdropGen) return; // 已被更新的焦点取代
-                // 交叉淡入：先把 alpha 拉低再切图，最后回到 0.55（与 XML 一致）
-                bg.animate().alpha(0.2f).setDuration(100).withEndAction(() -> {
-                    bg.setImageBitmap(bmp);
-                    bg.animate().alpha(0.55f).setDuration(200).start();
-                }).start();
-            });
-        });
-    }
-
-    /** 下载背景图，降采样到约 720p 高度（横图铺全屏够用，省内存）。 */
-    private Bitmap fetchBackdrop(String url) {
-        for (int i = 0; i < 2; i++) {
-            java.net.HttpURLConnection conn = null;
-            try {
-                java.net.URL u = new java.net.URL(url);
-                conn = (java.net.HttpURLConnection) u.openConnection();
-                conn.setConnectTimeout(8000);
-                conn.setReadTimeout(12000);
-                conn.setRequestProperty("User-Agent", Http.UA);
-                conn.setRequestProperty("Accept", "image/avif,image/webp,image/apng,*/*");
-                int code = conn.getResponseCode();
-                if (code != 200) continue;
-                java.io.InputStream is = conn.getInputStream();
-                BitmapFactory.Options o = new BitmapFactory.Options();
-                o.inSampleSize = 2; // 降采样：原图 ~1500px → 背景层只要 ~750px
-                Bitmap bmp = BitmapFactory.decodeStream(is, null, o);
-                if (bmp != null) return bmp;
-            } catch (Exception e) {
-                // retry
-            } finally {
-                if (conn != null) conn.disconnect();
-            }
-        }
-        return null;
     }
 }

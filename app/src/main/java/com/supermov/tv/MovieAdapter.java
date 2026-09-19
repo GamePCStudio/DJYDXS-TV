@@ -23,22 +23,9 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
         void onLongClick(MovieStore.Movie m);
     }
 
-    /**
-     * 焦点海报变更回调（LAMPA 效果①：焦点移到哪张海报，全屏背景就交叉淡入那张海报）。
-     * 参数 = 当前聚焦条目的海报 URL；失焦（焦点离开整张海报墙）时传 null。
-     */
-    public interface OnFocusPoster {
-        void onFocusPoster(String picUrl);
-    }
-
     private final List<MovieStore.Movie> items = new ArrayList<>();
     private OnClick listener;
     private OnLongClick longListener;
-    private OnFocusPoster focusPosterListener;
-
-    public void setOnFocusPoster(OnFocusPoster l) {
-        focusPosterListener = l;
-    }
 
     public void setItems(List<MovieStore.Movie> list) {
         items.clear();
@@ -134,18 +121,13 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
             longListener.onLongClick(m);
             return true;
         });
-        // TV 焦点反馈（LAMPA 效果②）：白描边圈 + 标题变色，**不缩放、不位移、不闪整卡**。
-        // 描边画在 bg_movie_focus 外圈层（item_movie FrameLayout 四周 6dp margin 留空隙），
-        // 视觉外扩 0.5em 不挤兄弟布局。切换即换背景（瞬切），与 LAMPA animation-card-focus
-        // 的轻量入场对齐；海报/标题始终实显，不做 alpha 闪烁（闪烁=廉价感）。
-        // LAMPA 效果①：焦点拿到/失去时回调全屏背景层（交叉淡入当前海报）。
+        // TV 焦点反馈：整体放大 + 海报高亮描边 + 标题变亮，远距离也看得清
         h.itemView.setOnFocusChangeListener((v, has) -> {
-            // 白描边焦点框：盖在海报之上的独立叠加层（focusFrame），可见性强，不会被图盖住
-            h.focusFrame.setVisibility(has ? View.VISIBLE : View.GONE);
+            v.setScaleX(has ? 1.08f : 1f);
+            v.setScaleY(has ? 1.08f : 1f);
+            v.setAlpha(has ? 1f : 0.75f);
+            h.ivPic.setBackgroundResource(has ? R.drawable.bg_movie_focus : R.drawable.bg_movie_normal);
             h.tvName.setTextColor(has ? 0xFF42A5F5 : 0xFFFFFFFF);
-            if (focusPosterListener != null) {
-                focusPosterListener.onFocusPoster(has ? m.pic : null);
-            }
         });
     }
 
@@ -158,14 +140,12 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
         ImageView ivPic;
         TextView tvName;
         TextView tvBadge;
-        View focusFrame;
 
         VH(@NonNull View v) {
             super(v);
             ivPic = v.findViewById(R.id.ivPic);
             tvName = v.findViewById(R.id.tvName);
             tvBadge = v.findViewById(R.id.tvBadge);
-            focusFrame = v.findViewById(R.id.focusFrame);
         }
     }
 }
