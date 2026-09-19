@@ -10,8 +10,15 @@
     · 简介       ← synopsis（实测只有 95/321 = 30%，有则显示、无则收起，靠 View.GONE 让高度自适应）
     · 播放 / 详情 ← 都进详情页（在线播放入口在详情页里，首页不直接起播）
 
-  面板整体 descendantFocusability="blocksDescendants"：焦点只在「大标题」和两个按钮上停，
-  中间的信息行/简介不可聚焦 —— 否则遥控器要在 Hero 里按三下才能出去。
+  面板根用 afterDescendants（焦点落在子孙上），【绝对不能写 blocksDescendants】：
+  面板是「容器」，三个焦点落点（大标题 / 播放 / 详情）都是它的子孙，而 AOSP 里
+  View.requestFocus() 第一步就是 hasAncestorThatBlocksDescendantFocus() ——
+  祖先一旦 blocksDescendants，子孙的 requestFocus() 直接恒返回 false，
+  于是谁也拿不到焦点；上层按键协议又会把方向键吞掉，系统连兜底搜索的机会都没有，
+  遥控器上表现就是「首页出来了，但往下按没反应」。
+
+  信息行 / 简介 / 按钮容器本来就没有 focusable="true"，不会抢焦点，
+  不需要靠 blocksDescendants 去挡；靠 afterDescendants + 不给它们 focusable 就够了。
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/heroPanel"
@@ -23,7 +30,7 @@
     android:paddingEnd="12dp"
     android:paddingTop="16dp"
     android:paddingBottom="10dp"
-    android:descendantFocusability="blocksDescendants">
+    android:descendantFocusability="afterDescendants">
 
     <TextView
         android:id="@+id/heroTitleBig"

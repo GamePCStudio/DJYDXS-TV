@@ -110,6 +110,25 @@ public class MainActivity extends Activity {
     /** 遥控器连按方向键时只对「停下来那一张」重渲染 Hero。SAM-CINEMA 原版用 500ms，这里取 300ms。 */
     private static final int HERO_DEBOUNCE_MS = 300;
 
+    /**
+     * 上下键方向（{@link #moveFocusBetweenRows} 系列方法的入参）：下 = 1、上 = -1。
+     *
+     * <p>刻意不用 {@code View.FOCUS_DOWN/UP}（那是 130 / 33）当内部方向值：
+     * 这里要做的是「大 / 小」比较，±1 读起来清楚。只在调系统焦点搜索
+     * （{@link View#focusSearch(int)}）时转成 FOCUS_* 常量，见 {@link #focusDirConst}。</p>
+     */
+    private static final int DIR_DOWN = 1;
+    private static final int DIR_UP = -1;
+
+    /**
+     * 焦点目标的查找重试额度：每 {@link #FOCUS_RETRY_MS} 一次，共 400ms。
+     *
+     * <p>目标行要靠 {@code scrollToPosition} 之后的下一次布局才会挂上来，
+     * 一次 post 未必赶得上；而电视盒子的单帧比手机长，额度给宽一点更稳。</p>
+     */
+    private static final int FOCUS_RETRY = 10;
+    private static final int FOCUS_RETRY_MS = 40;
+
     /** 导航历史：搜索/切分类/切过滤器/进专题列表前压栈，返回键弹栈回到上一个页面状态。 */
     private static class ViewState {
         final String kw;
@@ -478,13 +497,13 @@ public class MainActivity extends Activity {
                 homeLoaded = !ts.isEmpty();
                 if (!ts.isEmpty() && !firstHomeFocusDone && !listMode) {
                     firstHomeFocusDone = true;
-                    // 焦点落到大标题：一上来就能看到「上键回大标题 / 下键潜海报区」这套协议
-                    rvHome.post(() -> {
-                        View hp = homeAdapter.heroPanelView();
-                        if (hp == null) return;
-                        TextView title = hp.findViewById(R.id.heroTitleBig);
-                        (title != null ? title : hp).requestFocus();
-                    });
+                    // 焦点落到大标题：一上来就能看到「上键回大标题 / 下键潜海报区」这套协议，
+                    // 也是为了让「往下按」第一下就有反应（大标题 → 第一行海报）。
+                    //
+                    // 必须走带重试的 focusHeroTitle，不能只 post 一帧 ——
+                    // notifyDataSetChanged 引起的那次布局还没跑完时 Hero 面板压根还没绑上
+                    // （heroPanelView 为 null），焦点会静默落到窗口里第一个可聚焦项（顶栏）上。
+                    focusHeroTitle(DIR_DOWN);
                 }
             });
         });
@@ -589,6 +608,25 @@ public class MainActivity extends Activity {
     // ==================================================================
 
     /**
+     * 先于焦点视图拿到方向键（Activity 的 dispatchKeyEvent 在按键分发链最前面），
+     * 交给 {@link #moveFocusBetweenRows} 判断是否接管。
+     *
+     * <p>只处理 {@code ACTION_DOWN}：长按会不断续发 DOWN，只处理它即可持续移动；
+     * UP 交回系统，免得长按时把「抬手」也吃掉。</p>
+     */
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent e) {
+        if (e.getAction() == KeyEvent.ACTION_DOWN) {
+            int code = e.getKeyCode();
+            int dir = 0;
+            if (code == KeyEvent.KEYCODE_DPAD_DOWN) dir = DIR_DOWN;
+            else if (code == KeyEvent.KEYCODE_DPAD_UP) dir = DIR_UP;
+            if (dir != 0 && moveFocusBetweenRows(dir)) return true;
+        }
+        return super.dispatchKeyEvent(e);
+    }
+
+    /**
      * 上下键做「行级」跳转。
      *
      * <p><b>为什么必须自己接管：</b>外层是竖向 RecyclerView，每条专题行里又嵌了一个横向
@@ -603,54 +641,64 @@ public class MainActivity extends Activity {
      *   <li>顶栏（分类行 / 搜索按钮）按<b>下键</b> → 进 Hero 大标题；</li>
      *   <li>行与行之间按上下键 → 跳到相邻行的<b>同一列</b>，位置感不丢。</li>
      * </ul>
+     *
+     * <p><b>返回 true = 这个按键由我们接管了。</b>接管是有代价的：一旦接管之后
+     * 目标焦点没落上去，事件也不会再回到系统，遥控器上就是「按了完全没反应」。
+     * 所以每个异步跳转的最后一步都必须走到 {@link #systemFocusFallback}，
+     * 把「按方向找下一个」交回系统兜底。</p>
+     *
+     * @param dir {@link #DIR_DOWN} 或 {@link #DIR_UP}
      */
-    @Override
-    public boolean dispatchKeyEvent(KeyEvent e) {
-        if (e.getAction() == KeyEvent.ACTION_DOWN) {
-            int code = e.getKeyCode();
-            int dir = 0;
-            if (code == KeyEvent.KEYCODE_DPAD_DOWN) dir = 1;
-            else if (code == KeyEvent.KEYCODE_DPAD_UP) dir = -1;
-            if (dir != 0 && moveFocusBetweenRows(dir)) return true;
-        }
-        return super.dispatchKeyEvent(e);
-    }
-
     private boolean moveFocusBetweenRows(int dir) {
         if (listMode || homeAdapter == null || homeAdapter.getItemCount() == 0) return false;
         View f = getCurrentFocus();
-        if (f == null) return false;
+        if (f == null) {
+            // 焦点掉到空处（浮层刚关掉、条目被回收…）。不接的话事件会交给系统，
+            // 而系统挑的第一个可聚焦项往往是顶栏 —— 表现就是「按了没反应 / 焦点乱跳」。
+            // 往下按就把它接回 Hero 大标题，这也是用户此刻想看到的东西。
+            if (dir > 0) return focusHeroTitle(dir);
+            return false;
+        }
 
-        // 情形一：焦点在某条专题行的海报上
+        // 情形一：焦点在某条专题行里。
+        // 注意范围要放宽到「整条行」而不只是「横向 RV 里」—— 行标题右边那个
+        // 「更多 ›」也是 focusable 的，而它是行根的直接子 View、不在横向 RV 里。
+        // 只认 rvTopicRow 的话，焦点一旦落在「更多」上，上下键就没人管了，
+        // 又变成「按了没反应」。
         RecyclerView rowRv = ancestorTopicRowRv(f);
-        if (rowRv != null) {
-            View rowItem = directChildOf(rvHome, rowRv);
-            if (rowItem == null) return false;
+        View rowItem = directChildOf(rvHome, f);
+        if (rowItem != null) {
             int pos = rvHome.getChildAdapterPosition(rowItem);
-            if (pos == RecyclerView.NO_POSITION) return false;
-            int col = rowRv.getChildAdapterPosition(f);
-            if (col < 0) col = 0;
+            if (homeAdapter.isTopicRow(pos)) {
+                int col = 0;                       // 「更多」不在海报行里，列号无从谈起，按 0 算
+                if (rowRv != null) {
+                    int c = rowRv.getChildAdapterPosition(f);
+                    if (c >= 0) col = c;
+                }
 
-            if (dir > 0) {
-                if (pos + 1 < homeAdapter.getItemCount()) {
-                    focusTopicRow(pos + 1, col);
+                if (dir > 0) {
+                    if (pos + 1 < homeAdapter.getItemCount()) {
+                        focusTopicRow(pos + 1, col, dir);
+                        return true;
+                    }
+                    // 已在最后一行。这里不接管：交回系统，让它按常规搜索去别处
+                    // （比如往下就什么都找不到，自然停住），比我们吞掉事件什么都不做强。
+                    return false;
+                }
+                if (pos > HomeAdapter.HERO_INDEX + 1) {
+                    focusTopicRow(pos - 1, col, dir);
                     return true;
                 }
-                return false; // 已在最后一行，没得再往下走
+                // 已在第一行 → 回 Hero 大标题
+                return focusHeroTitle(dir);
             }
-            if (pos > HomeAdapter.HERO_INDEX + 1) {
-                focusTopicRow(pos - 1, col);
-                return true;
-            }
-            // 已在第一行 → 回 Hero 大标题
-            return focusHeroTitle();
         }
 
         // 情形二：焦点在 Hero 面板里
         View hero = homeAdapter.heroPanelView();
         if (hero != null && isInsideOrSelf(hero, f)) {
             if (dir > 0) {
-                focusTopicRow(HomeAdapter.HERO_INDEX + 1, 0);
+                focusTopicRow(HomeAdapter.HERO_INDEX + 1, 0, dir);
                 return true;
             }
             return false; // 向上交给顶栏（分类行 / 搜索按钮）
@@ -662,7 +710,7 @@ public class MainActivity extends Activity {
         // 若下键不接管，就只能指望系统焦点搜索 —— 而 Hero 是 rvHome 的第 0 项，
         // 往下滚过之后它可能不在可视区，系统找不到，焦点会卡在顶栏出不去。
         if (dir > 0 && isInTopBar(f)) {
-            return focusHeroTitle();
+            return focusHeroTitle(dir);
         }
         return false;
     }
@@ -673,16 +721,25 @@ public class MainActivity extends Activity {
      * <p>{@code scrollToPosition} 是异步的：本帧布局走完之前 Hero 可能还没被挂回来，
      * 直接 requestFocus 会失败（焦点原地不动），所以 post 出去重试几帧 ——
      * 和 {@link #focusTopicRow} 是同一套路子。</p>
+     *
+     * @param dir 原按键方向，只用于重试全部落空后交回系统搜索
      */
-    private boolean focusHeroTitle() {
+    private boolean focusHeroTitle(int dir) {
         if (homeAdapter == null || homeAdapter.getItemCount() == 0) return false;
         rvHome.scrollToPosition(HomeAdapter.HERO_INDEX);
-        postFocusHero(0);
+        postFocusHero(0, dir);
         return true;
     }
 
-    /** Hero 大标题的焦点重试。Hero 面板里没有横向 RV，目标就是那个「大标题」。 */
-    private void postFocusHero(final int attempt) {
+    /**
+     * Hero 大标题的焦点重试。Hero 面板里没有横向 RV，目标就是那个「大标题」。
+     *
+     * <p>「大标题」能拿焦点有个前提：Hero 面板根<b>不能</b>写
+     * {@code descendantFocusability="blocksDescendants"} —— 那会让所有子孙的
+     * {@code requestFocus()} 恒返回 false（AOSP 的 hasAncestorThatBlocksDescendantFocus），
+     * 见 {@code item_hero_panel.xml} 的注释。</p>
+     */
+    private void postFocusHero(final int attempt, final int dir) {
         if (isFinishing()) return;
         rvHome.postDelayed(() -> {
             if (isFinishing()) return;
@@ -691,13 +748,49 @@ public class MainActivity extends Activity {
             // 只认「真挂在 rvHome 上」的 Hero：被回收/摘掉的旧面板
             // requestFocus() 同样返回 true，但那个焦点是假的（下一次布局就没了）
             if (vh != null && vh.itemView.getParent() == rvHome) {
-                if (rvHome.getFocusedChild() == vh.itemView) return; // 已确认落位
+                if (isFocusInside(vh.itemView)) return; // 已确认落在 Hero 里，收工
                 TextView title = vh.itemView.findViewById(R.id.heroTitleBig);
-                if (title != null) title.requestFocus();
-                else vh.itemView.requestFocus();
+                // 判据是「下一轮复查时焦点真在这个 View 上」，不是 requestFocus 的返回值 ——
+                // 对已经脱离窗口的旧条目它同样返回 true
+                if (title != null && title.requestFocus()) {
+                    if (isFocusInside(title)) return;
+                }
+                if (vh.itemView.requestFocus() && isFocusInside(vh.itemView)) return;
             }
-            if (attempt < 6) postFocusHero(attempt + 1);
-        }, 40);
+            if (attempt < FOCUS_RETRY) {
+                postFocusHero(attempt + 1, dir);
+                return;
+            }
+            android.util.Log.d("SupeMov", "Hero 大标题拿焦点失败（重试 "
+                    + FOCUS_RETRY + " 次），交回系统搜索 dir=" + dir);
+            systemFocusFallback(dir);
+        }, FOCUS_RETRY_MS);
+    }
+
+    /**
+     * 兜底：把「按方向找下一个」交回系统焦点搜索。
+     *
+     * <p>自己接管上下键的代价是：目标没找到、事件又被我们吞掉，遥控器就彻底没反应了。
+     * 所以每个异步跳转重试耗尽时都要走到这里 —— 从<b>当前焦点</b>出发按方向找下一个
+     * 可聚焦项，找到就落上去。找不到也只是这一次按键没结果，不会让焦点卡死。</p>
+     */
+    private void systemFocusFallback(int dir) {
+        if (dir == 0) return;
+        View f = getCurrentFocus();
+        if (f == null) return;
+        View next = f.focusSearch(focusDirConst(dir));
+        if (next != null && next != f && next.isFocusable()) next.requestFocus();
+    }
+
+    /** 内部方向（±1）→ 系统焦点搜索常量（{@code View.FOCUS_DOWN/UP}）。 */
+    private static int focusDirConst(int dir) {
+        return dir > 0 ? View.FOCUS_DOWN : View.FOCUS_UP;
+    }
+
+    /** 当前焦点是不是落在 root 上或 root 里面（root 内的任意子孙都算）。 */
+    private boolean isFocusInside(View root) {
+        View f = getCurrentFocus();
+        return f != null && isInsideOrSelf(root, f);
     }
 
     /** 焦点是不是在顶栏上（分类行里的某一栏 / 搜索按钮）。 */
@@ -728,8 +821,8 @@ public class MainActivity extends Activity {
             RecyclerView.ViewHolder vh = rv.findViewHolderForAdapterPosition(pos);
             // 只对「真挂在这一行上」的条目请求焦点（同 postFocusHero 的道理）
             if (vh != null && vh.itemView.getParent() == rv) vh.itemView.requestFocus();
-            if (attempt < 6) refocusOption(rv, pos, attempt + 1);
-        }, 40);
+            if (attempt < FOCUS_RETRY) refocusOption(rv, pos, attempt + 1);
+        }, FOCUS_RETRY_MS);
     }
 
     /** 从焦点 View 往上找它所属的「专题行横向 RV」。不在任何行里则返回 null。 */
@@ -771,33 +864,39 @@ public class MainActivity extends Activity {
      * <p>目标行可能还没被布局出来（RV 只保留可视区 + 少量缓存），所以要
      * {@code scrollToPosition} 之后再 post 出去重试几次 —— 一次 post 未必够，
      * 大跨度跳行时布局要过好几帧。</p>
+     *
+     * @param dir 原按键方向，只用于重试全部落空后交回系统搜索
      */
-    private void focusTopicRow(int pos, int hintCol) {
+    private void focusTopicRow(int pos, int hintCol, int dir) {
         if (homeAdapter == null || pos < 0 || pos >= homeAdapter.getItemCount()) return;
         rvHome.scrollToPosition(pos);
-        postFocusRow(pos, hintCol, 0);
+        postFocusRow(pos, hintCol, 0, dir);
     }
 
-    private void postFocusRow(final int pos, final int hintCol, final int attempt) {
+    private void postFocusRow(final int pos, final int hintCol, final int attempt, final int dir) {
         if (isFinishing()) return;
         rvHome.postDelayed(() -> {
             if (isFinishing()) return;
             RecyclerView.ViewHolder vh = rvHome.findViewHolderForAdapterPosition(pos);
-            RecyclerView inner = (vh == null) ? null
+            // 只认「真挂在 rvHome 上」的那一行（同 postFocusHero 的道理）
+            RecyclerView inner = (vh == null || vh.itemView.getParent() != rvHome) ? null
                     : (RecyclerView) vh.itemView.findViewById(R.id.rvTopicRow);
-            if (inner == null || inner.getChildCount() == 0) {
-                if (attempt < 6) {
-                    postFocusRow(pos, hintCol, attempt + 1);
-                } else if (vh != null) {
-                    vh.itemView.requestFocus();
-                }
+            if (inner != null && inner.getChildCount() > 0) {
+                int c = Math.min(Math.max(0, hintCol), inner.getChildCount() - 1);
+                View target = inner.getChildAt(c);
+                if (target != null && target.requestFocus() && isFocusInside(target)) return;
+            }
+            if (attempt < FOCUS_RETRY) {
+                postFocusRow(pos, hintCol, attempt + 1, dir);
                 return;
             }
-            int c = Math.min(Math.max(0, hintCol), inner.getChildCount() - 1);
-            View target = inner.getChildAt(c);
-            if (target != null && target.requestFocus()) return;
-            if (attempt < 6) postFocusRow(pos, hintCol, attempt + 1);
-        }, 40);
+            // 撑到这儿说明这一行确实没拿到焦点（布局没出来 / 卡片不可聚焦）。
+            // 不能就这么算了 —— 按键已经被我们吞掉，必须交回系统兜底，
+            // 否则遥控器上就是「按了完全没反应」。
+            android.util.Log.d("SupeMov", "专题行 " + pos + " 第 " + hintCol
+                    + " 列拿焦点失败（重试 " + FOCUS_RETRY + " 次），交回系统搜索 dir=" + dir);
+            systemFocusFallback(dir);
+        }, FOCUS_RETRY_MS);
     }
 
     @Override

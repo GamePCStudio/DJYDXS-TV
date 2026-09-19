@@ -23,8 +23,12 @@ import java.util.Locale;
  *
  * <h3>两条焦点约定</h3>
  * <ul>
- *   <li>Hero 面板整体 {@code blocksDescendants}，只有「大标题」和两个按钮可聚焦。
- *       信息行/简介不可聚焦，否则遥控器要在 Hero 里按三下才能出去。</li>
+ *   <li>Hero 面板根<b>不能</b>写 {@code blocksDescendants}：面板是「容器」，
+ *       大标题/播放/详情都是它的子孙，祖先一旦 blocksDescendants，子孙的
+ *       {@code requestFocus()} 会被 AOSP 的 {@code hasAncestorThatBlocksDescendantFocus()}
+ *       直接判否，谁都拿不到焦点（踩过一次，症状是「首页出来了但往下按没反应」）。
+ *       所以面板用 {@code afterDescendants}，靠「信息行/简介不给 focusable」来挡，
+ *       而不是靠 blocksDescendants。</li>
  *   <li>每一条专题行的横向 RecyclerView 各持有一个 {@link TopicRowAdapter} 实例，
  *       在 {@code onCreateViewHolder} 里建一次并绑定，不在每次 bind 时重建 ——
  *       重建会让内层列表丢掉滚动位置与焦点。</li>
@@ -205,6 +209,9 @@ public class HomeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         // 大标题是可聚焦的（上键协议的落点），焦点态把字点亮
         title.setOnFocusChangeListener((x, has) ->
                 ((TextView) x).setTextColor(has ? 0xFF6FC3FF : 0xFFFFFFFF));
+        // 焦点可能已经在标题上（焦点掠过海报时 Hero 会重绑）：这时不会再触发
+        // onFocusChange，得照当前状态补一次颜色，否则标题会「明明有焦点却是白的」
+        title.setTextColor(title.isFocused() ? 0xFF6FC3FF : 0xFFFFFFFF);
         title.setOnClickListener(x -> {
             if (openListener != null) openListener.onOpenMovie(m);
         });
