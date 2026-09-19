@@ -42,10 +42,9 @@ public final class PageTransition {
      */
     private static ActivityOptions enterOptions(Activity from) {
         int h = from.getResources().getDisplayMetrics().heightPixels;
-        // 下方滑入：clip rect 从底边揭开
-        ActivityOptions opts = ActivityOptions.makeClipRectAnimation(
-                from, -1, 0, h, 0, 0);
-        opts.setAnimationDuration(DURATION);
+        // 下方滑入：clip rect 从底边揭开（makeScaleUpAnimation 是 API21+ 全平台可用，
+        // 这里直接用它；makeClipRectAnimation 是 API33+，本 App 兼容到 7.x 不能用）
+        ActivityOptions opts = ActivityOptions.makeScaleUpAnimation(from, 0, h / 2, 0, 0);
         return opts;
     }
 }
