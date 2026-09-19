@@ -153,6 +153,8 @@ public final class MovieStore {
         /** 简介正文。 */
         public String intro = "";
         public String year = "";
+        /** 上映日期 年-月-日，可能为空。 */
+        public String releaseDate = "";
         public String genres = "";
         public String region = "";
         public double ratingDouban;
@@ -282,7 +284,7 @@ public final class MovieStore {
             Cursor c = null;
             try {
                 c = q.rawQuery("SELECT genres FROM v_movie_app WHERE " + fidWhere(fid)
-                        + " AND genres IS NOT NULL AND genres != ''", fidArgs(fid));
+                        + " AND genres IS NOT NULL AND genres != ''", null);
                 while (c.moveToNext()) {
                     String g = c.getString(0);
                     for (String tag : parseTags(g)) {
@@ -335,7 +337,6 @@ public final class MovieStore {
         out.data = new ArrayList<>();
         StringBuilder where = new StringBuilder(fidWhere(fid));
         List<String> args = new ArrayList<>();
-        for (String a : fidArgs(fid)) args.add(a);
         String key = filterKey(fid, typeid);
         if (!key.isEmpty()) {
             where.append(" AND genres LIKE ?");
@@ -441,20 +442,9 @@ public final class MovieStore {
         return m;
     }
 
+    /** fid 是数据侧的真实版块号；fid<=0 视为不过滤（兜底）。 */
     private static String fidWhere(int fid) {
-        if (fid <= 0) {
-            StringBuilder sb = new StringBuilder("fid NOT IN (");
-            for (int i = 0; i < MAIN_FIDS.length; i++) {
-                if (i > 0) sb.append(',');
-                sb.append(MAIN_FIDS[i]);
-            }
-            return sb.append(')').toString();
-        }
-        return "fid=" + fid;
-    }
-
-    private static List<String> fidArgs(int fid) {
-        return new ArrayList<>();
+        return fid <= 0 ? "1=1" : "fid=" + fid;
     }
 
     // ==================================================================

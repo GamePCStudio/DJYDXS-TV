@@ -445,18 +445,20 @@ python tools/rename_plan.py --db build/SuperMOV.db --all
 
 **这三个类只新增文件，不修改任何现有类**，所以对当前能跑的构建是零风险。
 
-### 4.4 阶段 2 才需要动的现有文件（尚未修改）
+### 4.4 阶段 2 改动的现有文件（**已完成**，详见 §8）
 
-| 文件 | 要做什么 |
+| 文件 | 实际改动 |
 |---|---|
-| `Site.java` | 整文件删除（一期已定） |
-| `WebLoginActivity.java` | 整文件删除（孤儿文件，manifest 有声明但设置里已无入口） |
-| `MainActivity.java` | 列表数据源改为 `SELECT … FROM v_movie_app`；启动时调 `MovieDb.ensureReady()` + `DbUpdater.checkAndUpdate()` |
-| `DetailActivity.java` | 详情/剧集改读 `v_episode`；`transfer()` 成功后插入 `PanRename.renameAfterTransfer()` |
-| `SettingsActivity.java` | 加「数据版本」显示与「检查数据更新」入口；清理论坛诊断段 |
-| `Http.java` / `ImageLoader.java` | 去掉 `4kzimu.top` 的 Referer 分支 |
+| `Site.java` | **已整文件删除**（1007 行论坛解析） |
+| `WebLoginActivity.java` | **已整文件删除**（孤儿页面，设置里早已无入口） |
+| `MovieStore.java` | **新增**：App 唯一取数入口，只读 `v_movie_app` / `v_episode`，承接从 `Site` 移植过来的文本工具 |
+| `MainActivity.java` | 列表改读 `v_movie_app`；启动调 `MovieStore.init()`；**删掉整个「百度链接探测」段**（旧版要逐帖请求论坛，现在 SQL 一步到位） |
+| `DetailActivity.java` | 详情/剧集改读数据库；资料区与简介拆成两个字段直接显示；**加剧集数与总容量提示（零网络）** |
+| `SettingsActivity.java` | 加「影片数据库」入口（接 `DbUpdater`）；诊断段改为报数据库状态；清理论坛段 |
+| `Http.java` / `ImageLoader.java` | 去掉 `4kzimu.top` 的 Referer |
 | `CookieStore.java` | 去掉 `4kzimu.top` 的桶 |
-| `app/build.gradle` | 确认 `assets/` 不压缩（见 §5.2） |
+| `app/build.gradle` | `versionCode 28`；新增 `androidResources { noCompress += 'db' }` |
+| `.github/workflows/build.yml` | 推送分支补上 `DJYDXS3Nexio`（原来只监听 `DJYDXS2Nexio`，推上去不会构建） |
 
 ---
 
@@ -558,10 +560,80 @@ cur.execute("PRAGMA journal_mode=DELETE")   # ← 关键：退回单文件自洽
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| **1** | schema v2 迁移、清单体系、更新器、更名模块、效果预览 —— **纯新增，零风险** | ✅ 本次完成 |
-| **2** | 接线：删 `Site.java` / `WebLoginActivity`，`MainActivity`/`DetailActivity` 改读视图，转存后调更名，清理论坛残留 | 待你确认后开工 |
-| **3** | sync 侧改造：合并回填逻辑、解除 `content` 截断、生成清单、主创/简介补全 | 待定 |
+| **1** | schema v2 迁移、清单体系、更新器、更名模块、效果预览 —— **纯新增，零风险** | ✅ 已完成 |
+| **2** | 接线：删 `Site.java` / `WebLoginActivity`，`MainActivity`/`DetailActivity` 改读视图，清理论坛残留 | ✅ 已完成（**v1.28**，见 §8） |
+| **2b** | 转存成功后自动调 `PanRename` 改名 | ⏳ 未接线。规则表已在库里，等真实 `.xs` 分享样本验证 `filemanager?opera=rename` 行为后再接 |
+| **3** | sync 侧改造：合并回填逻辑、解除 `content` 截断、主创/简介补全 | 待定 |
 | **4** | 元数据增强：TMDB 自动匹配、海报镜像、`movie_asset` | 待定 |
 
-**阶段 2 的第一件事**：拿一个真机 + 一个真实分享跑一次 `PanRename`，
-确认 `filemanager?opera=rename` 的行为，把 §6 风险 1~3 结掉。
+**下一步（阶段 2b / 3）**：
+
+1. 拿一个真机 + 一个真实 `.xs` 分享跑一次 `PanRename`，确认 `filemanager?opera=rename` 的 errno 语义，结掉 §6 风险 1~3；
+2. sync 侧把 `content` 从 600 字截断改成「解析后入库」，简介覆盖率（当前 96/326 = 29%）才能真正上去；
+3. `800915.xyz/db/` 上线时，按 §5.1 的顺序上传（先 `.db`、校验线上 sha256、最后才传 `.json`）。
+
+---
+
+## 8. 阶段 2 实施记录（v1.28）
+
+### 8.1 本次实测发现的四件事（都会影响设计，不是推演）
+
+**① 论坛版块名早就改过了 —— 分类栏必须数据驱动**
+
+App 里原本硬编码的分类名，和数据库里的实际版块名对不上：
+
+| fid | App 里写死的名字 | 数据库里的真实名字 | 影片数 |
+|---|---|---|---|
+| 37 | 1080P最新剧集 | 1080P最新剧集 | 98 |
+| 112 | 4K全景声 | **4KSDR.Remux** | 89 |
+| 58 | 1080P蓝光 | **1080P高码版** | 76 |
+| 2 | 1080P杜比5.1 | **最新1080P电影** | 57 |
+| 86 | （未显示） | 转载资源区 | 4 |
+| 119 | （未显示） | 1080P.Remux | 2 |
+
+如果继续硬编码，用户会在界面上看到**四个已经不存在的版块名**，而 6 部片子永远看不到。
+所以 `MovieStore.categories()` 改成从库里现取（`GROUP BY fid, forum_name`），
+数据侧改版块名，App 重启即可生效。
+
+**② `v_movie_app` 原本没有 `fid` / `forum_name` 列** —— 已补进视图 DDL。
+视图加列属于「非破坏性变更」，按 §1.3 的契约**不需要 bump `schema_version`**。
+
+**③ 326 部影片的 `pan_status` 全是 `ok`、`pan_url` 全部非空** —— 所以列表页**不需要**过滤。
+旧版要逐个帖子请求论坛确认有没有百度链接（`filterBaiduOnly` + 专用线程池），
+现在一句 SQL 就够了，那段两段式「先出画、后探测」的逻辑整体删掉。
+
+**④ 《海贼王》一部就有 1175 个文件**——旧版 `BaiduPan.MAX_FILES = 300` 会把它截断。
+现在详情页先用库里的 `v_episode` 报出真实的「集数 + 总容量」，不经过任何网络请求。
+
+### 8.2 新增/删除的代码
+
+| | 文件 | 行数 | 说明 |
+|---|---|---|---|
+| 新增 | `MovieStore.java` | 811 | App 唯一取数入口。只读两个视图；顺带把 `Site` 里调试过很多轮的文本工具（`splitAtUpcoming` / `tidyLines` / `cutInfoMiddle` / `dropNoiseLines` / `parseTags`…）原样移植过来，**没有重写** |
+| 新增 | `MovieDb.java` | 356 | 内嵌库就位 + 三层版本号取最大 + schema 可读性判定 |
+| 新增 | `DbUpdater.java` | 369 | 在线更新，四重校验 |
+| 新增 | `PanRename.java` | 564 | 转存后更名（未接线） |
+| 删除 | `Site.java` | -1007 | 论坛 Discuz 解析全量 |
+| 删除 | `WebLoginActivity.java` | -52 | 孤儿页面 |
+
+### 8.3 没有 javac 环境，怎么保证推上去能编过
+
+沙箱里只有 JRE 8、没有 `javac`，云端一次往返 3~5 分钟。所以推之前跑了三道：
+
+| 检查 | 内容 | 结果 |
+|---|---|---|
+| `precheck.py` | 13 项结构化检查（括号平衡、资源存在性、漏 import、组件注册、**lambda 捕获**、**API 等级越界**…） | `NO ERRORS` |
+| 跨类符号校验 | 「删了 A 文件，B 文件还在引用」这类只有 javac 能发现的问题，用纯文本解析自家类的成员表对照 | 0 处悬空 |
+| **SQL 逐条预演** | `MovieStore` 里每条 SQL 在真实库上跑一遍（分类/过滤/列表/搜索/详情/剧集/外部ID，共 33 条） | 33 通过 / 0 失败 |
+
+第三项最值钱：SQL 写错列名属于「编译通过、运行才崩」，云端根本抓不到。
+
+### 8.4 刻意没做的事（避免一次改太多）
+
+- **转存后自动更名**没有接进 `DetailActivity` 的转存链路（`PanRename` 已就绪但无调用点）。
+  原因：当前库里一个需要改名的文件都没有，而 `filemanager?opera=rename` 的 errno 语义
+  还没在真机上验证过。先不接，等样本。
+- **`Site` 里那 9 个文本工具方法**只移植了 `splitAtUpcoming` / `tidyLines` / `cutInfoMiddle` /
+  `dropNoiseLines` / `stripTags` / `unescape` / `extractDate`，其余（论坛 HTML 专用）随文件一起删。
+- **启动时的静默更新检查**没加（远端清单地址还没上线，每次启动都会发一个 404 请求）。
+  当前只在「设置 → 影片数据库」手动触发。上线后可在 `GateActivity` 加一行静默调用。
