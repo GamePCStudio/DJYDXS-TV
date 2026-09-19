@@ -85,8 +85,18 @@ public class MainActivity extends Activity {
     private int currentTypeid = 0;      // 版块内主题分类过滤（0=全部）
     private int currentFilterIndex = 0; // 选中的过滤器下标
 
+    /**
+     * 顶栏第 0 项固定是「首页」，也就是进去的第一屏（专题墙）；
+     * 其后才是各版块，最后两项是 设置 / 下载。
+     */
+    private static final int CAT_HOME = 0;
+
     /** true = 当前显示列表页；false = 显示专题墙。 */
     private boolean listMode = false;
+    /** 顶栏当前高亮的栏目下标（0 = 首页）。返回键恢复页面状态靠它，不拿 fid 反推。 */
+    private int currentCat = CAT_HOME;
+    /** 专题墙数据是否已经拿过 —— 点「首页」来回切栏目时不必重跑那 16 条 SQL。 */
+    private boolean homeLoaded = false;
     /** 列表页的数据来源：非 null 表示「从某条专题行的『更多』进来」，此时不用 fid/搜索。 */
     private MovieStore.Topic listTopic;
     /** 列表页空态提示里显示的名字。 */
@@ -108,14 +118,24 @@ public class MainActivity extends Activity {
         final MovieStore.Topic topic;
         final String title;
         final boolean list;
+        /**
+         * 当时顶栏高亮的是哪一栏。
+         *
+         * <p>存下标而不是返回时用 fid 反推：现在顶栏多了「首页」这一项，
+         * 而 {@code currentFid} 会留着上一个版块的值（回到首页时不会清零），
+         * 拿它反推会把「4K全景声」点亮，和实际显示的专题墙对不上。</p>
+         */
+        final int cat;
 
-        ViewState(String kw, int fid, int typeid, MovieStore.Topic topic, String title, boolean list) {
+        ViewState(String kw, int fid, int typeid, MovieStore.Topic topic, String title,
+                  boolean list, int cat) {
             this.kw = kw;
             this.fid = fid;
             this.typeid = typeid;
             this.topic = topic;
             this.title = title;
             this.list = list;
+            this.cat = cat;
         }
     }
 
@@ -123,7 +143,7 @@ public class MainActivity extends Activity {
 
     private void pushHistory() {
         navHistory.addLast(new ViewState(searchKeyword, currentFid, currentTypeid,
-                listTopic, listTitle, listMode));
+                listTopic, listTitle, listMode, currentCat));
         while (navHistory.size() > 30) navHistory.pollFirst();
     }
 
@@ -146,9 +166,12 @@ public class MainActivity extends Activity {
         bgA = findViewById(R.id.bgBackdropA);
         bgB = findViewById(R.id.bgBackdropB);
 
-        // 分类行
+        // 分类行：第 0 项固定是「首页」（= 专题墙，也就是进去的第一屏），
+        // 其后才是各版块，最后两项是 设置 / 下载
         rvCats.setLayoutManager(new LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false));
         catAdapter = new OptionAdapter();
+        catAdapter.attach(rvCats); // 「只刷高亮不发通知」需要宿主列表定位已挂载条目
+        catOptions.add(new OptionAdapter.Option("首页"));
         for (MovieStore.Category c : MovieStore.categories()) {
             catOptions.add(new OptionAdapter.Option(c.name));
         }
@@ -157,31 +180,38 @@ public class MainActivity extends Activity {
         catAdapter.setItems(catOptions);
         catAdapter.setOnClick((o, pos) -> {
             int catCount = MovieStore.categories().size();
-            if (pos == catCount) {
-                startActivity(new Intent(this, SettingsActivity.class));
+            if (pos == CAT_HOME) {
+                // 首页 = 回到专题墙。它就是根页面，所以不压返回栈
+                toHome();
+                refocusOption(rvCats, pos, 0);
             } else if (pos == catCount + 1) {
+                startActivity(new Intent(this, SettingsActivity.class));
+            } else if (pos == catCount + 2) {
                 // 下载队列：不压历史栈（它不是内容页，返回应直接回首页）
                 startActivity(new Intent(this, DownloadActivity.class));
-            } else if (pos >= 0 && pos < catCount) {
+            } else if (pos >= 1 && pos <= catCount) {
                 pushHistory(); // 返回键可回到上一个版块
                 showListPane();
                 listTopic = null;
                 listTitle = "";
                 searchKeyword = "";
-                currentFid = MovieStore.categories().get(pos).fid;
+                currentFid = MovieStore.categories().get(pos - 1).fid;
                 currentTypeid = 0;
                 currentFilterIndex = 0;
                 markCat(pos);
                 buildFilterRow();
                 reload();
+                // 遥控器习惯：焦点要留在「被按下的那一栏」上，而不是跟着页面跳走
+                refocusOption(rvCats, pos, 0);
             }
         });
         rvCats.setAdapter(catAdapter);
-        markCat(0);
+        markCat(CAT_HOME); // 默认停在「首页」上，与进去看到的第一屏（专题墙）一致
 
         // 过滤器行（各版块主题分类，搜索模式与专题列表隐藏）
         rvFilters.setLayoutManager(new LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false));
         filterAdapter = new OptionAdapter();
+        filterAdapter.attach(rvFilters);
         filterAdapter.setOnClick((o, pos) -> {
             List<MovieStore.Filter> fs = MovieStore.filtersFor(currentFid);
             if (pos < 0 || pos >= fs.size()) return;
@@ -190,8 +220,9 @@ public class MainActivity extends Activity {
             pushHistory(); // 返回键可回到上一个过滤状态
             currentTypeid = f.typeid;
             currentFilterIndex = pos;
-            buildFilterRow();
+            buildFilterRow(); // 这一行会整表重建，焦点会被清掉 —— 下面补回来
             reload();
+            refocusOption(rvFilters, pos, 0);
         });
         rvFilters.setAdapter(filterAdapter);
         buildFilterRow();
@@ -327,12 +358,20 @@ public class MainActivity extends Activity {
         reload();
     }
 
-    /** 刷新分类行高亮。pos < 0 = 都不高亮（专题列表不属于某个版块）。 */
+    /**
+     * 刷新分类行高亮。pos = {@link #CAT_HOME} 表示停在「首页」那一栏。
+     *
+     * <p>这里刻意<b>不用 {@code notifyDataSetChanged()}</b>：整表重建会让 RecyclerView
+     * 把条目视图摘下来重新挂载，视图离开窗口时系统会清掉它的焦点 ——
+     * 遥控器上就是「按下顶栏某一栏，焦点从这一栏上跑掉了」。
+     * 顶栏只有 6 个条目且永远全部可见，就地改已挂载的 View 即可。</p>
+     */
     private void markCat(int pos) {
+        currentCat = pos;
         for (int i = 0; i < catOptions.size(); i++) {
             catOptions.get(i).highlight = (i == pos);
         }
-        catAdapter.notifyDataSetChanged();
+        catAdapter.refreshHighlight();
     }
 
     /**
@@ -371,6 +410,22 @@ public class MainActivity extends Activity {
         listPane.setVisibility(View.VISIBLE);
     }
 
+    /**
+     * 回到顶栏的「首页」栏目 = 显示专题墙。
+     *
+     * <p>专题墙数据拿过一次就不再重查：它一轮是 16 条 SQL（各条专题各一趟），
+     * 来回切栏目重跑一遍既没必要，也会让 Hero 白闪一下。只有第一次进来才真正去查。</p>
+     */
+    private void toHome() {
+        markCat(CAT_HOME);
+        listTopic = null;
+        listTitle = "";
+        searchKeyword = "";
+        boolean needLoad = !homeLoaded;
+        showHome();
+        if (needLoad) loadHome();
+    }
+
     /** 点专题行右侧的「更多 ›」：进这条专题的完整列表。 */
     private void openTopicMore(MovieStore.Topic t) {
         if (t == null) return;
@@ -387,12 +442,19 @@ public class MainActivity extends Activity {
         reload();
     }
 
+    /**
+     * 版块 fid → 顶栏下标。
+     *
+     * <p>顶栏第 0 项是「首页」，所以版块整体 +1。找不到对应版块时给「首页」：
+     * 题材 / 榜单专题的 fid 是 0，搜索也不属于任何版块，而它们都是从首页专题墙进去的，
+     * 让「首页」那一栏保持点亮比「顶栏一栏都不亮」更像话。</p>
+     */
     private int catIndexOfFid(int fid) {
         List<MovieStore.Category> cs = MovieStore.categories();
         for (int i = 0; i < cs.size(); i++) {
-            if (cs.get(i).fid == fid) return i;
+            if (cs.get(i).fid == fid) return i + 1;
         }
-        return -1;
+        return CAT_HOME;
     }
 
     /** 拉专题墙数据并填充。放后台线程：16 行 × 各一趟 SQL，一次性算完再上屏。 */
@@ -412,6 +474,8 @@ public class MainActivity extends Activity {
                 homeAdapter.setTopics(ts);
                 homeAdapter.showHero(first);
                 applyBackdrop(first);
+                // 拿到内容才算加载过；空结果（比如库还没就位）留 false，下次点「首页」再试
+                homeLoaded = !ts.isEmpty();
                 if (!ts.isEmpty() && !firstHomeFocusDone && !listMode) {
                     firstHomeFocusDone = true;
                     // 焦点落到大标题：一上来就能看到「上键回大标题 / 下键潜海报区」这套协议
@@ -536,6 +600,7 @@ public class MainActivity extends Activity {
      * <ul>
      *   <li>第一行任一张海报按<b>上键</b> → 回到 Hero 大标题；</li>
      *   <li>Hero 大标题按<b>下键</b> → 潜进第一行第一张海报；</li>
+     *   <li>顶栏（分类行 / 搜索按钮）按<b>下键</b> → 进 Hero 大标题；</li>
      *   <li>行与行之间按上下键 → 跳到相邻行的<b>同一列</b>，位置感不丢。</li>
      * </ul>
      */
@@ -590,16 +655,81 @@ public class MainActivity extends Activity {
             }
             return false; // 向上交给顶栏（分类行 / 搜索按钮）
         }
+
+        // 情形三：焦点在顶栏（分类行里的某一栏 / 搜索按钮）
+        // 下键从顶栏潜进专题墙的 Hero 大标题。这条对「首页」这一栏是必需的：
+        // 从别的栏目切回首页后，焦点按遥控器习惯留在被按下的那一栏上，
+        // 若下键不接管，就只能指望系统焦点搜索 —— 而 Hero 是 rvHome 的第 0 项，
+        // 往下滚过之后它可能不在可视区，系统找不到，焦点会卡在顶栏出不去。
+        if (dir > 0 && isInTopBar(f)) {
+            return focusHeroTitle();
+        }
         return false;
     }
 
-    /** Hero 大标题拿焦点（顺带把 Hero 滚进视野）。 */
+    /**
+     * Hero 大标题拿焦点（顺带把 Hero 滚进视野）。
+     *
+     * <p>{@code scrollToPosition} 是异步的：本帧布局走完之前 Hero 可能还没被挂回来，
+     * 直接 requestFocus 会失败（焦点原地不动），所以 post 出去重试几帧 ——
+     * 和 {@link #focusTopicRow} 是同一套路子。</p>
+     */
     private boolean focusHeroTitle() {
-        View hero = homeAdapter.heroPanelView();
+        if (homeAdapter == null || homeAdapter.getItemCount() == 0) return false;
         rvHome.scrollToPosition(HomeAdapter.HERO_INDEX);
-        if (hero == null) return false;
-        TextView title = hero.findViewById(R.id.heroTitleBig);
-        return (title != null ? title : hero).requestFocus();
+        postFocusHero(0);
+        return true;
+    }
+
+    /** Hero 大标题的焦点重试。Hero 面板里没有横向 RV，目标就是那个「大标题」。 */
+    private void postFocusHero(final int attempt) {
+        if (isFinishing()) return;
+        rvHome.postDelayed(() -> {
+            if (isFinishing()) return;
+            RecyclerView.ViewHolder vh =
+                    rvHome.findViewHolderForAdapterPosition(HomeAdapter.HERO_INDEX);
+            // 只认「真挂在 rvHome 上」的 Hero：被回收/摘掉的旧面板
+            // requestFocus() 同样返回 true，但那个焦点是假的（下一次布局就没了）
+            if (vh != null && vh.itemView.getParent() == rvHome) {
+                if (rvHome.getFocusedChild() == vh.itemView) return; // 已确认落位
+                TextView title = vh.itemView.findViewById(R.id.heroTitleBig);
+                if (title != null) title.requestFocus();
+                else vh.itemView.requestFocus();
+            }
+            if (attempt < 6) postFocusHero(attempt + 1);
+        }, 40);
+    }
+
+    /** 焦点是不是在顶栏上（分类行里的某一栏 / 搜索按钮）。 */
+    private boolean isInTopBar(View v) {
+        if (v == btnSearch) return true;
+        return v == rvCats || directChildOf(rvCats, v) != null;
+    }
+
+    /**
+     * 把焦点按回顶栏某一行选项里的第 pos 项（分类行 / 过滤器行共用）。
+     *
+     * <p>遥控器习惯：按下顶栏某一栏之后，焦点应当留在<b>被按下的那一栏</b>上，
+     * 而不是跟着页面一起跳到别处去。可现在一次切页里有一串动作都可能把焦点带走
+     * （过滤行整表重建、空态文案显隐、列表整表重建……），虽然分类行已经改成
+     * 「只刷高亮不动数据集」，仍在这里统一复位一次兜底。</p>
+     *
+     * <p>那一行若刚做过整表重建，新条目要等下一次布局才挂上来，一次 post 未必赶得上，
+     * 所以重试几帧。<b>成功的判据是「下一轮复查时焦点确实在这一项上」</b>，
+     * 而不是 {@code requestFocus()} 的返回值 —— 对已经脱离 RecyclerView 的旧条目，
+     * 它照样返回 true，但那个焦点是假的（下一次布局就没了）。</p>
+     */
+    private void refocusOption(final RecyclerView rv, final int pos, final int attempt) {
+        if (isFinishing() || rv == null) return;
+        rv.postDelayed(() -> {
+            if (isFinishing()) return;
+            View cur = rv.getFocusedChild();
+            if (cur != null && rv.getChildAdapterPosition(cur) == pos) return; // 已确认落在目标上
+            RecyclerView.ViewHolder vh = rv.findViewHolderForAdapterPosition(pos);
+            // 只对「真挂在这一行上」的条目请求焦点（同 postFocusHero 的道理）
+            if (vh != null && vh.itemView.getParent() == rv) vh.itemView.requestFocus();
+            if (attempt < 6) refocusOption(rv, pos, attempt + 1);
+        }, 40);
     }
 
     /** 从焦点 View 往上找它所属的「专题行横向 RV」。不在任何行里则返回 null。 */
@@ -691,8 +821,8 @@ public class MainActivity extends Activity {
         currentFid = prev.fid;
         listTopic = prev.topic;
         listTitle = prev.title == null ? "" : prev.title;
-        // 恢复分类高亮（专题列表 / 搜索时 fid 可能为 0，catIndexOfFid 会给 -1 = 都不亮）
-        markCat(catIndexOfFid(currentFid));
+        // 顶栏高亮用当时存下的下标原样恢复（不能拿 fid 反推：「首页」是按不动 fid 的）
+        markCat(prev.cat);
         // 恢复过滤器高亮（按 typeid 找回下标）
         currentFilterIndex = 0;
         List<MovieStore.Filter> fs = MovieStore.filtersFor(currentFid);
