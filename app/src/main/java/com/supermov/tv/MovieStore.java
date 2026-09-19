@@ -228,27 +228,44 @@ public final class MovieStore {
     private static volatile List<Category> cats;
 
     /**
-     * 版块（分类栏）。
+     * 分类栏白名单：{fid, 界面显示名}，<b>数组顺序即界面顺序</b>。
      *
-     * <p><b>数据驱动</b>：版块名与数量都从库里现取，不再硬编码。原因很实在 ——
-     * 4kzimu 后来把版块改过名（"4K全景声" 变成了 "4KSDR.Remux"、"1080P蓝光" 变成了
-     * "1080P高码版"），App 里写死的话用户在界面上看到的就是<b>已经不存在的旧名字</b>。
-     * 现在数据侧加/改版块，App 重启即可看到。</p>
+     * <p>为什么从这里定死，而不是继续从 {@code forum_name} 现取：数据侧的版块名是给站长看的
+     * （"4KSDR.Remux"、"1080P高码版"），不是给用户看的。这里做三件事 ——
+     * <b>只保留这四个版块</b>、<b>用产品化的显示名覆盖</b>、<b>固定排序</b>；
+     * 数据侧再冒出别的版块，也不会漏到界面上。</p>
+     *
+     * <p>注意匹配用 <b>fid</b> 而不是版块名：名字改过好几轮了（"4K全景声" → "4KSDR.Remux"），
+     * 拿名字当 key 早晚失配；fid 是数据侧的主键，稳。当前对应关系 ——</p>
+     * <pre>
+     *   112  4KSDR.Remux     → 4K全景声
+     *    37  1080P最新剧集    → 最新剧集•美剧
+     *    58  1080P高码版      → 蓝光影片
+     *     2  最新1080P电影    → 杜比5.1影片
+     * </pre>
+     */
+    private static final int[] CAT_FIDS = {112, 37, 58, 2};
+    private static final String[] CAT_NAMES = {"4K全景声", "最新剧集•美剧", "蓝光影片", "杜比5.1影片"};
+
+    /**
+     * 版块（分类栏）：严格按 {@link #CAT_FIDS} 的顺序与 {@link #CAT_NAMES} 的显示名产出，
+     * 其余版块一律不显示。
+     *
+     * <p>仍会读一次库拿到各版块的影片数，但<b>只用于日志诊断</b>（某个栏目为什么是空的，
+     * 一看 logcat 便知）；即便某个 fid 当前 0 部也照样出栏 —— 保证界面上这四个位置永远固定，
+     * 不会因为数据波动导致栏目错位。</p>
      */
     public static List<Category> categories() {
         List<Category> c0 = cats;
         if (c0 != null) return c0;
-        List<Category> out = new ArrayList<>();
+        Map<Integer, Integer> counts = new HashMap<>();
         SQLiteDatabase q = database();
         if (q != null) {
             Cursor c = null;
             try {
-                c = q.rawQuery("SELECT fid, COALESCE(NULLIF(forum_name,''),'其他') AS nm, "
-                        + "COUNT(*) AS n FROM v_movie_app GROUP BY fid, nm ORDER BY n DESC", null);
+                c = q.rawQuery("SELECT fid, COUNT(*) FROM v_movie_app GROUP BY fid", null);
                 while (c.moveToNext()) {
-                    long fid = lng(c, 0);
-                    String nm = str(c, 1);
-                    out.add(new Category((int) fid, nm.isEmpty() ? "其他" : nm));
+                    counts.put((int) lng(c, 0), (int) lng(c, 1));
                 }
             } catch (Throwable e) {
                 Log.d(TAG, "categories 查询失败: " + e);
@@ -256,9 +273,16 @@ public final class MovieStore {
                 if (c != null) c.close();
             }
         }
-        if (out.isEmpty()) {
-            // 库还没就位时的兜底，保证界面不至于完全没有分类行
-            out.add(new Category(0, "全部"));
+        List<Category> out = new ArrayList<>();
+        for (int i = 0; i < CAT_FIDS.length; i++) {
+            Integer n = counts.get(CAT_FIDS[i]);
+            if (n == null || n == 0) {
+                // 出栏但不报数据 —— 这种情况基本只有两种原因：库没就位，或数据侧版块被清空了
+                Log.d(TAG, "分类栏 [" + CAT_NAMES[i] + "] fid=" + CAT_FIDS[i] + " 在当前库中没有影片");
+            } else {
+                Log.d(TAG, "分类栏 [" + CAT_NAMES[i] + "] fid=" + CAT_FIDS[i] + " 共 " + n + " 部");
+            }
+            out.add(new Category(CAT_FIDS[i], CAT_NAMES[i]));
         }
         cats = out;
         return out;
