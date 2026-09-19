@@ -1,22 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 海报聚焦态：实底 + 外圈光晕 + 高亮描边（依次叠加，描边盖在实底上） -->
+<!--
+  海报聚焦态：LAMPA 白描边圈（效果②）
+  结构：实底层（圆角底）+ 外圈白描边（外扩画在 item_movie 的 margin 空隙里，不挤兄弟布局）
+  与 LAMPA 官方 `.card.focus .card__view::after` 对齐：
+    - 描边色 #FFFFFFFF（纯白，非蓝），宽 3dp（≈0.3em，10sp 基准）
+    - 圆角 8dp（≈1.4em）
+    - 不缩放、不位移、不动兄弟布局（靠 item_movie FrameLayout 四周 6dp margin 留出外扩空隙）
+-->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item>
         <shape>
             <solid android:color="#FF22262B" />
-            <corners android:radius="6dp" />
+            <corners android:radius="8dp" />
         </shape>
     </item>
     <item>
         <shape>
-            <stroke android:width="7dp" android:color="#3342A5F5" />
-            <corners android:radius="6dp" />
-        </shape>
-    </item>
-    <item>
-        <shape>
-            <stroke android:width="3dp" android:color="#FF42A5F5" />
-            <corners android:radius="6dp" />
+            <stroke android:width="3dp" android:color="#FFFFFFFF" />
+            <corners android:radius="8dp" />
         </shape>
     </item>
 </layer-list>

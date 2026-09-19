@@ -5,6 +5,8 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -12,6 +14,7 @@ import android.os.Looper;
 import android.view.View;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -38,6 +41,7 @@ public class MainActivity extends Activity {
     private RecyclerView rvList;
     private TextView btnSearch;
     private TextView tvEmpty;
+    private ImageView ivBackdrop; // LAMPA 效果①：全屏背景层
 
     private OptionAdapter catAdapter;
     private OptionAdapter filterAdapter;
@@ -81,6 +85,7 @@ public class MainActivity extends Activity {
         rvCats = findViewById(R.id.recyclerView);
         rvFilters = findViewById(R.id.rvFilters);
         rvList = findViewById(R.id.rvMovies);
+        ivBackdrop = findViewById(R.id.ivBackdrop); // LAMPA 效果①：全屏背景层
 
         // 分类行
         rvCats.setLayoutManager(new LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false));
@@ -135,6 +140,8 @@ public class MainActivity extends Activity {
         movieAdapter = new MovieAdapter();
         movieAdapter.setOnClick(this::openDetail);
         movieAdapter.setOnLongClick(this::confirmTransfer);
+        // LAMPA 效果①：焦点海报变更 → 全屏背景层交叉淡入
+        movieAdapter.setOnFocusPoster(this::onFocusPoster);
         rvList.setAdapter(movieAdapter);
         rvList.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
@@ -485,5 +492,90 @@ public class MainActivity extends Activity {
     private boolean kwEquals(String kw) {
         return (searchKeyword == null ? "" : searchKeyword)
                 .equals(kw == null ? "" : kw);
+    }
+
+    // =========================================================================
+    // LAMPA 效果①：全屏背景层（焦点海报交叉淡入）
+    //
+    // 焦点移到哪张海报，全屏就淡入那张海报（centerCrop 铺满 + 半透明压暗）。
+    // 数据源：没有横版 backdrop（库里只有竖海报），用竖海报 centerCrop 铺满 ——
+    // 上下会被裁掉一些，但中间区域（最显眼）完整保留，视觉等价 LAMPA 的"呼吸感"。
+    //
+    // 内存保护：单独一个 LruCache（maxSize=8，约 4MB）只给背景层用，
+    // 不复用 ImageLoader 的无上限 ConcurrentHashMap（那是海报墙用的，横图会 OOM）。
+    // =========================================================================
+
+    private final androidx.lru.LruCache<String, Bitmap> backdropCache =
+            new androidx.lru.LruCache<String, Bitmap>(8 * 1024 * 1024) {
+                @Override
+                protected int sizeOf(String key, Bitmap value) {
+                    return value.getByteCount();
+                }
+            };
+
+    private String currentBackdropUrl = ""; // 当前背景层显示的图（防重复加载）
+    private int backdropGen = 0;           // 代号：快速切换焦点时作废旧请求（「最新一次说了算」）
+
+    private void onFocusPoster(String picUrl) {
+        if (ivBackdrop == null) return;
+        if (picUrl == null || picUrl.isEmpty()) {
+            // 焦点离开海报墙（移到分类行/搜索按钮）：清掉背景，回到纯底色
+            currentBackdropUrl = "";
+            ivBackdrop.setImageDrawable(null);
+            return;
+        }
+        if (picUrl.equals(currentBackdropUrl)) return; // 同一张不重复加载
+        currentBackdropUrl = picUrl;
+        final int gen = ++backdropGen;
+
+        // 命中缓存 → 立即设（瞬切，同 LAMPA 的快切换）
+        Bitmap cached = backdropCache.get(picUrl);
+        if (cached != null) {
+            ivBackdrop.setImageBitmap(cached);
+            return;
+        }
+
+        // 未命中 → 后台下载 + 交叉淡入（旧图保留到新图到位再切换，避免闪屏）
+        final ImageView bg = ivBackdrop;
+        pool.execute(() -> {
+            Bitmap bmp = fetchBackdrop(picUrl);
+            if (bmp == null || gen != backdropGen) return; // 失败或被更新焦点取代
+            backdropCache.put(picUrl, bmp);
+            main.post(() -> {
+                if (gen != backdropGen) return; // 已被更新的焦点取代
+                // 交叉淡入：先把 alpha 拉低再切图，最后回到 0.55（与 XML 一致）
+                bg.animate().alpha(0.2f).setDuration(100).withEndAction(() -> {
+                    bg.setImageBitmap(bmp);
+                    bg.animate().alpha(0.55f).setDuration(200).start();
+                }).start();
+            });
+        });
+    }
+
+    /** 下载背景图，降采样到约 720p 高度（横图铺全屏够用，省内存）。 */
+    private Bitmap fetchBackdrop(String url) {
+        for (int i = 0; i < 2; i++) {
+            java.net.HttpURLConnection conn = null;
+            try {
+                java.net.URL u = new java.net.URL(url);
+                conn = (java.net.HttpURLConnection) u.openConnection();
+                conn.setConnectTimeout(8000);
+                conn.setReadTimeout(12000);
+                conn.setRequestProperty("User-Agent", Http.UA);
+                conn.setRequestProperty("Accept", "image/avif,image/webp,image/apng,*/*");
+                int code = conn.getResponseCode();
+                if (code != 200) continue;
+                java.io.InputStream is = conn.getInputStream();
+                BitmapFactory.Options o = new BitmapFactory.Options();
+                o.inSampleSize = 2; // 降采样：原图 ~1500px → 背景层只要 ~750px
+                Bitmap bmp = BitmapFactory.decodeStream(is, null, o);
+                if (bmp != null) return bmp;
+            } catch (Exception e) {
+                // retry
+            } finally {
+                if (conn != null) conn.disconnect();
+            }
+        }
+        return null;
     }
 }
