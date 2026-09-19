@@ -68,6 +68,7 @@ public final class MovieStore {
         }
         try {
             db = MovieDb.openReadOnly(appCtx);
+            pinKnown = null;    // 新开的连接 -> 视图结构要重新探一次
         } catch (Throwable e) {
             Log.d(TAG, "MovieStore.database 打开失败: " + e);
             db = null;
@@ -84,6 +85,7 @@ public final class MovieStore {
         db = null;
         filterCache.clear();
         cats = null;
+        pinKnown = null;    // 换库后视图结构可能变（在线更新可能装回一版老库），必须重探
         database();
     }
 
@@ -412,7 +414,7 @@ public final class MovieStore {
             a2.add(String.valueOf(PAGE_SIZE));
             a2.add(String.valueOf((p - 1) * PAGE_SIZE));
             c = q.rawQuery("SELECT " + LIST_COLS + " FROM v_movie_app WHERE " + where
-                    + " ORDER BY " + ORDER_BY + " LIMIT ? OFFSET ?", toArray(a2));
+                    + " ORDER BY " + orderBy() + " LIMIT ? OFFSET ?", toArray(a2));
             while (c.moveToNext()) out.data.add(readListRow(c));
         } catch (Throwable e) {
             Log.d(TAG, "queryPage 查询失败: " + e);
@@ -431,13 +433,63 @@ public final class MovieStore {
             + "video_count,total_size";
 
     /**
-     * 排序：有上映日期的按日期倒序在前，没有的按年份、再按 id 倒序。
+     * 排序：**置顶在前**，然后有上映日期的按日期倒序，没有的按年份、再按 id 倒序。
      *
      * <p>用 {@code COALESCE} 把缺值压到末尾，避免 NULL 在 SQLite 里排最前导致
      * 「一堆没年份的片子」霸占首页。</p>
+     *
+     * <p>置顶（{@code movie.pin_top}）与日期无关：测试库、公告片这类「运营想固定摆在
+     * 某栏目首位」的条目，靠伪造一个 9999 年的上映日期来实现是很脏的 ——
+     * 那个假日期会直接显示在详情页的资料区里。所以单独给一列。</p>
      */
-    private static final String ORDER_BY =
+    private static final String ORDER_BY_PIN =
+            "COALESCE(pin_top,0) DESC, COALESCE(release_date,'') DESC, "
+                    + "COALESCE(year,0) DESC, src_tid DESC";
+
+    /** 老库（视图里没有 pin_top）用的排序。写 pin_top 会整条 SQL 报错。 */
+    private static final String ORDER_BY_PLAIN =
             "COALESCE(release_date,'') DESC, COALESCE(year,0) DESC, src_tid DESC";
+
+    /**
+     * 视图里到底有没有 pin_top。{@code null} = 还没探过。
+     *
+     * <p>App 是「内嵌库 + 在线更新」两条腿走路，完全可能碰上「新 App + 上一版库」——
+     * 那一刻视图还没有 pin_top。而 {@code ORDER BY} 里写一个不存在的列会让整条查询
+     * 直接抛异常，被 {@link #queryPage} 的兜底 catch 吞掉后，表现是<b>整个列表空白</b>
+     * 而不是报错。这种「静默变空」最难查，所以打开库时探一次，探不到就退回旧排序，
+     * 只是置顶不生效而已。</p>
+     */
+    private static volatile Boolean pinKnown;
+
+    private static boolean pinTopReady() {
+        Boolean v = pinKnown;
+        if (v != null) return v;
+        boolean ok = false;
+        Cursor c = null;
+        try {
+            SQLiteDatabase q = db;
+            if (q != null) {
+                c = q.rawQuery("PRAGMA table_info(v_movie_app)", null);
+                while (c.moveToNext()) {
+                    if ("pin_top".equals(c.getString(1))) {
+                        ok = true;
+                        break;
+                    }
+                }
+            }
+        } catch (Throwable e) {
+            Log.d(TAG, "探测 v_movie_app.pin_top 失败: " + e);
+        } finally {
+            if (c != null) c.close();
+        }
+        pinKnown = ok;
+        Log.d(TAG, "置顶列 pin_top 可用 = " + ok);
+        return ok;
+    }
+
+    private static String orderBy() {
+        return pinTopReady() ? ORDER_BY_PIN : ORDER_BY_PLAIN;
+    }
 
     private static Movie readListRow(Cursor c) {
         Movie m = new Movie();

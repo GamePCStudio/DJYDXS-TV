@@ -607,9 +607,11 @@ public class PlayerActivity extends Activity {
         if (!pf.ok) {
             // 没转过存（或目录里没有）-> 自动转存一次，转存功能已具备
             status("尚未转存，正在转存到 " + dir + " …");
-            BaiduPan.TransferResult tr = BaiduPan.transfer(shareUrl, sharePwd, dir);
+            BaiduPan.TransferResult tr = BaiduPan.transfer(shareUrl, sharePwd, dir, name);
             if (!tr.ok) {
-                fail("转存失败：" + tr.message);
+                // 空间不足的话术本身就是完整的句子，再套一层「转存失败：」会读成病句。
+                // 播放页不做弹框（会打断正在看的画面），靠状态栏 + 长 Toast 交代清楚。
+                fail(tr.spaceFull ? tr.message : "转存失败：" + tr.message);
                 return null;
             }
             Settings.recordTransfer(dir, true);

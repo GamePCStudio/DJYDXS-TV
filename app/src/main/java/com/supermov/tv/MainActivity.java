@@ -361,7 +361,7 @@ public class MainActivity extends Activity {
                 rr.message = "该影片没有百度网盘分享链接";
             } else {
                 try {
-                    rr = BaiduPan.transfer(url, pwd, Settings.saveDir());
+                    rr = BaiduPan.transfer(url, pwd, Settings.saveDir(), name);
                 } catch (Throwable e) {
                     rr = new BaiduPan.TransferResult();
                     rr.ok = false;
@@ -371,9 +371,42 @@ public class MainActivity extends Activity {
             final BaiduPan.TransferResult r = rr;
             main.post(() -> {
                 Settings.recordTransfer(Settings.saveDir(), r.ok);
-                Toast.makeText(this, (r.ok ? "✔ " : "✘ ") + r.message, Toast.LENGTH_LONG).show();
+                if (r.spaceFull) {
+                    // 长按快捷键转存也可能撞上空间不足 —— 同样要弹框说清楚，
+                    // 不能靠一个三秒就消失的 Toast 交代「你得去删网盘里的文件」
+                    showNoSpaceDialog(r.message);
+                } else {
+                    Toast.makeText(this, (r.ok ? "✔ " : "✘ ") + r.message, Toast.LENGTH_LONG).show();
+                }
             });
         });
+    }
+
+    /**
+     * 网盘空间不足的提示框（首页长按快捷转存的入口）。
+     *
+     * <p>话术统一取自 {@link BaiduPan#MSG_NO_SPACE}，详情页那份 {@code showNoSpaceDialog}
+     * 用的是同一个常量 —— 两个入口的说法必须一模一样，否则用户会以为是两个不同的问题。</p>
+     */
+    private void showNoSpaceDialog(String msg) {
+        String body = (msg == null || msg.isEmpty()) ? BaiduPan.MSG_NO_SPACE : msg;
+        AlertDialog dlg = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("网盘空间不足")
+                .setMessage(body + "\n\n在线播放与下载都要先把影片转存到你的网盘，"
+                        + "空间不足时两者都无法使用。")
+                .setPositiveButton("知道了", null)
+                .setNegativeButton("去清理空间", (d, w) -> {
+                    try {
+                        startActivity(new Intent(Intent.ACTION_VIEW,
+                                android.net.Uri.parse("https://pan.baidu.com/main/disk")));
+                    } catch (Throwable e) {
+                        Toast.makeText(this, "请在电脑或手机上打开百度网盘清理空间",
+                                Toast.LENGTH_LONG).show();
+                    }
+                })
+                .create();
+        dlg.show();
+        dlg.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus();
     }
 
     /**

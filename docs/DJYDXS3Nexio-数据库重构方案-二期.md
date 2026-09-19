@@ -563,11 +563,12 @@ cur.execute("PRAGMA journal_mode=DELETE")   # ← 关键：退回单文件自洽
 | **1** | schema v2 迁移、清单体系、更新器、更名模块、效果预览 —— **纯新增，零风险** | ✅ 已完成 |
 | **2** | 接线：删 `Site.java` / `WebLoginActivity`，`MainActivity`/`DetailActivity` 改读视图，清理论坛残留 | ✅ 已完成（**v1.28**，见 §8） |
 | **2c** | 分类栏定稿：白名单 4 栏目（按 fid）+ 显示名覆盖 + 顺序写死，下线 `转载资源区`/`1080P.Remux` | ✅ 已完成（**v1.29**，见 §9） |
-| **2b** | 转存成功后自动调 `PanRename` 改名 | ⏳ 未接线。规则表已在库里，等真实 `.xs` 分享样本验证 `filemanager?opera=rename` 行为后再接 |
-| **3** | sync 侧改造：合并回填逻辑、解除 `content` 截断、主创/简介补全 | 待定 |
-| **4** | 元数据增强：TMDB 自动匹配、海报镜像、`movie_asset` | 待定 |
+| **3** | 置顶机制 `pin_top` + 测试库条目 + 转存建片名文件夹 + 空间不足确定性判定 | ✅ 已完成（**v1.30**，见《[三期](DJYDXS3Nexio-三期-转存改造与置顶测试库.md)》） |
+| **3b** | 转存成功后自动调 `PanRename` 改名 | ⏳ 未接线。规则表已在库里，等真实 `.xs` 分享样本验证 `filemanager?opera=rename` 行为后再接 |
+| **4** | sync 侧改造：合并回填逻辑、解除 `content` 截断、主创/简介补全 | 待定 |
+| **5** | 元数据增强：TMDB 自动匹配、海报镜像、`movie_asset` | 待定 |
 
-**下一步（阶段 2b / 3）**：
+**下一步（阶段 3b / 4）**：
 
 1. 拿一个真机 + 一个真实 `.xs` 分享跑一次 `PanRename`，确认 `filemanager?opera=rename` 的 errno 语义，结掉 §6 风险 1~3；
 2. sync 侧把 `content` 从 600 字截断改成「解析后入库」，简介覆盖率（当前 96/326 = 29%）才能真正上去；
@@ -720,3 +721,28 @@ private static final String[] CAT_NAMES = {"4K全景声", "最新剧集•美剧
 数据库本身**未改动**（`db_version` 仍为 `2026091901`），所以不需要重出库、不用动清单。
 版本：`versionCode 29` / `versionName "1.29"`，构建 run `35411024696`。
 
+
+---
+
+## 10. 三期（v1.30）—— 见独立文档
+
+三期内容与二期不同源（不是继续改数据库结构，而是**加了一列 + 改了转存行为**），
+单独成文：《DJYDXS3Nexio-三期-转存改造与置顶测试库.md》。
+
+一句话索引：
+
+| 需求 | 一句话结论 | 落在哪 |
+|---|---|---|
+| 测试库入库并置顶 | 加 `pin_top` 列，**不用伪造 `release_date`**（假日期会显示在详情页） | `movie.pin_top` + `v_movie_app` + `MovieStore.ORDER_BY_PIN` |
+| 转存建片名文件夹 | 判据是**逐条看根条目的 `isdir`**，不是猜分享类型（混合分享必然漏） | `BaiduPan.transfer` 4 参重载 |
+| 空间满了要提示 | **不能靠 errno 判**（各路说法互相矛盾）→ 用 `/api/quota` 真实容量做确定性判定 | `BaiduPan.quota()` + `MSG_NO_SPACE` |
+
+数据库 `db_version` 升到 `2026091902`（`sha256=3dd45ca6…b814a`），
+`4KSDR.Remux`（=「4K全景声」）由 89 部变为 **90 部**。
+
+**从二期继承、并在三期被验证有效的两条约定**：
+
+1. 「App 只读视图」——三期加列同样要在视图里暴露（`COALESCE(m.pin_top,0) AS pin_top`），
+   而不是让 App 去 `LEFT JOIN movie`；
+2. 「两条升级路径 DDL 必须对齐」——三期正是靠这条抓出了
+   `db_manual_entries.py` 缺 `idx_movie_pin` 的不一致。

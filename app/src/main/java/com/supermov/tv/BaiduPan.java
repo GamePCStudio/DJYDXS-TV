@@ -163,6 +163,19 @@ public final class BaiduPan {
          * 片名去猜 —— 直接拿这里记下的路径精确取文件，永远播不错。</p>
          */
         public final List<String> toPaths = new ArrayList<>();
+        /**
+         * 失败原因是不是「目标网盘空间不够」。
+         *
+         * <p>为 true 时 {@link #message} 已经是给用户看的完整话术（{@link #MSG_NO_SPACE}），
+         * 调用方直接展示即可，不要再自己拼「转存失败：」前缀 —— 否则会变成
+         * 「转存失败：百度网盘空间已满…」这种半截话。</p>
+         */
+        public boolean spaceFull;
+        /**
+         * 因为目标目录已有同名影片而实际落地的顺延目录（如 {@code /超级影库/片名 (2)}）。
+         * 空串 = 正常落到目标目录，没有顺延。
+         */
+        public String superseded = "";
     }
 
     /**
@@ -238,8 +251,277 @@ public final class BaiduPan {
         return out;
     }
 
-    /** 一键转存：分享链接(+提取码) -> targetDir。 */
+    /** 一键转存（不按片名建子文件夹，等价于 {@code movieName=null}）。 */
     public static TransferResult transfer(String shareUrl, String pwd, String targetDir) {
+        return transfer(shareUrl, pwd, targetDir, null);
+    }
+
+    // ---------- 空间不足：判定靠容量，不靠猜 errno ----------
+
+    /** 网盘空间不足的统一话术。任何入口报这个错都用它，保证口径一致。 */
+    public static final String MSG_NO_SPACE =
+            "百度网盘空间已满，无法转存。\n"
+                    + "请先删除网盘里的部分文件腾出空间，之后才能正常在线播放和下载。";
+
+    /** 剩余空间超过这个值就直接跳过体积统计 —— 库里最大的片子也就几十 GB。 */
+    private static final long SPACE_PLENTY_BYTES = 150L * 1024 * 1024 * 1024;
+    /** 剩余空间低于这个值就认为「放不下任何一部」：库里全是 4K 片源，最小也几百 MB。 */
+    private static final long SPACE_DANGER_BYTES = 20L * 1024 * 1024;
+    /** 统计分享体积时最多列几个目录。用尽则退化为「下界」，下界依然够用来证明放不下。 */
+    private static final int SIZE_WALK_DIRS = 6;
+
+    /**
+     * 已知的「空间不足」errno。
+     *
+     * <p><b>只当旁证，不单独下结论。</b>百度转存失败回的码并不专一：errno=4 在公开资料里
+     * 被解释成「存储好像出问题了」，同一份资料又把 -9/-10 说成容量不足，互相矛盾。
+     * 拿这种码当判据必然误报，所以主判据是 {@link #quota()}（真实容量）。</p>
+     */
+    private static final java.util.Set<String> SPACE_ERRNOS =
+            new java.util.HashSet<>(java.util.Arrays.asList("31116", "36009", "-999"));
+
+    private static final String[] SPACE_WORDS = {
+            "空间不足", "容量不足", "剩余空间", "空间已满", "存储空间不足", "购买空间", "扩容"
+    };
+
+    /** 响应体里有没有「空间不足」的措辞。 */
+    private static boolean bodySaysNoSpace(String body) {
+        if (body == null || body.isEmpty()) return false;
+        for (String w : SPACE_WORDS) {
+            if (body.contains(w)) return true;
+        }
+        return false;
+    }
+
+    /** 网盘容量。字段为 -1 表示没取到。 */
+    public static class Quota {
+        public boolean ok;
+        public long total = -1, used = -1, free = -1;
+    }
+
+    /**
+     * 查当前账号的容量（{@code /api/quota}）。
+     *
+     * <p>这是「空间满了」的主判据：直接拿真实剩余空间跟要转存的体积比，
+     * 比事后猜 errno 可靠得多。</p>
+     */
+    public static Quota quota() {
+        Quota q = new Quota();
+        if (!CookieStore.hasBaiduLogin()) return q;
+        Http.desktopUa.set(true);
+        try {
+            Http.Resp r = Http.get("https://pan.baidu.com/api/quota?checkfree=1&checkexpire=1"
+                    + "&clienttype=0&app_id=250528&web=1");
+            JSONObject o = new JSONObject(r.body);
+            if (!"0".equals(String.valueOf(o.opt("errno")))) {
+                android.util.Log.d("SupeMov", "quota errno=" + o.opt("errno"));
+                return q;
+            }
+            q.total = o.optLong("total", -1);
+            q.used = o.optLong("used", -1);
+            q.free = o.optLong("free", -1);
+            q.ok = q.free >= 0;
+            android.util.Log.d("SupeMov", "quota total=" + q.total
+                    + " used=" + q.used + " free=" + q.free);
+        } catch (Throwable e) {
+            android.util.Log.d("SupeMov", "quota 失败 " + e);
+        } finally {
+            Http.desktopUa.set(false);
+        }
+        return q;
+    }
+
+    /**
+     * 递归合计分享体积，返回**下界**。
+     *
+     * <p>为什么下界就够用：我们要判断的是「剩余空间 &lt; 需要的大小」。
+     * 下界偏小只会让我们<b>少判</b>几次空间不足（退回去靠 errno 旁证），
+     * 不会误判成「空间不足」，方向是安全的。所以预算用尽可以直接停，
+     * 不必为了一个精确总数把整棵目录树爬完（大分享那是几百次请求）。</p>
+     */
+    private static long shareSizeLowerBound(String shareid, String uk, String referer) {
+        long[] acc = new long[]{0L};
+        int[] budget = new int[]{SIZE_WALK_DIRS};
+        walkSize(shareid, uk, "/", referer, acc, budget, 0);
+        return acc[0];
+    }
+
+    private static void walkSize(String shareid, String uk, String dir, String referer,
+                                 long[] acc, int[] budget, int depth) {
+        if (budget[0] <= 0 || depth > 3) return;
+        budget[0]--;
+        JSONArray arr = listShareDir(shareid, uk, dir, referer);
+        if (arr == null) return;
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject f = arr.optJSONObject(i);
+            if (f == null) continue;
+            if (f.optInt("isdir", 0) == 1) {
+                String p = f.optString("path", "");
+                if (!p.isEmpty() && budget[0] > 0) {
+                    walkSize(shareid, uk, p, referer, acc, budget, depth + 1);
+                }
+            } else {
+                long sz = f.optLong("size", 0);
+                if (sz > 0) acc[0] += sz;
+            }
+        }
+    }
+
+    /**
+     * 把片名清洗成合法的百度网盘目录名。
+     *
+     * <p>百度对目录名的硬约束：不能含 {@code / \ : * ? " &lt; &gt; |}，
+     * 否则报 errno=-7「文件或目录名错误」；长度也有上限，超了会被截断甚至失败。
+     * 片名里带冒号的极常见（《志愿军：雄兵出击》），不清洗必然踩。</p>
+     */
+    static String safeDirName(String name) {
+        String s = name == null ? "" : name.trim();
+        // 全角冒号先变半角，下一步统一处理；书名号《》无害，保留可读性
+        s = s.replace('\uff1a', ':');
+        s = s.replaceAll("[\\\\/:*?\"<>|\r\n\t]", " ");
+        s = s.replaceAll("\\s+", " ").trim();
+        // 结尾的点和空格在部分系统上会被吃掉 -> 「建了却找不到」，一并去掉
+        s = s.replaceAll("[. ]+$", "");
+        if (s.length() > 60) s = s.substring(0, 60).trim();
+        if (s.isEmpty()) s = "未命名影片";
+        return s;
+    }
+
+    /** 人类可读体积（错误提示里要用，别让用户读 3.7e10 这种数字）。 */
+    private static String humanSize(long n) {
+        if (n < 0) return "未知";
+        if (n < 1024) return n + " B";
+        double kb = n / 1024.0;
+        if (kb < 1024) return String.format(java.util.Locale.ROOT, "%.1f KB", kb);
+        double mb = kb / 1024.0;
+        if (mb < 1024) return String.format(java.util.Locale.ROOT, "%.1f MB", mb);
+        double gb = mb / 1024.0;
+        if (gb < 1024) return String.format(java.util.Locale.ROOT, "%.2f GB", gb);
+        return String.format(java.util.Locale.ROOT, "%.2f TB", gb / 1024.0);
+    }
+
+    /** 一次 share/transfer 调用的结果。 */
+    private static class Call {
+        String errno = "-1";
+        String body = "";
+    }
+
+    /** 发一次 share/transfer。 */
+    private static Call callTransfer(long[] ids, String dest, String shareid, String uk,
+                                     String bdstoken, java.util.Map<String, String> hdrs) {
+        Call c = new Call();
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < ids.length; i++) {
+            if (i > 0) sb.append(",");
+            sb.append(ids[i]);
+        }
+        sb.append("]");
+        String body = "fsidlist=" + enc(sb.toString()) + "&path=" + enc(dest);
+        Http.Resp tr = Http.request("POST",
+                "https://pan.baidu.com/share/transfer?shareid=" + shareid
+                        + "&from=" + uk + "&bdstoken=" + bdstoken
+                        + "&channel=chunlei&clienttype=0&web=1&app_id=250528",
+                body, hdrs, true);
+        c.body = tr.body == null ? "" : tr.body;
+        c.errno = errnoOf(c.body);
+        android.util.Log.d("SupeMov", "transfer: dest=" + dest + " n=" + ids.length
+                + " errno=" + c.errno + " body=" + c.body.substring(0, Math.min(200, c.body.length())));
+        return c;
+    }
+
+    /**
+     * 把一批 fs_id 转存进 dest，必要时自动顺延目录。
+     *
+     * <p>errno=12 的语义是「<b>部分</b>文件已存在于目标文件夹」（百度页面里的文案表），
+     * 也就是这一批其实部分成功了。旧实现为了不丢文件会顺延出 {@code dest (2)}~{@code (5)}
+     * 再转一遍 —— 这个策略保留，但<b>顺延的基准改成真正写入的那个目录</b>：
+     * 以前无论写哪儿都顺延根目录，现在文件进的是 {@code 根目录/片名/}，
+     * 冲突自然也该在 {@code 根目录/片名 (2)/} 上解决。</p>
+     *
+     * @return true = 成功（落地路径已写入 out.toPaths）；false = 失败（out.message 已填好）
+     */
+    private static boolean transferBatch(long[] ids, String dest, String shareid, String uk,
+                                         String bdstoken, java.util.Map<String, String> hdrs,
+                                         TransferResult out) {
+        Call c = callTransfer(ids, dest, shareid, uk, bdstoken, hdrs);
+        if ("0".equals(c.errno)) {
+            collectTargets(out, c.body, dest);
+            return true;
+        }
+        if ("12".equals(c.errno)) {
+            for (int n = 2; n <= 5; n++) {
+                String alt = dest.replaceAll("/$", "") + " (" + n + ")";
+                if (!ensureDir(alt)) continue;
+                Call c2 = callTransfer(ids, alt, shareid, uk, bdstoken, hdrs);
+                if ("0".equals(c2.errno)) {
+                    collectTargets(out, c2.body, alt);
+                    out.superseded = alt;
+                    return true;
+                }
+                if (!"12".equals(c2.errno)) {
+                    fillFailure(out, c2.errno, c2.body);
+                    return false;
+                }
+            }
+            out.message = "目标目录已存在同名影片，且 (2)~(5) 目录都被占用；请在网盘清理后重试";
+            return false;
+        }
+        fillFailure(out, c.errno, c.body);
+        return false;
+    }
+
+    /**
+     * 把一次失败翻译成给用户看的话，并顺手判定是不是「空间不足」。
+     *
+     * <p>判定顺序有意从确定到不确定：先看响应体里有没有明说空间问题，再看 errno 是否属于
+     * 已知的空间码，最后才用容量做旁证。**不敢确定的宁可原样报 errno**，
+     * 也不猜「空间不足」——错报会让用户去删不该删的东西。</p>
+     */
+    private static void fillFailure(TransferResult out, String errno, String body) {
+        if (bodySaysNoSpace(body) || SPACE_ERRNOS.contains(errno)) {
+            out.spaceFull = true;
+            out.message = MSG_NO_SPACE;
+            android.util.Log.d("SupeMov", "transfer: 判定空间不足(errno=" + errno + ")");
+            return;
+        }
+        // 旁证：容量查得到，且剩余已经少到放不下任何一部片 —— 这时不管 errno 是什么，
+        // 「空间满了」都是对用户最有用的结论。
+        Quota q = quota();
+        if (q.ok && q.free >= 0 && q.free < SPACE_DANGER_BYTES) {
+            out.spaceFull = true;
+            out.message = MSG_NO_SPACE + "\n（网盘只剩 " + humanSize(q.free) + "）";
+            android.util.Log.d("SupeMov", "transfer: 空间见底旁证成立 free=" + q.free
+                    + " errno=" + errno);
+            return;
+        }
+        out.message = transferMsg(errno);
+    }
+
+    // ---------- 一键转存 ----------
+
+    /**
+     * 一键转存：分享链接(+提取码) -&gt; targetDir；分享根目录里是<b>散文件</b>时，
+     * 先建一个以片名命名的文件夹再转进去。
+     *
+     * <h3>转存到哪儿：一条确定性的规则</h3>
+     * <ul>
+     *   <li>分享根目录里是<b>文件夹</b> -&gt; 原样转存到 targetDir。百度会把文件夹连内容
+     *       递归复制过来，转存目录下自然出现「片名文件夹/剧集」这一层；</li>
+     *   <li>分享根目录里是<b>文件</b>（完全没有文件夹，或者文件夹和散文件混在一起）
+     *       -&gt; 先在 targetDir 下建一个以片名命名的文件夹，把其中的<b>文件</b>转进去；
+     *       同一批里的文件夹仍原样转到 targetDir，保住分享原有的层级。</li>
+     * </ul>
+     *
+     * <p><b>为什么必须加第二条：</b>整个 App 的定位 / 播放 / 下载都是「在转存根目录里按片名
+     * 找那个文件夹，再往下钻」。分享根目录直接是散文件时，文件会平铺在转存根目录下 ——
+     * 按片名找文件夹永远找不到，只能靠转存接口回的落地路径一次性定位，换部片子就迷路；
+     * 下载时也没法按片名建目录（多部片子的散文件会全糊在同一层）。加一层片名文件夹之后，
+     * 两种分享形态在网盘里的样子就统一了。</p>
+     *
+     * @param movieName 片名；为空则不建子文件夹（退回旧行为）
+     */
+    public static TransferResult transfer(String shareUrl, String pwd, String targetDir,
+                                         String movieName) {
         TransferResult out = new TransferResult();
         android.util.Log.d("SupeMov", "transfer: start url=" + shareUrl + " pwd=" + pwd + " dir=" + targetDir);
         if (!CookieStore.hasBaiduLogin()) {
@@ -373,45 +655,90 @@ public final class BaiduPan {
             if (mbt.find()) bdstoken = mbt.group(1);
             if (bdstoken.isEmpty()) bdstoken = getBdstoken();
 
-            // 5) 下发哪些 fsid：**以「分享根目录的权威列表」为主源**。
+            // 5) 取分享根条目（带 isdir），据此决定「文件放哪儿、文件夹放哪儿」。
             //
-            //    为什么不用页面里的 file_list 当主源：它是渲染层的片段，多文件 / 多级目录时
-            //    会被截断（少集），而且有时会把文件夹**展开成散文件** —— 按它转存，网盘里就
-            //    变成「一堆文件平铺在转存目录下」，分享里原有的文件夹层级全丢了。
+            //    以 share/list 的根列表为主源、不用页面里的 file_list：后者是渲染层片段，
+            //    多文件 / 多级目录时会被截断（少集），而且有时会把文件夹**展开成散文件** ——
+            //    照它转存，网盘里就变成「一堆文件平铺在转存目录下」，原有层级全丢。
             //
-            //    share/list 的根列表才是权威的：根条目里的「文件夹」项本身就代表
-            //    「连文件夹带内容一起递归复制」。所以**原样下发根条目** = 转存结果与分享
-            //    的结构完全一致 —— 转存目录下先出现同名文件夹，影片躺在文件夹里面。
-            long[] fsids = idsOf(listShareDir(shareid, uk, "/", shareUrl));
+            //    根条目里的「文件夹」项本身就代表「连文件夹带内容一起递归复制」，
+            //    所以原样下发 = 转存结果与分享结构一致。
+            JSONArray roots = listShareDir(shareid, uk, "/", shareUrl);
             String srcTag = "share/list(root)";
-            if (fsids.length == 0) {
-                // 兜底：share/list 拿不到（风控 / 接口异常）才退回页面 file_list（可能被截断/展平）
+            if (roots == null || roots.length() == 0) {
+                // 兜底：share/list 拿不到（风控 / 接口异常）才退回页面 file_list。
+                // 这个来源会把文件夹**展平**，条目基本都是文件 —— 正好适用「文件进片名文件夹」。
                 srcTag = "page file_list(兜底)";
                 String flJson = extractFileListJson(html);
                 if (flJson != null) {
                     try {
-                        fsids = idsOf(new JSONArray(flJson));
+                        roots = new JSONArray(flJson);
                     } catch (Exception ignored) {
                     }
                 }
             }
-            android.util.Log.d("SupeMov", "transfer: fsids from " + srcTag + " = " + fsids.length
+
+            JSONArray dirArr = new JSONArray();
+            JSONArray fileArr = new JSONArray();
+            long rootFileBytes = 0;      // 根条目里「文件」的体积（目录项的 size 在百度侧常为 0）
+            if (roots != null) {
+                for (int i = 0; i < roots.length(); i++) {
+                    JSONObject f = roots.optJSONObject(i);
+                    if (f == null || f.optLong("fs_id", 0) <= 0) continue;
+                    if (f.optInt("isdir", 0) == 1) {
+                        dirArr.put(f);
+                    } else {
+                        fileArr.put(f);
+                        long sz = f.optLong("size", 0);
+                        if (sz > 0) rootFileBytes += sz;
+                    }
+                }
+            }
+            long[] dirIds = idsOf(dirArr);
+            long[] fileIds = idsOf(fileArr);
+            android.util.Log.d("SupeMov", "transfer: roots from " + srcTag
+                    + " dirs=" + dirIds.length + " files=" + fileIds.length
+                    + " rootFileBytes=" + rootFileBytes
                     + " shareid=" + shareid + " uk=" + uk);
-            if (fsids.length == 0) {
+            if (dirIds.length == 0 && fileIds.length == 0) {
                 out.message = "没有文件[页长" + html.length()
                         + " yun=" + html.contains("yunData")
                         + " fl=" + html.contains("fs_id")
                         + " 验证=" + html.contains("安全验证") + "]";
                 return out;
             }
-            StringBuilder fsarr = new StringBuilder("[");
-            for (int i = 0; i < fsids.length; i++) {
-                if (i > 0) fsarr.append(",");
-                fsarr.append(fsids[i]);
-            }
-            fsarr.append("]");
 
-            // 6) share/transfer（带 BDCLND cookie）
+            // 5b) 容量预检 —— 「空间满了」的**主判据**。
+            //
+            //     为什么不靠 errno：百度转存失败回的码并不专一，errno=4 被解释成「存储出问题」，
+            //     同一份资料又把 -9/-10 说成容量不足，拿它判定必然误报。
+            //     直接拿真实剩余空间跟要转存的体积比，才是确定性的判定。
+            //
+            //     需要多少：根条目里文件的体积是准的；若分享根是文件夹（目录项 size 常为 0），
+            //     就递归统计一个**下界** —— 下界偏小只会让我们少判几次，不会误判。
+            //     剩余空间充裕（>150GB）时连统计都不做，省掉一次目录遍历。
+            Quota q0 = quota();
+            long needLower = rootFileBytes;
+            if (q0.ok && q0.free >= 0 && q0.free < SPACE_PLENTY_BYTES
+                    && dirIds.length > 0 && rootFileBytes <= 0) {
+                needLower = shareSizeLowerBound(shareid, uk, shareUrl);
+            }
+            if (q0.ok && q0.free >= 0 && needLower > 0 && q0.free < needLower) {
+                android.util.Log.d("SupeMov", "transfer: 空间不足预检拦下 needLower=" + needLower
+                        + " free=" + q0.free);
+                out.spaceFull = true;
+                out.message = MSG_NO_SPACE + "\n（需要 " + humanSize(needLower)
+                        + "，网盘只剩 " + humanSize(q0.free) + "）";
+                return out;
+            }
+            if (q0.ok && q0.free >= 0 && q0.free < SPACE_DANGER_BYTES) {
+                android.util.Log.d("SupeMov", "transfer: 空间见底拦下 free=" + q0.free);
+                out.spaceFull = true;
+                out.message = MSG_NO_SPACE + "\n（网盘只剩 " + humanSize(q0.free) + "）";
+                return out;
+            }
+
+            // 6) 分批转存：文件先转（进「片名」文件夹），文件夹后转（进根目录）
             hdrs.put("Cookie", finalCookie);
             hdrs.put("X-Requested-With", "XMLHttpRequest");
             hdrs.put("Origin", "https://pan.baidu.com");
@@ -419,49 +746,33 @@ public final class BaiduPan {
             String ckT = (hdrs.get("Cookie") == null ? "" : hdrs.get("Cookie") + "; ")
                     + "BDUSS=" + (bdussT == null ? "" : bdussT);
             hdrs.put("Cookie", ckT);
-            String body = "fsidlist=" + enc(fsarr.toString()) + "&path=" + enc(targetDir);
-            Http.Resp tr = Http.request("POST",
-                    "https://pan.baidu.com/share/transfer?shareid=" + shareid
-                            + "&from=" + uk + "&bdstoken=" + bdstoken
-                            + "&channel=chunlei&clienttype=0&web=1&app_id=250528",
-                    body, hdrs, true);
-            String errno = errnoOf(tr.body);
-            android.util.Log.d("SupeMov", "transfer: final errno=" + errno + " body=" + tr.body.substring(0, Math.min(200, tr.body.length())));
-            out.ok = "0".equals(errno);
-            if (out.ok) {
-                collectTargets(out, tr.body, targetDir);
-                out.message = "转存成功 → "
-                        + (out.toPaths.isEmpty() ? targetDir : out.toPaths.get(0));
-                return out;
-            }
-            // errno=12 目标目录已有同名文件：自动顺延到 目录(2) (3) … 最多试到 (5)
-            if ("12".equals(errno)) {
-                for (int n = 2; n <= 5; n++) {
-                    String alt = targetDir.replaceAll("/$", "") + " (" + n + ")";
-                    if (!ensureDir(alt)) continue;
-                    String body2 = "fsidlist=" + enc(fsarr.toString()) + "&path=" + enc(alt);
-                    Http.Resp tr2 = Http.request("POST",
-                            "https://pan.baidu.com/share/transfer?shareid=" + shareid
-                                    + "&from=" + uk + "&bdstoken=" + bdstoken
-                                    + "&channel=chunlei&clienttype=0&web=1&app_id=250528",
-                            body2, hdrs, true);
-                    String errno2 = errnoOf(tr2.body);
-                    if ("0".equals(errno2)) {
-                        out.ok = true;
-                        collectTargets(out, tr2.body, alt);
-                        out.message = "目标目录已有同名影片，已转存到 → "
-                                + (out.toPaths.isEmpty() ? alt : out.toPaths.get(0));
-                        return out;
-                    }
-                    if (!"12".equals(errno2)) {
-                        out.message = transferMsg(errno2);
-                        return out;
-                    }
+
+            String root = trimSlash(targetDir);
+            String fileDest = root;
+            if (fileIds.length > 0 && movieName != null && !movieName.trim().isEmpty()) {
+                fileDest = root + "/" + safeDirName(movieName);
+                if (!ensureDir(fileDest)) {
+                    out.message = "影片文件夹创建失败(登录态可能失效)：" + fileDest;
+                    return out;
                 }
-                out.message = "目标目录已存在同名影片，且 (2)~(5) 目录都被占用；请在网盘清理后重试";
+                android.util.Log.d("SupeMov", "transfer: 文件转存目标 = " + fileDest);
+            }
+
+            // 文件批次先发：片名文件夹是这部片最稳的锚点，让它排在 toPaths 最前面，
+            // 调用方拿 toPaths.get(0) 就能直接定位，不必再按片名猜。
+            if (fileIds.length > 0
+                    && !transferBatch(fileIds, fileDest, shareid, uk, bdstoken, hdrs, out)) {
                 return out;
             }
-            out.message = transferMsg(errno);
+            if (dirIds.length > 0
+                    && !transferBatch(dirIds, root, shareid, uk, bdstoken, hdrs, out)) {
+                return out;
+            }
+
+            out.ok = true;
+            out.message = (out.superseded.isEmpty()
+                    ? "转存成功 → " : "目标目录已有同名影片，已转存到 → ")
+                    + (out.toPaths.isEmpty() ? targetDir : out.toPaths.get(0));
             return out;
         } finally {
             Http.desktopUa.set(false);

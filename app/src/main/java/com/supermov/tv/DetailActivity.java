@@ -251,7 +251,7 @@ public class DetailActivity extends Activity {
         main.post(() -> tvTransferResult.setText("网盘里还没有，正在转存到 " + rootDir + " …"));
         BaiduPan.TransferResult tr;
         try {
-            tr = BaiduPan.transfer(shareUrl, sharePwd, rootDir);
+            tr = BaiduPan.transfer(shareUrl, sharePwd, rootDir, movieName);
         } catch (Throwable e) {
             tr = new BaiduPan.TransferResult();
             tr.ok = false;
@@ -259,6 +259,14 @@ public class DetailActivity extends Activity {
         }
         String toPath = tr.toPaths.isEmpty() ? "" : tr.toPaths.get(0);
         Settings.recordTransfer(rootDir, tr.ok, movieName, toPath);
+
+        // 空间不足必须**单独弹框**：详情页那行状态字在滚动外、Toast 三秒就没了，
+        // 而这条错误要求用户去删网盘文件 —— 看不见等于没提示。
+        // 在线播放和下载都会走这里自动转存，所以在这个位置弹框，两个入口都覆盖得到。
+        if (tr.spaceFull) {
+            final String m = tr.message;
+            main.post(() -> showNoSpaceDialog(m));
+        }
 
         // 转存接口把「实际落地路径」告诉了我们 -> 直接按它精确取，不再靠片名去猜
         // （分享里的文件夹名和片名经常不一样）
@@ -756,7 +764,7 @@ public class DetailActivity extends Activity {
             main.post(() -> tvTransferResult.setText("网盘里还没有，正在转存到 " + dir + " …"));
             BaiduPan.TransferResult r;
             try {
-                r = BaiduPan.transfer(url, pwd, dir);
+                r = BaiduPan.transfer(url, pwd, dir, movieName);
             } catch (Throwable e) {
                 // 兜底：任何异常都不允许闪退，转成失败提示
                 r = new BaiduPan.TransferResult();
@@ -773,7 +781,8 @@ public class DetailActivity extends Activity {
                     String t = new java.text.SimpleDateFormat("M-d HH:mm", java.util.Locale.CHINA)
                             .format(new java.util.Date());
                     tvTransferResult.setText("✘ " + fr.message + "   (" + t + ")");
-                    toast(fr.message);
+                    if (fr.spaceFull) showNoSpaceDialog(fr.message);
+                    else toast(fr.message);
                 });
                 return;
             }
@@ -823,6 +832,38 @@ public class DetailActivity extends Activity {
                 showIncomplete(got, miss, expectN);
             });
         });
+    }
+
+    /**
+     * 网盘空间不足的提示框。
+     *
+     * <p>为什么是弹框而不是 Toast：这不属于「重试一下就好」的错误 —— 在线播放和下载
+     * 都必须先把影片转存进你自己的网盘，空间不足时<b>两者全都用不了</b>。
+     * 用户必须去做一件他未必知道要做的事（删网盘里的文件），所以要把话说全，
+     * 并且给一个能直接过去的入口。</p>
+     *
+     * <p>话术本身统一在 {@link BaiduPan#MSG_NO_SPACE}，这里只负责把它摆到用户眼前，
+     * 不再自己拼第二套说法 —— 否则「空间不足」在不同入口会变成几种不同的说法。</p>
+     */
+    private void showNoSpaceDialog(String msg) {
+        String body = (msg == null || msg.isEmpty()) ? BaiduPan.MSG_NO_SPACE : msg;
+        AlertDialog dlg = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("网盘空间不足")
+                .setMessage(body + "\n\n在线播放与下载都要先把影片转存到你的网盘，"
+                        + "空间不足时两者都无法使用。")
+                .setPositiveButton("知道了", null)
+                .setNegativeButton("去清理空间", (d, w) -> {
+                    try {
+                        startActivity(new Intent(Intent.ACTION_VIEW,
+                                android.net.Uri.parse("https://pan.baidu.com/main/disk")));
+                    } catch (Throwable e) {
+                        toast("请在电脑或手机上打开百度网盘清理空间");
+                    }
+                })
+                .create();
+        dlg.show();
+        // 电视遥控器：焦点默认落在「知道了」，避免误触「去清理空间」跳出去
+        dlg.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus();
     }
 
     // ==================== 转存完成后的分流 ====================
