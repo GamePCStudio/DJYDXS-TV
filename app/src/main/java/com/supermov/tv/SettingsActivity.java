@@ -333,7 +333,7 @@ public class SettingsActivity extends Activity {
                 .setPositiveButton("保存", (d, w) -> {
                     String v = input.getText().toString().trim().toUpperCase(java.util.Locale.ROOT);
                     if (!v.matches("[0-9A-F]{12}")) {
-                        Toast.makeText(this, "要 12 位十六进制，例如 9CF8DB056A49",
+                        Toast.makeText(this, "要 12 位十六进制，例如 9CF8DB078B44",
                                 Toast.LENGTH_LONG).show();
                         return;
                     }

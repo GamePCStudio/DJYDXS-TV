@@ -53,7 +53,7 @@ public final class AimeiCdn {
 
     public static final String BASE = "https://api.mymei.vip/";
     /** 设备序列号缺省值：一台已登记的艾美盒子 WiFi MAC（12 位大写十六进制，无分隔符）。 */
-    public static final String DEFAULT_SN = "9CF8DB056A49";
+    public static final String DEFAULT_SN = "9CF8DB078B44";
     /** 渠道名。RTD1295 默认分支即艾美自营渠道；其它风味为 yszn/yunmao/emei/mymeihome/v2share。 */
     public static final String DEFAULT_DISTRIBUTOR = "mymei";
     private static final String SIGN_SALT = "mYmoV10238";
@@ -186,13 +186,17 @@ public final class AimeiCdn {
     /** 占位桩特征（照抄已验证可用的探测脚本口径）；返回空串表示这是真实清单。 */
     private static String placeholderReason(CdnInfo info) {
         List<String> hit = new ArrayList<>();
-        if (info.fileSize >= 9_000_000_000L) hit.append("fileSize=" + info.fileSize + " 是哨兵值");
+        // 只认那个精确值。以前写成 fileSize >= 9e9 就算桩 —— 可 4K 原盘本来就有 40~60 GB，
+        // 于是把已授权的真实清单全判成占位桩（霸主实测 42,317,745,422 字节 / 404 段）。
+        if (info.fileSize == 9_999_999_999L) hit.append("fileSize=9999999999 固定占位值");
         for (int i = 0; i < info.segments.size() && i < 1; i++) {
             Segment s = info.segments.get(i);
             if (s.url.contains("golang.org")) hit.add("url 指向 golang.org 占位文件");
             if (s.sha1sum.startsWith("1234567890")) hit.add("sha1sum 为 1234… 占位");
         }
-        if (".ic2".equalsIgnoreCase(info.extension) && !hit.isEmpty()) {
+        // .ic2 是厂商加密容器：就算给真地址，明文拼出来也不可播，所以独立判桩。
+        // 注意 extension 在 parse() 里已去掉点号，这里比的是 "ic2" 而不是 ".ic2"。
+        if ("ic2".equalsIgnoreCase(info.extension)) {
             hit.add("容器 .ic2 为厂商加密格式，明文拼接不可播");
         }
         return hit.isEmpty() ? "" : String.join("；", hit);

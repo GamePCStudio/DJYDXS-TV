@@ -23,6 +23,8 @@ from pathlib import Path
 
 SRC_LIB = Path("C:/py/DJYDXS31NexioAM/tmdbam.db")
 SRC_EW3 = Path("C:/py/艾美mov/ew3.db")
+# 云端容器清点结果（cdn_census.py 写的）：库里的 file_name_ext 不可信，靠它对「只留 mkv」
+SRC_CENSUS = Path("C:/py/DJYDXS31NexioAM/cdn_census.db")
 REPO = Path(__file__).resolve().parents[1]
 ASSETS = REPO / "app/src/main/assets"
 DEFAULT_OUT = ASSETS / "SuperMOV.db"
@@ -146,8 +148,51 @@ def split_tags(category):
     return tech, genre
 
 
+def cloud_report():
+    """读 cdn_census.py 的清点结果：movie_id -> (云端容器, 占位桩原因, 请求错误)。
+
+    库里的 file_name_ext 全是 mkv，指望它做「只保留 .mkv」等于没做 —— 真实容器
+    只有云端 getCdnUrl 知道（实测 600700 蜘蛛侠：英雄远征 报 .ic2）。
+    """
+    if not SRC_CENSUS.exists():
+        return None
+    return {
+        r["movie_id"]: (
+            str(r["cloud_ext"] or "").strip().lower().lstrip("."),
+            str(r["stub"] or ""),
+            str(r["err"] or ""),
+        )
+        for r in rows(SRC_CENSUS, "SELECT movie_id,cloud_ext,stub,err FROM census")
+    }
+
+
 def build(out_path, template, dry):
-    lib = rows(SRC_LIB, "SELECT * FROM movie_tmdb_4k ORDER BY movie_id")
+    # 第一道：上游 file_name_ext。除 mkv 外见过 ic2（厂商加密，拼出来不可播）、
+    # iso / m2ts（不是单文件容器）、mp4 等。
+    all_rows = rows(SRC_LIB, "SELECT * FROM movie_tmdb_4k ORDER BY movie_id")
+    lib = [r for r in all_rows
+           if str(r["file_name_ext"] or "").strip().lower().lstrip(".") == "mkv"]
+    dropped = len(all_rows) - len(lib)
+    print("片源过滤: 总 %d，留 mkv %d，删非 mkv %d" % (len(all_rows), len(lib), dropped))
+
+    # 第二道：云端真实容器。清点没跑完就退出，免得「没清到」被当成「不是 mkv」删掉。
+    rep = cloud_report()
+    if rep is None:
+        sys.exit("缺少云端清点结果 %s：先跑 cdn_census.py" % SRC_CENSUS)
+    missing = [r["movie_id"] for r in lib if r["movie_id"] not in rep]
+    if missing:
+        sys.exit("云端清点不全：还差 %d 条（最早 5 个 %s）" % (len(missing), missing[:5]))
+    keep, bad = [], []
+    for r in lib:
+        ext, stub, err = rep[r["movie_id"]]
+        if ext == "mkv" and not stub and not err:
+            keep.append(r)
+        else:
+            bad.append((r["movie_id"], r["name"], ext, stub or err))
+    for mid, name, ext, why in bad:
+        print("  剔除 %s %s → %s" % (mid, name, why or ("非 mkv 容器 ." + ext)))
+    print("云端过滤: 留 %d，剔 %d" % (len(keep), len(bad)))
+    lib = keep
     ids = [r["movie_id"] for r in lib]
     con_ew3 = sqlite3.connect(str(SRC_EW3))
     con_ew3.row_factory = sqlite3.Row

@@ -56,6 +56,12 @@ python -X utf8 tools/build_am_db.py
    `db_version` 必须一致，`MovieStore` 靠它决定要不要重新拷库。
 5. 未来一份库里**同时**有 `pan_url` 和 `hash`：`MovieStore.detail()` 会把 hash 线路
    排在 `boxes[0]`，网盘线路排其后。想让网盘优先就调那一段顺序，别在 UI 层判断。
+6. **只收 mkv 片源**：脚本按 `file_name_ext == 'mkv'` 过滤并打印被删条数。
+   但这一列在源头就不可信（1109 行全写 mkv，云端却会回 `ic2`），所以真正的清点是
+   第二段：跑 `cdn_census.py` 逐个 hash 问云端，按 `cloud_ext == 'mkv'` 再筛，
+   详见 §4.2。上游 ew3.db 的 `movie.file_name_ext` 全量分布可作参照 ——
+   `ic2 5603 / mkv 2382 / iso 157 / m2ts 57 / 空 27 / mp4 11 / mkva 1`（共 8238 行），
+   即**四分之三的艾美片库是加密的**，扩库时这道过滤会真的开始咬人。
 
 生成后自检（脚本末尾自带，也可以在 python 里手跑）：影片数、fid 分布、
 `hash` 非空条数、海报 URL、`v_movie_app` 列清单。
@@ -75,8 +81,9 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
      → {extension, fileSize, host, segm:[{index,start,length,sha1sum,url}]}
 ```
 
-- `sn` / `distributor` 都可在 **设置 → 云端取址** 改；缺省 `9CF8DB056A49` / `mymei`
+- `sn` / `distributor` 都可在 **设置 → 云端取址** 改；缺省 `9CF8DB078B44` / `mymei`
   （`AimeiCdn.DEFAULT_SN`，`Settings.cdnSn()`）。输入框只收 12 位十六进制。
+  **这个 sn 是有权益的**（见 §4），换 sn 等于换一台机器能看哪些片。
 - `register()` 幂等且**失败不阻断**：早就在册的 sn 直接取址也能过。
 - `segm` 按 `index` 升序排好后拼接；`sum(length) == fileSize` 是硬不变量，
   不自洽直接抛（`CdnInfo.consistent()`）。
@@ -88,14 +95,19 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
 
 服务端对**当前设备无授权**的内容不报错，而是回一份假清单：
 
-| 特征 | 值 |
-|---|---|
-| `fileSize` | `9999999999`（≥ 9e9 哨兵值） |
-| `segm[*].url` | 指向 `golang.org` 的一个 tar.gz |
-| `segm[*].sha1sum` | 以 `1234567890` 开头 |
-| `extension` | `.ic2`（厂商加密格式，明文拼不可播） |
+| 特征 | 值 | 判定写法 |
+|---|---|---|
+| `fileSize` | `9999999999` | **只认这个精确值** |
+| `segm[*].url` | 指向 `golang.org` 的一个 tar.gz | `contains("golang.org")` |
+| `segm[*].sha1sum` | 以 `1234567890` 开头 | `startsWith(...)` |
+| `extension` | `ic2`（厂商加密，明文拼不可播） | 独立成立即判桩 |
 
-拿它去下会得到「大小对得上、SHA1 全错」的垃圾文件。`AimeiCdn.placeholderReason()`
+> **这条口径是用误报换来的**：第一版把 `fileSize` 写成 `>= 9e9` 就算哨兵，
+> 可 4K 原盘本来就有 40~80 GB（实测 霸主 42,317,745,422、沉默的羔羊 83,033,340,078），
+> 结果**已授权的真实清单被 100% 判成占位桩**、一部都下不动。
+> `AimeiCdn.placeholderReason()` 现在只做精确匹配，改这里前先照 §4 的样本回归一遍。
+
+拿占位桩去下会得到「大小对得上、SHA1 全错」的垃圾文件。`placeholderReason()`
 命中即返回原因串，`runHashTask()` 直接失败并把「序列号对该片无授权」显示给用户。
 
 ### 3.3 下载：`DlEngine.runHashTask()`
@@ -132,23 +144,50 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
 
 ## 4. 实测结论（**先看完这节再决定要不要上真机**）
 
-2026-09-25 在本机用 sn `9CF8DB056A49` 实测：
+### 4.1 sn 决定一切：两台机器实测对照
 
-- `register` 成功（返回记录 id `601525`）。
-- 对 `movie_tmdb_4k` 的 hash 做批量取址：**汇总 取样 60 / 占位桩 60 / 真实清单 0 / 异常 0**。
-- 作为对照，两个已知免费演示 hash 返回**真实** `.mkv` 分段清单：
-  - `0750e31f…`（巴霍巴利王 精彩片段 2）
-  - `c1531d18…`（利维坦 演示片）
+| sn | register | 对 4K 正片取样结果 |
+|---|---|---|
+| `9CF8DB056A49`（旧缺省） | 成功，记录 id `601525` | **取样 60 / 占位桩 60 / 真实 0** —— 该片库对它无授权 |
+| `9CF8DB078B44`（现缺省） | 成功，记录 id `693833` | 随机取样 24：**真实 23 / 占位桩 1** |
 
-**结论**：取址、签名、解析、占位桩判定这条链是对的（同一个 sn、同一份代码，
-演示片能拿到真清单）；库里的 4K 正片对这个 sn **一律无授权**，属于服务端权益问题，
-不是客户端 bug。
+真实清单的样子（sn `9CF8DB078B44`，逐条实测）：
 
-所以真机上验证 §3.3/§3.4 时，先用演示 hash 建一条测试任务（把它的 hash 塞进
-`movie` 表某一行，或用设置页改 sn 后再试正片）。正片下载要等：
-①拿到已授权机器的 sn，或 ②云端把这批内容开给当前 sn。
+- `extension=.mkv`，`fileSize` 与 `movie_tmdb_4k.file_size` **逐字节相等**
+  （霸主 42,317,745,422 / 小美人鱼 53,517,157,534 / 波西米亚狂想曲 42,388,359,419）。
+- 分段数 195~792 段，每段约 100 MiB，`sum(length) == fileSize` 全过；
+  分段主机 `tx.cdn.mymei.tv`（清单里 `host` 字段写的是 `bd.cdn.mymei.tv`，以 `segm[*].url` 为准）。
+- 那一条占位桩是 `movie_id 600700 蜘蛛侠：英雄远征`，`extension=ic2`
+  + `fileSize=9999999999` + `url=golang.org` + `sha1=1234…` 四条特征齐全。
+- 演示 hash `0750e31f896f425be10fdc3e02c85bd339abf94f`（巴霍巴利王 精彩片段 2）在任何 sn 下
+  都回真实清单：`.mkv` 1,544,975,507 字节 / 15 段 —— **冒烟测试就拿它验证下载与校验链**。
 
-> 复测脚本口径：串行 + 每条间隔 0.6~1.2s 抖动，别并发打 `api.mymei.vip`。
+**结论**：换到 `9CF8DB078B44` 之后，片库里的 4K 正片是**真能下**的；
+之前那批 60/60 全桩不是代码问题，是那台机器没权益。
+
+### 4.2 「只保留 mkv 片源」为什么必须问云端
+
+`tmdbam.db::movie_tmdb_4k` 的 `file_name_ext` 这一列 1109 行**全写着 `mkv`**，
+但同一批 hash 里 `600700` 云端回的是 `ic2` —— 也就是说这一列不可信，
+按它过滤等于没过滤。所以片源清点是逐个 hash 调 `getCdnUrl` 认**云端真实容器**：
+
+- 脚本 `c:\py\DJYDXS31NexioAM\cdn_census.py`，结果表 `cdn_census.db::census`
+  （`movie_id / lib_ext / cloud_ext / file_size / segs / sum_len / stub / err`），
+  已清点的自动跳过，可断点续跑。
+- 抽样 24 条：`cloud_ext` 全部 `mkv`，除 `600700` 一条 `ic2`。
+- 全量清点（1109 条）结果：TODO 待补。
+
+`tools/build_am_db.py` 的入库过滤现在是**两道**：①`file_name_ext == 'mkv'`；
+②按 `cdn_census.db` 里 `cloud_ext == 'mkv'`、且 `stub`/`err` 皆空再筛一遍
+（非 mkv 的一律不进库，每条剔除都会打印片名与原因）。第二道是**硬门**：
+清点表缺了、或者没盖住全部片单，脚本直接退出而不是把「没清到」的片当非 mkv 删掉。
+
+### 4.3 剩下的真实风险
+
+单片 40~80 GB、400~800 段：下载盘的分区格式（FAT32 装不下 >4 GB）、
+剩余空间、以及 4 路并发下的 CDN 停流才是接下来要盯的，权益已经不是瓶颈。
+
+> 复测脚本口径：串行 + 每条间隔 0.9~1.6s 抖动，别并发打 `api.mymei.vip`。
 > 这条链路的失败模式里有「请求太密被判异常」，实测时保持低频。
 
 ---
@@ -201,7 +240,10 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
 ## 6. 已知缺口 / 待办
 
 - [ ] **CI 不构建本分支**：`build.yml:5` 白名单没有 `DJYDXS31NexioAM`。
-- [ ] **正片权益未通**：§4 的 60/60 占位桩；拿到已授权 sn 前，真机只能用演示 hash 验证。
+- [x] ~~**正片权益未通**~~：换用已授权 sn `9CF8DB078B44` 后已通（§4.1）。同时修掉了
+      「`fileSize >= 9e9` 就算占位桩」这个误杀 —— 4K 原盘本来就是 40~83 GB。
+- [ ] **全量 mkv 清点未跑完**：`cdn_census.py` 逐个 hash 问云端真实容器（§4.2），
+      跑完才能重建只含 .mkv 的内嵌库；库里的 `file_name_ext` 全是 `mkv`，不可信。
 - [ ] **hash 片没有剧集清单**：`v_episode` 为 0 行，详情页「库内已收录 N 个视频文件」
       那段不会出现。若未来一部片对应多个 hash（多集/CD2），要在 `movie` 之外加一张
       hash 清单表，并让 `runHashTask` 支持一条任务多文件 —— 现在是一对一。
