@@ -1,8 +1,10 @@
 # DJYDXS31NexioAM · 山姆影库（hash 片源变体）
 
 > 分支：`DJYDXS31NexioAM`，蓝本：`DJYDXS3Nexio`（网盘片源版）。
+> 对应版本：**v1.31**（`versionCode 31`），内嵌库 `db_version=2026092502`。
 > 本文是**后续做其它机型变体（威动 / 视易 / 海美迪…）的模板**：先读 §1 的改名清单，
-> 再按 §5 的机型扩展步骤替换策略，片库生成见 §2，hash 链路的实测结论见 §4（**必读**）。
+> 再按 §6 的机型扩展步骤替换策略，片库生成见 §2，hash 链路的实测结论见 §4（**必读**），
+> 列表排序与海报墙加载见 §5。
 
 ---
 
@@ -49,10 +51,10 @@ python -X utf8 tools/build_am_db.py
 2. 视图 `v_movie_app` 重写：多带 `COALESCE(m.hash,'') AS hash` 与 `source_type`
    （`hash` / `baidu` / 空）。`v_episode` 保留但**本库里 0 行** —— 4K hash 库没有
    网盘路径，硬凑剧集表只会让详情页列出假文件。
-3. `fid` 沿用蓝本的版块号语义：`112` = 单片（1080 条），`37` = 按集收录（29 条）。
+3. `fid` 沿用蓝本的版块号语义：`112` = 单片（1037 条），`37` = 按集收录（29 条）。
    分类栏白名单就按这两个 fid 出栏，见 §1。
 4. `meta` 写 `schema_version=2`（`MovieDb.SCHEMA_SUPPORTED=2`，别越过）、
-   `db_version=2026092501`、`db_build_id=am4k-…`。`SuperMOV.version` 与
+   `db_version=2026092502`、`db_build_id=am4k-…`。`SuperMOV.version` 与
    `db_version` 必须一致，`MovieStore` 靠它决定要不要重新拷库。
 5. 未来一份库里**同时**有 `pan_url` 和 `hash`：`MovieStore.detail()` 会把 hash 线路
    排在 `boxes[0]`，网盘线路排其后。想让网盘优先就调那一段顺序，别在 UI 层判断。
@@ -175,12 +177,26 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
   （`movie_id / lib_ext / cloud_ext / file_size / segs / sum_len / stub / err`），
   已清点的自动跳过，可断点续跑。
 - 抽样 24 条：`cloud_ext` 全部 `mkv`，除 `600700` 一条 `ic2`。
-- 全量清点（1109 条）结果：TODO 待补。
+- **全量清点（1109 条）结果**（sn `9CF8DB078B44`，串行 + 0.9~1.6s 抖动跑完）：
+
+  | `cloud_ext` | 条数 | 说明 |
+  |---|---|---|
+  | `mkv` | **1066** | 真实清单，`sum(segm.length) == fileSize` 全过 |
+  | `ic2` | **43** | 全部同时命中 `fileSize == 9999999999` 占位特征 |
+  | 合计 | 1109 | `stub` 43 / `err` **0** |
+
+  43 条 `ic2` 里前几个是 `600636 王牌保镖 / 600637 不可能的事 / 600638 捉鬼敢死队2 /
+  600639 雷霆沙赞 / 600641 地狱男爵：血皇后崛起 / 600644 速度与激情6`。
+  中途有 35 条报 WinError 10013（本地 socket 权限，不是云端问题），重跑一遍全部恢复。
 
 `tools/build_am_db.py` 的入库过滤现在是**两道**：①`file_name_ext == 'mkv'`；
 ②按 `cdn_census.db` 里 `cloud_ext == 'mkv'`、且 `stub`/`err` 皆空再筛一遍
 （非 mkv 的一律不进库，每条剔除都会打印片名与原因）。第二道是**硬门**：
 清点表缺了、或者没盖住全部片单，脚本直接退出而不是把「没清到」的片当非 mkv 删掉。
+
+本次重建（`db_version=2026092502`）实测：第一道 `总 1109 → 留 mkv 1109 / 删 0`
+（这一列全写着 mkv，等于没过滤，正是必须问云端的理由）；
+第二道 `留 1066 / 剔 43`。内嵌库最终 **1066 部 = fid 112 单片 1037 + fid 37 按集 29**。
 
 ### 4.3 剩下的真实风险
 
@@ -192,9 +208,75 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
 
 ---
 
-## 5. 机型识别与后处理：做下一个版本只改这里
+## 5. 海报墙：排序与加载性能
 
-### 5.1 识别：`DeviceProfile.detect()`
+### 5.1 「最新在前」已经是现状，别再改 SQL
+
+`MovieStore` 的排序串只有两份（`ORDER_BY_PIN` 带置顶、`ORDER_BY_PLAIN` 不带），
+键都是 `COALESCE(release_date,'') DESC, COALESCE(year,0) DESC, src_tid DESC`，
+`queryPage()` 分页时统一套用。对**设备上真正跑的**内嵌库（`db_version=2026092502`）
+按这个串实测：
+
+| 版块 | 条数 | 逆序对 | `release_date` 为空 | 首屏前三 |
+|---|---|---|---|---|
+| 112 4K电影 | 1037 | **0** | 0 | 速度与激情9(2021-05-19) / 比得兔2(2021-03-25) / 哥斯拉大战金刚(2021-03-24) |
+| 37 4K纪录片 | 29 | **0** | 0 | 七个世界一个星球 S1E7(2019-12-08) → E6 → E5 |
+
+也就是说「按时间倒序」不需要动 SQL —— 要做的是**让它在真机上可验证**。
+所以 `MainActivity` 每次拿下一页会打一行
+`list fid=… page=… first=片名(2021-05-19)`，logcat 里直接看到列表头部是谁；
+配合设置页那行「数据 v2026092502」，就能区分「排序不对」和「设备上跑的还是旧内嵌库」。
+（排序键用 `release_date` 而不是 `updated_at`：入库时间会随重建抖动，上映日期才是用户认的「新片」。）
+
+### 5.2 海报慢在哪：解码，不是下载
+
+原实现（蓝本沿用）的问题不是网络，是**每张图按原始尺寸解码成 Bitmap**：
+
+- 海报 URL 形如 `http://sto.imovie.com.cn/store/poster/348/602348_preview.jpg`，
+  一屏 7 列、一页 40 部，全按原尺寸解码就是 40 张巨图。
+  随机抽 20 张实测：**中位 3.53 MB / 均值 2.93 MB / 最小 516 KB / 最大 4.79 MB**，
+  同一批里抽 2 张看像素：`602384` 是 **2000×3000**（解成 ARGB_8888 = 22.9 MB），
+  `600920` 是 **1080×1620**（6.7 MB）—— 整页 40 张按大图算就是 ~900 MB Bitmap，
+  而可用堆通常只有一两百 MB。
+  同一批样本串行整图下载的往返耗时 **6.4~44.6 s（均值 11.7 s）** —— 也就是说到手字节
+  本来就这么慢，降采样解决的是「拿到之后别再拖死 UI」，不会让首屏凭空变快。
+- 缓存是 `static ConcurrentHashMap<String, Bitmap>`，**无上限、永不淘汰** ——
+  翻几页就把堆吃光，表现为越滚越卡、最后 OOM。
+- 没有磁盘缓存：退出版块再进来又要重新下载一遍。
+
+现在 `ImageLoader` 改四件事：
+
+1. **降采样解码**：`inJustDecodeBounds` 读尺寸 → 算 `inSampleSize` → 只解到
+   目标宽（缺省上限 `MAX_DECODE_W=384` px）。海报格子的目标宽由
+   `MovieAdapter.setCellWidthPx()` 传入 = `屏幕宽 / 列数`，绑定读 `ivPic.getWidth()`。
+2. **有界内存缓存**：`LruCache`，`maxMemory()/8` 并夹在 8~48 MB，
+   `sizeOf` 用 `getAllocationByteCount`（按真实占用记账，不是按 Bitmap 数）。
+3. **磁盘缓存**：`filesDir/posters/<sha1(url)>`，容量 96 MB，每 16 次写入 `trimDisk()`
+   一次按 `lastModified` 淘汰；命中时 touch 时间戳，等价 LRU。
+4. **失败退避**：某 URL 失败后 5 分钟内不再重试（`FAIL_TTL_MS`），
+   避免一屏里几张死链被反复重下、把线程池占满。
+
+`MainActivity` 侧另两处：`setItemViewCacheSize(列数×3)`（往回翻不重新绑定/解码）、
+`setHasFixedSize(true)`。
+
+### 5.3 还没解决的：payload 本身
+
+降采样只省内存和解码时间，**字节数一张没少**（§5.2 实测中位 3.53 MB / 均值 2.93 MB）。
+试过的三条省流量的路都不通，别重复踩：
+
+- `..._small.jpg`：实测 769×250，是**横版 banner**，放进 2:3 的 `PosterView` 会变形。
+- 阿里云 OSS 的 `?x-oss-process=image/resize`：**被忽略**，返回字节与原图完全一致。
+- 换 `apicdn.mymov.net` 的 350 px 缩略图：字节确实小（47~102 KB），但实测延迟
+  6.6~87 s 且不稳定 —— 电视上宁可大一点也别转圈，没换。
+
+要再快只剩两个办法，都属于**数据侧决策**，没定：①生成库时把 ~350 px 缩略图烘进
+assets（APK 体积会明显涨）；②真找到又小又快的同形状缩略图域名再换 URL。
+
+---
+
+## 6. 机型识别与后处理：做下一个版本只改这里
+
+### 6.1 识别：`DeviceProfile.detect()`
 
 `Build.MANUFACTURER + Build.BRAND + Build.MODEL` 拼成小写串，按 `ALIASES`
 表「多别名 + 包含」匹配。`ALIASES` 每行首列是 `Brand` 枚举名，其余是关键字：
@@ -211,7 +293,7 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
 （同一品牌不同批次填的字符串能差十万八千里）。设置页那行 `识别机型:` 显示的就是
 `DeviceProfile.raw()`，截图即证据。
 
-### 5.2 三个切入口（**唯一**允许写机型差异的地方）
+### 6.2 三个切入口（**唯一**允许写机型差异的地方）
 
 | 方法 | 通用版行为 | 机型差异放这里 |
 |---|---|---|
@@ -222,7 +304,7 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
 新增机型 = 在 `Brand` 加枚举 + `ALIASES` 加一行 + 这三个方法里加分支。
 **不要**把 if 写进 `DlEngine`：引擎只管「下下来、校验收」，长什么样归 `DeviceProfile`。
 
-### 5.3 文件名合法性：`FilmNaming`
+### 6.3 文件名合法性：`FilmNaming`
 
 先认分区（`capsFor()` 读 `/proc/mounts`，取覆盖目标目录的最长挂载点），再按规矩裁名：
 
@@ -237,13 +319,16 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
 
 ---
 
-## 6. 已知缺口 / 待办
+## 7. 已知缺口 / 待办
 
 - [ ] **CI 不构建本分支**：`build.yml:5` 白名单没有 `DJYDXS31NexioAM`。
 - [x] ~~**正片权益未通**~~：换用已授权 sn `9CF8DB078B44` 后已通（§4.1）。同时修掉了
       「`fileSize >= 9e9` 就算占位桩」这个误杀 —— 4K 原盘本来就是 40~83 GB。
-- [ ] **全量 mkv 清点未跑完**：`cdn_census.py` 逐个 hash 问云端真实容器（§4.2），
-      跑完才能重建只含 .mkv 的内嵌库；库里的 `file_name_ext` 全是 `mkv`，不可信。
+- [x] ~~**全量 mkv 清点未跑完**~~：1109 条全部清完（`stub` 43 / `err` 0），
+      内嵌库已按云端真实容器重建成 1066 部，详见 §4.2。
+- [ ] **海报首屏还是慢**：§5.2 的降采样 + 双层缓存只解决了内存和重复下载，
+      单张 2~4 MB 的原始 payload 没动。真正的解法在 §5.3 末尾那两个选项里，
+      需要定：烘图进 assets（APK 变大）还是换 URL。
 - [ ] **hash 片没有剧集清单**：`v_episode` 为 0 行，详情页「库内已收录 N 个视频文件」
       那段不会出现。若未来一部片对应多个 hash（多集/CD2），要在 `movie` 之外加一张
       hash 清单表，并让 `runHashTask` 支持一条任务多文件 —— 现在是一对一。

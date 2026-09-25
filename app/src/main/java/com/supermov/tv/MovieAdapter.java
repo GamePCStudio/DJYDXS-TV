@@ -26,6 +26,12 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
     private final List<MovieStore.Movie> items = new ArrayList<>();
     private OnClick listener;
     private OnLongClick longListener;
+    /** 一列海报的像素宽，绑定时当解码目标；0 = 交给 ImageLoader 用缺省上限。 */
+    private int cellWidthPx;
+
+    public void setCellWidthPx(int px) {
+        cellWidthPx = Math.max(0, px);
+    }
 
     public void setItems(List<MovieStore.Movie> list) {
         items.clear();
@@ -104,7 +110,9 @@ public class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.VH> {
         h.tvBadge.setVisibility(rem.isEmpty() ? View.GONE : View.VISIBLE);
         if (m.pic != null && !m.pic.isEmpty()) {
             h.ivPic.setTag(m.pic);
-            ImageLoader.load(m.pic, h.ivPic);
+            // 首帧还没布局时 getWidth() 是 0，退回用列宽算出的目标宽
+            int w = h.ivPic.getWidth();
+            ImageLoader.load(m.pic, h.ivPic, w > 0 ? w : cellWidthPx);
         } else {
             h.ivPic.setImageDrawable(null);
         }

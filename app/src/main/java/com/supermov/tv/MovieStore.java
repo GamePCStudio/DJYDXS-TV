@@ -242,7 +242,7 @@ public final class MovieStore {
      * <p>注意匹配用 <b>fid</b> 而不是版块名：名字改过好几轮了（"4K全景声" → "4KSDR.Remux"），
      * 拿名字当 key 早晚失配；fid 是数据侧的主键，稳。本变体（AM 4K 库）的对应关系 ——</p>
      * <pre>
-     *   112  movie       → 4K电影     （单片，1080 部）
+     *   112  movie       → 4K电影     （单片，1037 部）
      *    37  tv_episode  → 4K纪录片   （按集收录，29 集）
      * </pre>
      *

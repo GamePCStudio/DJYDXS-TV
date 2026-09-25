@@ -29,7 +29,8 @@ REPO = Path(__file__).resolve().parents[1]
 ASSETS = REPO / "app/src/main/assets"
 DEFAULT_OUT = ASSETS / "SuperMOV.db"
 
-DB_VERSION = 2026092501
+# 2026092502：按云端真实容器二次过滤，剔掉 43 条 .ic2（库里 file_name_ext 全写 mkv，不可信）
+DB_VERSION = 2026092502
 SCHEMA_VERSION = 2
 
 # 版块：hash 片库只有 4K 电影与 4K 纪录片两类，与 MovieStore.CAT_FIDS 一一对应

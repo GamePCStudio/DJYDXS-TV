@@ -132,7 +132,12 @@ public class MainActivity extends Activity {
         // 影片列表：固定 7 列海报墙
         posterSpans = 7;
         rvList.setLayoutManager(new GridLayoutManager(this, posterSpans));
+        // 电视上多留几屏已布局的条目，往回翻就不用重新绑定/重新解码海报
+        rvList.setItemViewCacheSize(posterSpans * 3);
+        rvList.setHasFixedSize(true);
         movieAdapter = new MovieAdapter();
+        // 解码目标宽度按列宽定：艾美海报原图实测到 2000×3000，整尺寸解码一张就 22.9 MB
+        movieAdapter.setCellWidthPx(getResources().getDisplayMetrics().widthPixels / posterSpans);
         movieAdapter.setOnClick(this::openDetail);
         movieAdapter.setOnLongClick(this::confirmTransfer);
         rvList.setAdapter(movieAdapter);
@@ -445,9 +450,13 @@ public class MainActivity extends Activity {
             }
             final List<MovieStore.Movie> raw = new ArrayList<>(res.data);
             final int pageCount = res.pageCount;
+            // first= 用来在 logcat 里直接确认「列表确实是按上映日期倒序、新片在前」，
+            // 以及设备上生效的是不是内嵌那份库（配合设置页的「数据 v…」）。
             android.util.Log.d("SupeMov", "list fid=" + fid + " typeid=" + ftypeid
                     + " page=" + page + " kw=" + (kw == null ? "" : kw)
-                    + " got=" + raw.size() + " pageCount=" + pageCount);
+                    + " got=" + raw.size() + " pageCount=" + pageCount
+                    + (raw.isEmpty() ? "" : (" first=" + raw.get(0).name
+                    + "(" + raw.get(0).releaseDate + ")")));
 
             // 数据库本地查询，一次就能出画，不用再分「先出画、后探测」两段。
             // （旧版要逐个帖子请求论坛确认有没有百度链接，才不得不那样做。）
