@@ -188,7 +188,7 @@ public final class AimeiCdn {
         List<String> hit = new ArrayList<>();
         // 只认那个精确值。以前写成 fileSize >= 9e9 就算桩 —— 可 4K 原盘本来就有 40~60 GB，
         // 于是把已授权的真实清单全判成占位桩（霸主实测 42,317,745,422 字节 / 404 段）。
-        if (info.fileSize == 9_999_999_999L) hit.append("fileSize=9999999999 固定占位值");
+        if (info.fileSize == 9_999_999_999L) hit.add("fileSize=9999999999 固定占位值");
         for (int i = 0; i < info.segments.size() && i < 1; i++) {
             Segment s = info.segments.get(i);
             if (s.url.contains("golang.org")) hit.add("url 指向 golang.org 占位文件");
