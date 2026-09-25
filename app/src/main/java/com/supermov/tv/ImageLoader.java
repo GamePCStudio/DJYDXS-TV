@@ -79,7 +79,17 @@ public final class ImageLoader {
         final int want = targetW > 0 ? Math.min(targetW, MAX_DECODE_W) : MAX_DECODE_W;
         final Context app = iv.getContext().getApplicationContext();
         POOL.execute(() -> {
-            Bitmap bmp = obtain(app, key, want);
+            Bitmap bmp;
+            // 兜底：工作线程里抛出任何 throwable（包括 OutOfMemoryError）都会让整个进程被杀。
+            // 真机 logcat 里就是这个位置 OOM 掉了海报墙（见文档 §5.2）—— 一张海报加载失败
+            // 最多是空格子，绝不能把应用带崩。
+            try {
+                bmp = obtain(app, key, want);
+            } catch (Throwable e) {
+                Log.w(TAG, "海报加载异常 " + e + " url=" + key);
+                FAILED.put(key, System.currentTimeMillis());   // 短时间内不再重试
+                return;
+            }
             MAIN.post(() -> {
                 // 只有该 ImageView 还在显示这张图才设置（回收复用时 tag 已经变了）
                 if (bmp != null && key.equals(iv.getTag())) iv.setImageBitmap(bmp);

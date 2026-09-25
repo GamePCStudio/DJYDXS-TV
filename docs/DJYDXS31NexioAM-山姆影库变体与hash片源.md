@@ -1,7 +1,7 @@
 # DJYDXS31NexioAM · 山姆影库（hash 片源变体）
 
 > 分支：`DJYDXS31NexioAM`，蓝本：`DJYDXS3Nexio`（网盘片源版）。
-> 对应版本：**v1.31**（`versionCode 31`），内嵌库 `db_version=2026092502`。
+> 对应版本：**v1.32**（`versionCode 32`），内嵌库 `db_version=2026092502`。
 > 本文是**后续做其它机型变体（威动 / 视易 / 海美迪…）的模板**：先读 §1 的改名清单，
 > 再按 §6 的机型扩展步骤替换策略，片库生成见 §2，hash 链路的实测结论见 §4（**必读**），
 > 列表排序与海报墙加载见 §5。
@@ -256,8 +256,27 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
 4. **失败退避**：某 URL 失败后 5 分钟内不再重试（`FAIL_TTL_MS`），
    避免一屏里几张死链被反复重下、把线程池占满。
 
-`MainActivity` 侧另两处：`setItemViewCacheSize(列数×3)`（往回翻不重新绑定/解码）、
-`setHasFixedSize(true)`。
+`MainActivity` 侧另两处：`setItemViewCacheSize(列数×3)`（往回翻不重新绑定/解码）。
+**没加** `setHasFixedSize(true)`：release 的 `:app:lintVitalRelease` 会以
+`InvalidSetHasFixedSize` 判致命错误（`item_movie.xml` 根高度是 `wrap_content`，
+「条目尺寸固定」这个前提不成立），CI 直接挂 —— 本地 javac 是查不出这类问题的。
+
+真机证据（小米盒子 32 位进程，logcat `23136`，装在 v1.30 上）：进海报墙 2 秒必崩，
+两次启动 PID 7252 / 7306 都是同一条栈 ——
+
+```
+java.lang.OutOfMemoryError: Failed to allocate a 24000012 byte allocation
+    with 8751640 free bytes and 8MB until OOM
+    at android.graphics.BitmapFactory.decodeStream(BitmapFactory.java:651)
+    at com.supermov.tv.ImageLoader.fetch(ImageLoader.java:64)      ← 老版整图解码
+    at com.supermov.tv.ImageLoader.lambda$load$1(ImageLoader.java:33)
+```
+
+`24000012` 字节 = 2000×3000 的 ARGB_8888，正好是 §5.2 实测那张 `602384` 海报；
+崩溃前进程堆已被顶到 `Clamp target GC heap from 199MB to 192MB`。
+所以这不是「海报慢」，是**必崩**，而栈顶那个 `decodeStream` 调用就是降采样要消掉的那一步。
+另外给工作线程加了 `catch (Throwable)` 兜底：线程池里抛出任何未捕获 throwable（含 OOM）
+都会连带整个进程被杀，一张海报失败最多是格子空着，不能把应用带崩。
 
 ### 5.3 还没解决的：payload 本身
 
@@ -326,6 +345,9 @@ assets（APK 体积会明显涨）；②真找到又小又快的同形状缩略�
       「`fileSize >= 9e9` 就算占位桩」这个误杀 —— 4K 原盘本来就是 40~83 GB。
 - [x] ~~**全量 mkv 清点未跑完**~~：1109 条全部清完（`stub` 43 / `err` 0），
       内嵌库已按云端真实容器重建成 1066 部，详见 §4.2。
+- [x] ~~**海报墙进页必崩**~~：v1.30 真机 logcat 是 `BitmapFactory.decodeStream` 单次
+      申请 24,000,012 字节 OOM（§5.2）。v1.31 起降采样 + 有界缓存，v1.32 再给工作线程
+      加 `catch (Throwable)` 兜底 —— 加载失败只留空格子，不再带崩进程。
 - [ ] **海报首屏还是慢**：§5.2 的降采样 + 双层缓存只解决了内存和重复下载，
       单张 2~4 MB 的原始 payload 没动。真正的解法在 §5.3 末尾那两个选项里，
       需要定：烘图进 assets（APK 变大）还是换 URL。
