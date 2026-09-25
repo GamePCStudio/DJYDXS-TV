@@ -172,6 +172,8 @@ public final class MovieStore {
         public String panUrl = "";
         public String panPwd = "";
         public String panStatus = "";
+        /** 云端影片指纹（40 位十六进制）。非空即可走 hash 分段下载，不依赖网盘链接。 */
+        public String hash = "";
         /** 稳定 uid（movie.uid，形如 t12345），剧集表按它关联。 */
         public String uid = "";
         /** "1080P.Remux" 之类的原始归类，详情页可显示。 */
@@ -234,27 +236,28 @@ public final class MovieStore {
      *
      * <p>为什么从这里定死，而不是继续从 {@code forum_name} 现取：数据侧的版块名是给站长看的
      * （"4KSDR.Remux"、"1080P高码版"），不是给用户看的。这里做三件事 ——
-     * <b>只保留这四个版块</b>、<b>用产品化的显示名覆盖</b>、<b>固定排序</b>；
+     * <b>只保留白名单里的版块</b>、<b>用产品化的显示名覆盖</b>、<b>固定排序</b>；
      * 数据侧再冒出别的版块，也不会漏到界面上。</p>
      *
      * <p>注意匹配用 <b>fid</b> 而不是版块名：名字改过好几轮了（"4K全景声" → "4KSDR.Remux"），
-     * 拿名字当 key 早晚失配；fid 是数据侧的主键，稳。当前对应关系 ——</p>
+     * 拿名字当 key 早晚失配；fid 是数据侧的主键，稳。本变体（AM 4K 库）的对应关系 ——</p>
      * <pre>
-     *   112  4KSDR.Remux     → 4K全景声
-     *    37  1080P最新剧集    → 最新剧集•美剧
-     *    58  1080P高码版      → 蓝光影片
-     *     2  最新1080P电影    → 杜比5.1影片
+     *   112  movie       → 4K电影     （单片，1080 部）
+     *    37  tv_episode  → 4K纪录片   （按集收录，29 集）
      * </pre>
+     *
+     * <p>蓝本（网盘库）另有 58「蓝光影片」与 2「杜比5.1影片」两栏；AM 库里没有这两个
+     * fid 的片子，留在白名单里只会出栏出两个永远为空的栏目，所以一并去掉。</p>
      */
-    private static final int[] CAT_FIDS = {112, 37, 58, 2};
-    private static final String[] CAT_NAMES = {"4K全景声", "最新剧集•美剧", "蓝光影片", "杜比5.1影片"};
+    private static final int[] CAT_FIDS = {112, 37};
+    private static final String[] CAT_NAMES = {"4K电影", "4K纪录片"};
 
     /**
      * 版块（分类栏）：严格按 {@link #CAT_FIDS} 的顺序与 {@link #CAT_NAMES} 的显示名产出，
      * 其余版块一律不显示。
      *
      * <p>仍会读一次库拿到各版块的影片数，但<b>只用于日志诊断</b>（某个栏目为什么是空的，
-     * 一看 logcat 便知）；即便某个 fid 当前 0 部也照样出栏 —— 保证界面上这四个位置永远固定，
+     * 一看 logcat 便知）；即便某个 fid 当前 0 部也照样出栏 —— 保证界面上这几栏的位置永远固定，
      * 不会因为数据波动导致栏目错位。</p>
      */
     public static List<Category> categories() {
@@ -413,7 +416,7 @@ public final class MovieStore {
             List<String> a2 = new ArrayList<>(args);
             a2.add(String.valueOf(PAGE_SIZE));
             a2.add(String.valueOf((p - 1) * PAGE_SIZE));
-            c = q.rawQuery("SELECT " + LIST_COLS + " FROM v_movie_app WHERE " + where
+            c = q.rawQuery("SELECT " + listCols() + " FROM v_movie_app WHERE " + where
                     + " ORDER BY " + orderBy() + " LIMIT ? OFFSET ?", toArray(a2));
             while (c.moveToNext()) out.data.add(readListRow(c));
         } catch (Throwable e) {
@@ -424,13 +427,57 @@ public final class MovieStore {
     }
 
     /**
-     * 列表查询的列。顺序与 {@link #readListRow} 里的下标一一对应 —— 改这里必须同步改那里。
-     * 详情查询在此基础上追加 synopsis（见 {@link #DETAIL_COLS}）。
+     * 列表查询的列（不含 hash）。顺序与 {@link #readListRow} 里的下标一一对应 ——
+     * 改这里必须同步改那里。hash 列按 {@link #hashReady()} 的结果追加，见 {@link #listCols()}。
      */
     private static final String LIST_COLS = "src_tid,uid,fid,forum_name,name,title_en,"
             + "title_alt,year,release_date,runtime_min,region,genres,rating_douban,"
             + "rating_imdb,poster,classification,pan_status,pan_url,pan_pwd,"
             + "video_count,total_size";
+
+    /**
+     * 视图里有没有 hash 列。{@code null} = 还没探过。
+     *
+     * <p>和 {@link #pinKnown} 同一个道理：内嵌库与在线更新库可能不同步，而网盘版库里
+     * 根本没有 hash 这一列。{@code SELECT} 一个不存在的列会让整条查询抛异常，被
+     * {@link #queryPage} 的兜底 catch 吞掉后表现为<b>整个列表空白</b>。所以探到才拼。</p>
+     */
+    private static volatile Boolean hashKnown;
+
+    private static boolean hashReady() {
+        Boolean v = hashKnown;
+        if (v != null) return v;
+        boolean ok = false;
+        Cursor c = null;
+        try {
+            SQLiteDatabase q = db;
+            if (q != null) {
+                c = q.rawQuery("PRAGMA table_info(v_movie_app)", null);
+                while (c.moveToNext()) {
+                    if ("hash".equals(c.getString(1))) {
+                        ok = true;
+                        break;
+                    }
+                }
+            }
+        } catch (Throwable e) {
+            Log.d(TAG, "探测 v_movie_app.hash 失败: " + e);
+        } finally {
+            if (c != null) c.close();
+        }
+        hashKnown = ok;
+        Log.d(TAG, "指纹列 hash 可用 = " + ok);
+        return ok;
+    }
+
+    private static String listCols() {
+        return hashReady() ? LIST_COLS + ",hash" : LIST_COLS;
+    }
+
+    /** hash 在结果集里的下标；老库没有这一列时返回 -1。 */
+    private static int hashIdx(Cursor c) {
+        return c.getColumnIndex("hash");
+    }
 
     /**
      * 排序：**置顶在前**，然后有上映日期的按日期倒序，没有的按年份、再按 id 倒序。
@@ -513,6 +560,7 @@ public final class MovieStore {
         m.panPwd = str(c, 18);
         m.videoCount = (int) lng(c, 19);
         m.totalSize = lng(c, 20);
+        m.hash = opt(c, hashIdx(c));
         m.remarks = buildRemarks(m.year, (int) lng(c, 9), m.videoCount);
         if (m.name.isEmpty()) m.name = m.nameEn;
         return m;
@@ -536,7 +584,7 @@ public final class MovieStore {
 
         Cursor c = null;
         try {
-            c = q.rawQuery("SELECT " + DETAIL_COLS + " FROM v_movie_app WHERE src_tid=?",
+            c = q.rawQuery("SELECT " + detailCols() + " FROM v_movie_app WHERE src_tid=?",
                     new String[]{tid});
             if (c.moveToFirst()) {
                 Movie m = readDetailRow(c);
@@ -552,8 +600,15 @@ public final class MovieStore {
         }
         if (d.movie.tid.isEmpty()) return d;
 
-        // 链接：优先取该片「已有视频文件」的那条分享；没有就退回任意一条有 url 的
+        // 链接：hash 片源排在最前 —— 本变体的整机就是走云端分段下载，网盘链接只作兜底。
+        // 顺序即 {@code DetailActivity} 里 boxes.get(0) 的优先级。
         d.episodes = episodesOf(d.movie.uid);
+        if (!d.movie.hash.isEmpty()) {
+            Box b = new Box();
+            b.type = "hash";
+            b.url = d.movie.hash;
+            d.boxes.add(b);
+        }
         String url = "", pwd = "";
         if (!d.episodes.isEmpty()) {
             for (Episode e : d.episodes) {
@@ -576,12 +631,14 @@ public final class MovieStore {
         return d;
     }
 
-    /** 详情比列表多取一列：简介正文。 */
-    private static final String DETAIL_COLS = LIST_COLS + ",synopsis";
+    /** 详情比列表多取一列：简介正文（下标随 hash 列是否存在而移位，所以按列名取）。 */
+    private static String detailCols() {
+        return listCols() + ",synopsis";
+    }
 
     private static Movie readDetailRow(Cursor c) {
         Movie m = readListRow(c);
-        m.intro = str(c, 19);
+        m.intro = opt(c, c.getColumnIndex("synopsis"));
         return m;
     }
 
@@ -863,6 +920,13 @@ public final class MovieStore {
     }
 
     private static String str(Cursor c, int i) {
+        String v = c.getString(i);
+        return v == null ? "" : v.trim();
+    }
+
+    /** 列可能整个不存在（老库没这列，{@code getColumnIndex} 给 -1）时的安全取值。 */
+    private static String opt(Cursor c, int i) {
+        if (i < 0 || c.isNull(i)) return "";
         String v = c.getString(i);
         return v == null ? "" : v.trim();
     }

@@ -15,6 +15,7 @@ import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -695,6 +696,12 @@ public final class DlEngine {
         }
         if (t.fileName == null || t.fileName.isEmpty()) t.fileName = "video.mp4";
 
+        // hash 片源走完全另一条路：云端分段清单 + 逐段 SHA1 + 合并后改名
+        if (Dl.SRC_HASH.equals(t.source)) {
+            runHashTask(t, dir);
+            return;
+        }
+
         // ① 取直链（8 小时过期，每次跑都必须重取，绝不复用）
         note = "获取直链…";
         notifyChanged();
@@ -863,6 +870,435 @@ public final class DlEngine {
         t.done = total;
         t.total = total;
         note = "已完成：" + t.fileName;
+    }
+
+    // ==================== hash 片源：云端分段下载 ====================
+
+    /**
+     * 同时下几个云端分段。
+     *
+     * <p>CDN 每段约 100 MiB（首段不规则）。并发到 4 路已能把家宽跑满，再多只会让
+     * 边缘节点更早停流 —— 实测失败是「段数越多越容易卡」，不是「段数越多越快」。</p>
+     */
+    private static final int CDN_WORKERS = 4;
+    /** 单段停滞超时：CDN 大文件长连接会中途停流，45s 没新字节就判卡死并续传。 */
+    private static final int CDN_STALL_TIMEOUT_MS = 45000;
+    /** 单段最多续传次数。 */
+    private static final int CDN_RESUME_RETRY = 12;
+    /** Matroska 文件头魔数，用于「拼完的确实是能播的 MKV」这道终检。 */
+    private static final byte[] EBML_MAGIC = {(byte) 0x1A, (byte) 0x45, (byte) 0xDF, (byte) 0xA3};
+
+    /** 下载过程中的中间文件名：只跟 hash 有关，与容器后缀无关，所以换 ext 也不会让断点失效。 */
+    static String hashStageName(Dl t) {
+        String h = (t.hash == null || t.hash.isEmpty()) ? "hashsrc" : t.hash;
+        return h + ".dlpart";
+    }
+
+    private void runHashTask(Dl t, File dir) throws Exception {
+        if (t.hash == null || t.hash.length() != 40) {
+            throw new IOException("这条任务没有有效的影片指纹（hash），无法向云端取址");
+        }
+        String sn = Settings.cdnSn();
+
+        // ① 取址（分段链接带服务端签名的日期段与令牌，每次都重取，绝不复用旧链接）
+        note = "取云端分段地址…";
+        notifyChanged();
+        AimeiCdn.register(sn, Settings.cdnDistributor());   // 幂等；失败也继续试取址
+        AimeiCdn.CdnInfo info = AimeiCdn.fetch(sn, t.hash);
+        if (info.placeholder()) {
+            throw new IOException("云端没给这台设备真实地址（返回占位桩：" + info.placeholderReason
+                    + "）。序列号 " + sn + " 对该片无授权，换 sn 或在设置里改后再试");
+        }
+        checkCancel();
+        final long total = info.fileSize;
+        final int n = info.segments.size();
+        t.ext = info.extension;
+        t.total = total;
+        Log.d(TAG, "hash dl " + t.hash + " ext=" + info.extension + " total=" + total + " segs=" + n);
+
+        final File stage = new File(dir, hashStageName(t));
+        final File meta = new File(dir, stage.getName() + ".json");
+        final long[] segDone = new long[n];
+        final boolean[] segOk = new boolean[n];
+        final boolean resumed = readCdnMeta(meta, t.hash, total, n, segDone, segOk);
+        long already = 0;
+        for (long d : segDone) already += d;
+        if (!resumed && stage.exists()) stage.delete();   // 断点对不上：从零开始，别拿脏数据续
+
+        final RandomAccessFile raf;
+        try {
+            raf = new RandomAccessFile(stage, "rw");
+            raf.setLength(total);   // 预分配，各段按 start 绝对偏移写
+        } catch (IOException e) {
+            throw new IOException("无法创建目标文件（分区可能不支持大于 4GB 的文件，如 FAT32）："
+                    + e.getMessage());
+        }
+        final java.nio.channels.FileChannel ch = raf.getChannel();
+        final AtomicLong done = new AtomicLong(already);
+        final java.util.concurrent.atomic.AtomicInteger cursor =
+                new java.util.concurrent.atomic.AtomicInteger(0);
+        final String[] errBox = new String[1];
+        t.done = already;
+
+        // ② 进度上报（沿用 600ms 一次、2s 落一次断点元数据的节奏）
+        final AtomicBoolean finished = new AtomicBoolean(false);
+        Thread reporter = new Thread(() -> {
+            long lastBytes = done.get();
+            long lastTime = System.currentTimeMillis();
+            while (!finished.get()) {
+                long now = System.currentTimeMillis();
+                long bytes = done.get();
+                double speed = now > lastTime ? (bytes - lastBytes) * 1000.0 / (now - lastTime) : 0;
+                if (speed < 0) speed = 0;
+                smoothBps = smoothBps <= 0 ? speed : smoothBps + (speed - smoothBps) * SPEED_EMA;
+                smoothAt = now;
+                lastBytes = bytes;
+                lastTime = now;
+                t.done = bytes;
+                int verified = 0;
+                synchronized (segOk) {
+                    for (boolean b : segOk) if (b) verified++;
+                }
+                note = "下载中 " + (total > 0 ? (bytes * 100 / total) : 0) + "% · "
+                        + human(bytes) + "/" + human(total) + " · " + mbps(speed)
+                        + " · 分段 " + verified + "/" + n
+                        + etaSuffix();
+                if (now - lastPersist > 2000) {
+                    lastPersist = now;
+                    persist(t);
+                    writeCdnMeta(meta, t.hash, total, segDone, segOk);
+                }
+                notifyChanged();
+                try {
+                    Thread.sleep(600);
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+        }, "cdn-progress");
+        reporter.setDaemon(true);
+        reporter.start();
+
+        // ③ 分段并发：每段一个工作线程，从同一个游标领活
+        List<Thread> pool = new ArrayList<>();
+        try {
+            int workers = Math.min(CDN_WORKERS, n);
+            for (int i = 0; i < workers; i++) {
+                Thread th = new Thread(() -> {
+                    while (!cancel.get() && errBox[0] == null) {
+                        int idx = cursor.getAndIncrement();
+                        if (idx >= n) return;
+                        AimeiCdn.Segment seg = info.segments.get(idx);
+                        try {
+                            cdnSegment(seg, ch, stage, idx, segDone, segOk, done);
+                        } catch (IOException e) {
+                            if (!cancel.get()) errBox[0] = shortMsg(e);
+                            return;
+                        }
+                    }
+                }, "cdn-seg");
+                th.setDaemon(true);
+                th.start();
+                pool.add(th);
+            }
+            for (Thread th : pool) th.join();
+        } finally {
+            finished.set(true);
+            reporter.interrupt();
+            try {
+                reporter.join(1500);
+            } catch (InterruptedException ignored) {
+            }
+            closeQuietly(ch);
+            try {
+                raf.close();
+            } catch (IOException ignored) {
+            }
+        }
+
+        if (cancel.get()) {
+            writeCdnMeta(meta, t.hash, total, segDone, segOk);
+            return;    // 暂停/停止：保留中间文件与断点，下次接着下
+        }
+        if (errBox[0] != null) throw new IOException(errBox[0]);
+
+        // ④ 终检：逐段 SHA1 已经在下载时校过，这里再核总长与容器头
+        note = "校验影片完整性…";
+        notifyChanged();
+        verifyFinal(t, stage, info);
+
+        // ⑤ 后处理：按机型策略定最终目录与文件名（通用版 = 中文片名目录 + 改名为片名）
+        note = "整理文件…";
+        notifyChanged();
+        DeviceProfile prof = DeviceProfile.get();
+        FilmNaming.Caps caps = FilmNaming.capsFor(dir);
+        String title = (t.name == null || t.name.isEmpty()) ? t.hash : t.name;
+        File out = FilmNaming.unique(dir, prof.finalName(title, info.extension, caps));
+        if (!stage.renameTo(out)) {
+            copyFile(stage, out);
+            stage.delete();
+        }
+        meta.delete();
+        t.fileName = out.getName();
+        t.done = total;
+        t.total = total;
+        prof.afterDownload(out, t);
+        note = "已完成：" + out.getName();
+    }
+
+    /**
+     * 下一个云端分段并逐段校 SHA1：写满后<b>从文件里回读</b>该段字节再算摘要。
+     *
+     * <p>回读而不是边下边算，是为了让断点续传天然正确 —— 上一进程写进去的前缀与本次
+     * 续上的部分，拼出来的摘要一定等于落盘内容，不用管中途崩在哪一次。</p>
+     */
+    private void cdnSegment(AimeiCdn.Segment seg, java.nio.channels.FileChannel ch, File stage,
+                            int idx, long[] segDone, boolean[] segOk, AtomicLong totalDone)
+            throws IOException {
+        synchronized (segOk) {
+            if (segOk[idx]) return;    // 已校验过的段直接复用，绝不重下
+        }
+        long need = seg.length;
+        long have = clampSegDone(segDone, idx, need);
+        for (int attempt = 1; have < need; attempt++) {
+            if (cancel.get()) return;
+            if (attempt > CDN_RESUME_RETRY) {
+                throw new IOException("分段 " + seg.index + " 续传 " + CDN_RESUME_RETRY
+                        + " 次仍未下完（已 " + human(have) + "/" + human(need) + "），CDN 可能在停流");
+            }
+            long from = seg.start + have;
+            long to = seg.start + need - 1;
+            HttpURLConnection c = null;
+            InputStream in = null;
+            try {
+                c = AimeiCdn.openSegment(seg.url, have > 0 ? (have + "-" + (need - 1)) : null);
+                int code = c.getResponseCode();
+                if (code == 416) {
+                    // 区间越界 == 这段其实已经在盘上了，直接去校验
+                    have = need;
+                    break;
+                }
+                if (code != 200 && code != 206) {
+                    throw new IOException("分段 " + seg.index + " HTTP " + code);
+                }
+                if (have > 0 && code == 200) {
+                    // 服务端忽略了 Range：只能整段重来，否则会把两段拼一起
+                    segDone[idx] = 0;
+                    have = 0;
+                }
+                in = c.getInputStream();
+                c.setReadTimeout(CDN_STALL_TIMEOUT_MS);
+                byte[] buf = new byte[BUF];
+                long pos = from;
+                while (have < need) {
+                    if (cancel.get()) return;
+                    int len = in.read(buf, 0, (int) Math.min(buf.length, need - have));
+                    if (len <= 0) break;
+                    writeAt(ch, buf, len, pos);
+                    pos += len;
+                    have += len;
+                    segDone[idx] = have;
+                    totalDone.addAndGet(len);
+                    throttle(len);
+                }
+            } catch (java.net.SocketTimeoutException e) {
+                Log.d(TAG, "cdn seg " + seg.index + " 停滞，第 " + attempt + " 次续传");
+            } catch (IOException e) {
+                if (cancel.get()) return;
+                Log.d(TAG, "cdn seg " + seg.index + " 第 " + attempt + " 次失败：" + e);
+            } finally {
+                closeQuietly(in);
+                if (c != null) c.disconnect();
+            }
+            if (have >= need) break;
+            if (cancel.get()) return;
+        }
+
+        if (have < need) throw new IOException("分段 " + seg.index + " 未下满（"
+                + human(have) + "/" + human(need) + "）");
+        String actual = sha1Range(stage, seg.start, seg.length);
+        if (!seg.sha1sum.isEmpty() && !seg.sha1sum.equalsIgnoreCase(actual)) {
+            // 写满但摘要不对 = 数据真的错了，重下这一段才有意义，继续续传只会浪费带宽
+            synchronized (segOk) {
+                segOk[idx] = false;
+            }
+            segDone[idx] = 0;
+            totalDone.addAndGet(-have);
+            throw new IOException("分段 " + seg.index + " SHA1 校验不符（期望 " + head(seg.sha1sum)
+                    + " 实际 " + head(actual) + "，偏移 " + seg.start + "）—— 该段已作废，重下会从这一段重来");
+        }
+        synchronized (segOk) {
+            segOk[idx] = true;
+        }
+        Log.d(TAG, "cdn seg " + seg.index + " ok sha1=" + head(actual));
+    }
+
+    /** 断点元数据里的偏移不可能超过段长（库被改过 / 分段方案变了），超了就从零开始。 */
+    private static long clampSegDone(long[] segDone, int idx, long need) {
+        long v = segDone[idx];
+        if (v < 0 || v > need) {
+            segDone[idx] = 0;
+            return 0;
+        }
+        return v;
+    }
+
+    private static long writeAt(java.nio.channels.FileChannel ch, byte[] buf, int len, long pos)
+            throws IOException {
+        ByteBuffer bb = ByteBuffer.wrap(buf, 0, len);
+        long written = 0;
+        while (bb.hasRemaining()) {
+            int k = ch.write(bb, pos + written);
+            if (k <= 0) throw new IOException("写入返回 " + k);
+            written += k;
+        }
+        return written;
+    }
+
+    /** 最终校验：总长 + 容器头 + 分段数一致。任一不过就不产出正式文件。 */
+    private void verifyFinal(Dl t, File stage, AimeiCdn.CdnInfo info) throws IOException {
+        long len = stage.length();
+        if (len != info.fileSize) {
+            throw new IOException("大小校验失败：落盘 " + len + " 字节，云端声明 " + info.fileSize + " 字节");
+        }
+        if (!info.consistent()) {
+            throw new IOException("分段清单不自洽：各段长度之和对不上 fileSize");
+        }
+        long sumDone = 0;
+        for (AimeiCdn.Segment s : info.segments) sumDone += s.length;
+        if (sumDone != info.fileSize) {
+            throw new IOException("分段长度之和 " + sumDone + " 与 fileSize " + info.fileSize + " 不符");
+        }
+        if ("mkv".equalsIgnoreCase(info.extension)) {
+            InputStream in = null;
+            try {
+                in = new FileInputStream(stage);
+                byte[] head = new byte[4];
+                int off = 0;
+                while (off < 4) {
+                    int r = in.read(head, off, 4 - off);
+                    if (r <= 0) break;
+                    off += r;
+                }
+                if (off < 4 || head[0] != EBML_MAGIC[0] || head[1] != EBML_MAGIC[1]
+                        || head[2] != EBML_MAGIC[2] || head[3] != EBML_MAGIC[3]) {
+                    throw new IOException("文件头不是 Matroska（读到 " + hex(head, off) + "），拼接结果不可播");
+                }
+            } finally {
+                closeQuietly(in);
+            }
+        }
+    }
+
+    private static String hex(byte[] b, int n) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < n; i++) sb.append(String.format(java.util.Locale.ROOT, "%02X", b[i] & 0xFF));
+        return sb.length() == 0 ? "空" : sb.toString();
+    }
+
+    private static String head(String s) {
+        if (s == null) return "";
+        return s.length() <= 12 ? String.valueOf(s) : s.substring(0, 12);
+    }
+
+    /** 回读文件的一段算 SHA1（十六进制小写）。 */
+    static String sha1Range(File f, long start, long length) throws IOException {
+        InputStream in = null;
+        java.security.MessageDigest md;
+        try {
+            md = java.security.MessageDigest.getInstance("SHA-1");
+        } catch (Exception e) {
+            throw new IOException("设备不支持 SHA-1", e);
+        }
+        try {
+            in = new FileInputStream(f);
+            long skip = start;
+            while (skip > 0) {
+                long s = in.skip(skip);
+                if (s <= 0) throw new IOException("回读偏移越界：" + start);
+                skip -= s;
+            }
+            byte[] buf = new byte[BUF];
+            long left = length;
+            while (left > 0) {
+                int r = in.read(buf, 0, (int) Math.min(buf.length, left));
+                if (r <= 0) break;
+                md.update(buf, 0, r);
+                left -= r;
+            }
+            if (left > 0) throw new IOException("回读不足：" + (length - left) + "/" + length + " 字节");
+            byte[] dg = md.digest();
+            StringBuilder sb = new StringBuilder(dg.length * 2);
+            for (byte b : dg) sb.append(String.format(java.util.Locale.ROOT, "%02x", b & 0xFF));
+            return sb.toString();
+        } finally {
+            closeQuietly(in);
+        }
+    }
+
+    // ==================== hash 片源的断点元数据 ====================
+
+    /** 读分段进度。对不上（换了影片 / 换了文件大小 / 段数变了）就返回 false，让上层从零开始。 */
+    private static boolean readCdnMeta(File meta, String hash, long total, int segs,
+                                       long[] segDone, boolean[] segOk) {
+        if (!meta.exists() || hash == null) return false;
+        InputStream in = null;
+        try {
+            in = new FileInputStream(meta);
+            byte[] buf = new byte[(int) Math.min(meta.length(), 1024 * 1024)];
+            int off = 0;
+            int n;
+            while (off < buf.length && (n = in.read(buf, off, buf.length - off)) > 0) off += n;
+            JSONObject o = new JSONObject(new String(buf, 0, off, "UTF-8"));
+            if (!"cdn".equals(o.optString("kind"))) return false;
+            if (!hash.equalsIgnoreCase(o.optString("hash"))) return false;
+            if (o.optLong("total", -1) != total) return false;
+            JSONArray a = o.optJSONArray("segs");
+            if (a == null || a.length() != segs) return false;
+            for (int i = 0; i < segs; i++) {
+                JSONObject s = a.optJSONObject(i);
+                if (s == null) return false;
+                long d = s.optLong("done", -1);
+                if (d < 0) return false;
+                segDone[i] = d;
+                segOk[i] = s.optBoolean("ok");
+            }
+            return true;
+        } catch (Throwable e) {
+            return false;
+        } finally {
+            closeQuietly(in);
+        }
+    }
+
+    private void writeCdnMeta(File meta, String hash, long total, long[] segDone, boolean[] segOk) {
+        OutputStream out = null;
+        try {
+            JSONObject o = new JSONObject();
+            o.put("kind", "cdn");
+            o.put("hash", hash);
+            o.put("total", total);
+            JSONArray a = new JSONArray();
+            for (int i = 0; i < segDone.length; i++) {
+                JSONObject s = new JSONObject();
+                s.put("i", i);
+                s.put("done", segDone[i]);
+                boolean ok;
+                synchronized (segOk) {
+                    ok = segOk[i];
+                }
+                s.put("ok", ok);
+                a.put(s);
+            }
+            o.put("segs", a);
+            o.put("time", System.currentTimeMillis());
+            out = new FileOutputStream(meta);
+            out.write(o.toString().getBytes("UTF-8"));
+            out.flush();
+        } catch (Throwable ignored) {
+        } finally {
+            closeQuietly(out);
+        }
     }
 
     /**

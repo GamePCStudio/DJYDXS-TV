@@ -13,7 +13,7 @@ import java.util.List;
 public final class DlDb extends SQLiteOpenHelper {
 
     private static final String NAME = "supermov_dl.db";
-    private static final int VER = 1;
+    private static final int VER = 2;
 
     private static DlDb inst;
 
@@ -30,6 +30,9 @@ public final class DlDb extends SQLiteOpenHelper {
     public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE IF NOT EXISTS dl("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                + "source TEXT,"
+                + "hash TEXT,"
+                + "ext TEXT,"
                 + "fid INTEGER DEFAULT 0,"
                 + "tid TEXT,"
                 + "name TEXT,"
@@ -47,7 +50,20 @@ public final class DlDb extends SQLiteOpenHelper {
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldV, int newV) {
-        // 目前只有一个版本，后续加列时在这里做 ALTER TABLE
+        if (oldV < 2) {
+            // v1 -> v2：加 hash 片源三列。已存在的老行不动，source 读作 baidu
+            addColumnIfMissing(db, "source", "TEXT");
+            addColumnIfMissing(db, "hash", "TEXT");
+            addColumnIfMissing(db, "ext", "TEXT");
+        }
+    }
+
+    private static void addColumnIfMissing(SQLiteDatabase db, String col, String type) {
+        try {
+            db.execSQL("ALTER TABLE dl ADD COLUMN " + col + " " + type);
+        } catch (Throwable ignored) {
+            // duplicate column：这台机器上已经有该列，幂等跳过
+        }
     }
 
     public long insert(Dl t) {
@@ -103,6 +119,9 @@ public final class DlDb extends SQLiteOpenHelper {
 
     private static ContentValues toValues(Dl t) {
         ContentValues v = new ContentValues();
+        v.put("source", t.source);
+        v.put("hash", t.hash);
+        v.put("ext", t.ext);
         v.put("fid", t.fid);
         v.put("tid", t.tid);
         v.put("name", t.name);
@@ -122,6 +141,12 @@ public final class DlDb extends SQLiteOpenHelper {
     private static Dl fromCursor(Cursor c) {
         Dl t = new Dl();
         t.id = c.getLong(c.getColumnIndexOrThrow("id"));
+        String src = s(c, "source");
+        // v1 遗留行没有 source 值，一律按网盘片源处理
+        t.source = src.isEmpty() ? Dl.SRC_BAIDU : src;
+        t.hash = s(c, "hash");
+        String ext = s(c, "ext");
+        t.ext = ext.isEmpty() ? "mkv" : ext;
         t.fid = c.getInt(c.getColumnIndexOrThrow("fid"));
         t.tid = s(c, "tid");
         t.name = s(c, "name");

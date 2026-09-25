@@ -19,6 +19,7 @@ import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -64,6 +65,9 @@ public class DetailActivity extends Activity {
     private String picUrl = "";
     private String shareUrl = "";
     private String sharePwd = "";
+    /** 本片走 hash 片源（云端分段地址）：非空时「播放 / 转存」两个网盘入口没有意义。 */
+    private String hashSrc = "";
+    private boolean hashMode = false;
     private int fid;
     private String tid = "";
 
@@ -76,6 +80,11 @@ public class DetailActivity extends Activity {
     /** 拿到「该片名下全部视频文件」后的回调；files 为空时 err 给出原因。 */
     private interface FilesCb {
         void on(List<BaiduPan.PlayFile> files, String err);
+    }
+
+    /** 用户选定落盘根目录后的回调。 */
+    private interface DirCb {
+        void on(String dir);
     }
 
     @Override
@@ -150,20 +159,32 @@ public class DetailActivity extends Activity {
 
         // 线路区块已按要求去掉：只取第一条链接用于播放/下载/转存，不再展示「播放线路」
         if (d.boxes.isEmpty()) {
-            tvTransferResult.setText("该影片没有可用的百度网盘链接");
+            tvTransferResult.setText("该影片没有可用片源（既没有网盘分享链接，也没有影片指纹）");
             setActionsVisible(false);
             return;
         }
         MovieStore.Box first = d.boxes.get(0);
-        shareUrl = first.url;
-        sharePwd = first.pwd;
+        hashMode = "hash".equals(first.type);
+        if (hashMode) {
+            hashSrc = first.url;
+        } else {
+            shareUrl = first.url;
+            sharePwd = first.pwd;
+        }
 
         setActionsVisible(true);
         // 电视遥控器：进页面就把焦点放到主操作上，否则满屏静态文字看不出能按哪儿
-        btnPlay.post(() -> btnPlay.requestFocus());
-        tvTransferDir.setText("网盘转存目录：" + Settings.saveDir()
-                + "\n下载落盘目录：" + Settings.downloadDir()
-                + "\n（均可在 设置 中修改）");
+        btnDownload.post(() -> btnDownload.requestFocus());
+        if (hashMode) {
+            tvTransferDir.setText("机型：" + DeviceProfile.get().raw()
+                    + "\n下载落盘目录：" + Settings.downloadDir()
+                    + "\n设备序列号：" + Settings.cdnSn()
+                    + "\n（序列号与落盘目录均可在 设置 中修改）");
+        } else {
+            tvTransferDir.setText("网盘转存目录：" + Settings.saveDir()
+                    + "\n下载落盘目录：" + Settings.downloadDir()
+                    + "\n（均可在 设置 中修改）");
+        }
 
         // 这里用库里的剧集清单先给个「这部片到底有多大、多少集」的底数 ——
         // 全部来自本地数据库，不需要任何网络请求。原来这个信息要等“定位网盘文件”
@@ -180,14 +201,21 @@ public class DetailActivity extends Activity {
             if (tip.length() > 0) tip.append('\n');
             tip.append("最近转存：").append(humanLast(last));
         }
+        if (hashMode) {
+            if (tip.length() > 0) tip.append('\n');
+            tip.append("云端指纹 ").append(hashSrc)
+                    .append("\n下载时按云端分段清单逐段校验 SHA1，全部通过才改名为片名");
+        }
         tvTransferResult.setText(tip.toString());
     }
 
     private void setActionsVisible(boolean visible) {
         int v = visible ? View.VISIBLE : View.GONE;
-        btnPlay.setVisibility(v);
+        // 在线播放与转存都是百度网盘的动作（要靠分享链接定位文件），hash 片源没有这条路
+        int pan = visible && !hashMode ? v : View.GONE;
+        btnPlay.setVisibility(pan);
+        btnTransfer.setVisibility(pan);
         btnDownload.setVisibility(v);
-        btnTransfer.setVisibility(v);
         tvTransferDir.setVisibility(v);
     }
 
@@ -422,6 +450,11 @@ public class DetailActivity extends Activity {
      * </ol>
      */
     private void doDownload() {
+        // hash 片源：不用登录网盘、不用解析分享，直接选根目录入队
+        if (hashMode) {
+            downloadHash();
+            return;
+        }
         if (!CookieStore.hasBaiduLogin()) {
             needAuth();
             return;
@@ -603,6 +636,11 @@ public class DetailActivity extends Activity {
 
     /** TV 上用遥控器打路径太痛苦，所以列出所有可写位置让用户挑。 */
     private void showDirPicker(final List<BaiduPan.PlayFile> files) {
+        String title = files.size() == 1 ? "下载到" : ("下载 " + files.size() + " 个文件到");
+        showDirPicker(title, dir -> startDownload(dir, files));
+    }
+
+    private void showDirPicker(String title, final DirCb cb) {
         final List<Storage.Target> ts = Storage.targets(this);
         final String[] labels = new String[ts.size() + 1];
         for (int i = 0; i < ts.size(); i++) {
@@ -611,10 +649,10 @@ public class DetailActivity extends Activity {
         labels[ts.size()] = "✎ 手动输入路径…";
 
         AlertDialog dlg = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
-                .setTitle(files.size() == 1 ? "下载到" : ("下载 " + files.size() + " 个文件到"))
+                .setTitle(title)
                 .setItems(labels, (d, which) -> {
                     if (which == ts.size()) {
-                        showManualDir(files);
+                        showManualDir(cb);
                         return;
                     }
                     Storage.Target t = ts.get(which);
@@ -623,14 +661,14 @@ public class DetailActivity extends Activity {
                         Toast.makeText(this, "请授予「所有文件访问」权限后重新点下载", Toast.LENGTH_LONG).show();
                         return;
                     }
-                    startDownload(t.dir, files);
+                    cb.on(t.dir);
                 })
                 .create();
         dlg.show();
         tuneDialog(dlg);
     }
 
-    private void showManualDir(final List<BaiduPan.PlayFile> files) {
+    private void showManualDir(final DirCb cb) {
         final EditText input = new EditText(this);
         input.setText(Settings.downloadDir());
         input.setSelection(input.getText().length());
@@ -644,7 +682,7 @@ public class DetailActivity extends Activity {
                         toast("路径不能为空");
                         return;
                     }
-                    startDownload(v, files);
+                    cb.on(v);
                 })
                 .setNegativeButton("取消", null)
                 .create();
@@ -708,6 +746,61 @@ public class DetailActivity extends Activity {
                         + (tb > 0 ? "，共 " + DlEngine.human(tb) : "")
                         + "\n按网盘原目录结构落盘到：" + dir + list);
                 toast("已开始下载 " + n + " 个文件");
+                startActivity(new Intent(this, DownloadActivity.class));
+            });
+        });
+    }
+
+    // ==================== ②-b hash 片源下载 ====================
+
+    /**
+     * hash 片源的下载：一个 hash 对应一个落盘文件，所以没有「多选文件」那一步。
+     *
+     * <p>目录与最终文件名都交给 {@link DeviceProfile}：通用版是在用户选的根目录下建一层
+     * <b>中文片名</b>目录，下载完成后把中间文件 {@code <hash>.dlpart} 改成 {@code 片名.mkv}。
+     * 片名按目标分区的文件系统规矩当场裁过（见 {@link FilmNaming}），避免出现
+     * 「下完 40 GB 才发现目录名建歪」。</p>
+     */
+    private void downloadHash() {
+        List<Dl> same = queuedOfTid(tid);
+        if (!same.isEmpty()) {
+            showAlreadyQueued(same);
+            return;
+        }
+        showDirPicker("下载到", this::startDownloadHash);
+    }
+
+    private void startDownloadHash(final String root) {
+        tvTransferResult.setText("正在加入下载队列…");
+        pool.execute(() -> {
+            File d = DeviceProfile.get().targetDir(new File(root), movieName);
+            if (!d.exists() && !d.mkdirs()) {
+                final String why = d.getAbsolutePath();
+                main.post(() -> {
+                    tvTransferResult.setText("✘ 无法建立影片目录：" + why);
+                    toast("建目录失败");
+                });
+                return;
+            }
+            Dl t = new Dl();
+            t.source = Dl.SRC_HASH;
+            t.hash = hashSrc;
+            t.fid = fid;
+            t.tid = tid;
+            t.name = movieName;
+            t.dir = d.getAbsolutePath();
+            t.fileName = DlEngine.hashStageName(t);
+            t.created = System.currentTimeMillis();
+            final long id = DlEngine.get().enqueue(this, t);
+            final String path = d.getAbsolutePath();
+            main.post(() -> {
+                if (id <= 0) {
+                    tvTransferResult.setText("✘ 加入下载队列失败（目录不可写？）：" + path);
+                    toast("加入下载队列失败");
+                    return;
+                }
+                tvTransferResult.setText("✔ 已加入下载队列\n云端取址、逐段校验后落盘到：" + path);
+                toast("已开始下载");
                 startActivity(new Intent(this, DownloadActivity.class));
             });
         });

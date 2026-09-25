@@ -17,6 +17,8 @@ public final class Settings {
     private static final String K_LAST_TITLE = "last_transfer_title";
     private static final String K_LAST_PATH = "last_transfer_path";
     private static final String K_ASKED_ALL_FILES = "asked_all_files";
+    private static final String K_CDN_SN = "cdn_sn";
+    private static final String K_CDN_DISTRIBUTOR = "cdn_distributor";
 
     private static SharedPreferences p;
     /** Application Context：缺省下载目录要按当前权限状态现算，不能只在 init 时算一次。 */
@@ -42,6 +44,34 @@ public final class Settings {
 
     public static void setSaveDir(String dir) {
         p().edit().putString(K_SAVE_DIR, dir).apply();
+    }
+
+    /**
+     * hash 片源取址用的设备序列号（艾美侧就是 WiFi MAC：12 位大写十六进制、无分隔符）。
+     *
+     * <p>它决定云端给不给真实分段地址 —— 未授权的 sn 拿回来的是占位桩，
+     * 所以下载失败先核对这一项，而不是怀疑网络。</p>
+     */
+    public static String cdnSn() {
+        SharedPreferences sp = p();
+        String v = sp == null ? "" : sp.getString(K_CDN_SN, "");
+        return v == null || v.isEmpty() ? AimeiCdn.DEFAULT_SN : v;
+    }
+
+    public static void setCdnSn(String sn) {
+        String v = sn == null ? "" : sn.trim().toUpperCase(java.util.Locale.ROOT);
+        p().edit().putString(K_CDN_SN, v).apply();
+    }
+
+    /** 渠道名（注册签名的一部分），不同厂商风味不同。 */
+    public static String cdnDistributor() {
+        SharedPreferences sp = p();
+        String v = sp == null ? "" : sp.getString(K_CDN_DISTRIBUTOR, "");
+        return v == null || v.isEmpty() ? AimeiCdn.DEFAULT_DISTRIBUTOR : v;
+    }
+
+    public static void setCdnDistributor(String d) {
+        p().edit().putString(K_CDN_DISTRIBUTOR, d == null ? "" : d.trim()).apply();
     }
 
     /**

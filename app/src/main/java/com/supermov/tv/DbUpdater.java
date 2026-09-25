@@ -40,7 +40,15 @@ public final class DbUpdater {
 
     private static final String TAG = "SupeMov";
 
-    public static final String MANIFEST_URL = "https://800915.xyz/db/SuperMOV.json";
+    /**
+     * 清单地址单独一份，不复用蓝本的 {@code SuperMOV.json}。
+     *
+     * <p>蓝本那份清单指向的是<b>网盘片源库</b>（movie.pan_url + v_episode 的网盘路径）。
+     * 本变体内嵌的是 4K hash 库，一旦让用户在 设置 → 影片数据库 里点到蓝本清单，
+     * 整个片库会被换成网盘库、hash 列直接消失。所以这里指向 AM 专用清单；该清单
+     * 目前尚未上线，取不到时 DbUpdater 按「没有更新」静默处理。</p>
+     */
+    public static final String MANIFEST_URL = "https://800915.xyz/db/SuperMOV-am.json";
 
     /** 单次下载上限，防止远端挂掉时返回一个莫名其妙的巨大响应把设备写满。 */
     private static final long MAX_DOWNLOAD = 64L * 1024 * 1024;

@@ -61,6 +61,17 @@ public class SettingsActivity extends Activity {
                         + "下载管理页面内下载不限速；退出该页面后按此限速",
                 v -> showDlLimitDialog()));
 
+        // ②.6 云端取址（hash 片源）
+        group.addView(sectionLabel("云端取址"));
+        group.addView(option("设备序列号: " + Settings.cdnSn(),
+                "hash 片源用它向厂商云端换取分段下载地址。\n"
+                        + "缺省是一台已登记的艾美盒子 WiFi MAC（12 位大写十六进制，无分隔符）。\n"
+                        + "取址若被回「占位桩」（该序列号对这片无授权），换成已授权机器的序列号",
+                v -> showEditSnDialog()));
+        group.addView(option("识别机型: " + DeviceProfile.get().raw(),
+                "决定下载后的目录与命名策略。通用版：先在下载目录下建中文片名目录，\n"
+                        + "逐段 SHA1 校验通过后再把文件改成片名", null));
+
         // ②.7 播放 · 音频（v1.25：NEXIO 内核带来的直通/解码开关）
         group.addView(sectionLabel("播放 · 音频"));
         group.addView(option("音频输出: " + audioModeName(Settings.audioMode()),
@@ -295,6 +306,39 @@ public class SettingsActivity extends Activity {
                     }
                     Settings.setDownloadDir(v);
                     Toast.makeText(this, "下载目录已设为 " + v, Toast.LENGTH_SHORT).show();
+                    rebuild();
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        dlg.show();
+        dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).requestFocus();
+    }
+
+    /**
+     * 云端取址用的设备序列号。
+     *
+     * <p>只接受 12 位十六进制（WiFi MAC 去掉了分隔符）—— 云端对格式不对的 sn 直接回
+     * code=40001，与其让用户下完才发现，不如在输入这一关就拦下来。</p>
+     */
+    private void showEditSnDialog() {
+        final android.widget.EditText input = new android.widget.EditText(this);
+        input.setText(Settings.cdnSn());
+        input.setSelection(input.getText().length());
+        input.setTextSize(15);
+        input.setAllCaps(true);
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(
+                this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("设备序列号（12 位十六进制）")
+                .setView(input)
+                .setPositiveButton("保存", (d, w) -> {
+                    String v = input.getText().toString().trim().toUpperCase(java.util.Locale.ROOT);
+                    if (!v.matches("[0-9A-F]{12}")) {
+                        Toast.makeText(this, "要 12 位十六进制，例如 9CF8DB056A49",
+                                Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    Settings.setCdnSn(v);
+                    Toast.makeText(this, "设备序列号已设为 " + v, Toast.LENGTH_SHORT).show();
                     rebuild();
                 })
                 .setNegativeButton("取消", null)

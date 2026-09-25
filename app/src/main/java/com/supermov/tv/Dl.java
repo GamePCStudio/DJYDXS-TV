@@ -14,7 +14,18 @@ public class Dl {
     public static final int DONE    = 3; // 已完成
     public static final int ERROR   = 4; // 失败（可重试续传）
 
+    /** 片源类型：网盘（百度网盘直链）或 hash（云端分段地址）。 */
+    public static final String SRC_BAIDU = "baidu";
+    public static final String SRC_HASH = "hash";
+
     public long id;
+
+    /** 走哪条取址路径；空串按 {@link #SRC_BAIDU} 处理，兼容升级前就存在的旧任务行。 */
+    public String source = SRC_BAIDU;
+    /** {@link #SRC_HASH} 时用：40 位十六进制影片指纹。 */
+    public String hash = "";
+    /** {@link #SRC_HASH} 时用：云端给出的容器后缀（不含点号），也是校验后的落盘后缀。 */
+    public String ext = "mkv";
 
     // ---- 网盘侧定位信息（用于取直链）----
     public int fid;
