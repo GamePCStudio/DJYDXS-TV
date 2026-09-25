@@ -132,9 +132,10 @@ public class MainActivity extends Activity {
         // 影片列表：固定 7 列海报墙
         posterSpans = 7;
         rvList.setLayoutManager(new GridLayoutManager(this, posterSpans));
-        // 电视上多留几屏已布局的条目，往回翻就不用重新绑定/重新解码海报
+        // 电视上多留几屏已布局的条目，往回翻就不用重新绑定/重新解码海报。
+        // （没加 setHasFixedSize：release 的 lintVital 会报 InvalidSetHasFixedSize，
+        //   而海报条目高度是 wrap_content，这个前提本来就不成立。）
         rvList.setItemViewCacheSize(posterSpans * 3);
-        rvList.setHasFixedSize(true);
         movieAdapter = new MovieAdapter();
         // 解码目标宽度按列宽定：艾美海报原图实测到 2000×3000，整尺寸解码一张就 22.9 MB
         movieAdapter.setCellWidthPx(getResources().getDisplayMetrics().widthPixels / posterSpans);
