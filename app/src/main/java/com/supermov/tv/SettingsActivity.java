@@ -231,7 +231,7 @@ public class SettingsActivity extends Activity {
             String v = input.getText().toString().trim();
             if (!v.startsWith("/")) v = "/" + v;
             v = v.replaceAll("/+$", "");
-            if (v.isEmpty()) v = "/超级影库";
+            if (v.isEmpty()) v = "/山姆影库";
             Settings.setSaveDir(v);
             Toast.makeText(this, "转存目录已设为 " + v, Toast.LENGTH_SHORT).show();
             rebuild();

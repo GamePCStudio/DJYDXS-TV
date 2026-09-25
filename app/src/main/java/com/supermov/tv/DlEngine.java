@@ -1153,7 +1153,7 @@ public final class DlEngine {
      * <p>落盘目录是按网盘结构 1:1 建的，删完文件会留下一串空壳（片名 / Season 1），
      * 看着很脏。这里只在目录**确实为空**时才删，遇到非空立刻停手。</p>
      *
-     * <p><b>删除边界</b>：向上找名为「超级影库」的下载根目录做锚点，只允许删到它为止。
+     * <p><b>删除边界</b>：向上找名为「山姆影库」的下载根目录做锚点，只允许删到它为止。
      * 找不到锚点（用户自定义了奇怪的落盘目录）时**最多只删文件所在的那一级**，
      * 绝不继续上溯 —— 否则一串空目录删上去可能把 {@code /mnt/usb} 这种挂载点删掉。</p>
      */
@@ -1161,7 +1161,7 @@ public final class DlEngine {
         try {
             File anchor = null;
             for (File f = dir; f != null; f = f.getParentFile()) {
-                if ("超级影库".equals(f.getName())) {
+                if ("山姆影库".equals(f.getName())) {
                     anchor = f;
                     break;
                 }

@@ -37,7 +37,7 @@ public final class Settings {
     }
 
     public static String saveDir() {
-        return p().getString(K_SAVE_DIR, "/超级影库");
+        return p().getString(K_SAVE_DIR, "/山姆影库");
     }
 
     public static void setSaveDir(String dir) {
@@ -47,7 +47,7 @@ public final class Settings {
     /**
      * 下载落盘目录（绝对路径）。
      *
-     * <p>没设置过时用缺省落点：v1.20 起是公共存储 {@code /sdcard/超级影库}（用盒子自带的
+     * <p>没设置过时用缺省落点：v1.20 起是公共存储 {@code /sdcard/山姆影库}（用盒子自带的
      * 文件管理器 / Kodi 都能直接看到），没拿到「所有文件访问」权限时退回 App 专属目录。
      * <b>每次都现算</b> —— 用户可能刚在设置里授了权，缓存住就还是老路径。</p>
      */

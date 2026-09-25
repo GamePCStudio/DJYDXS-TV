@@ -157,7 +157,7 @@ public final class BaiduPan {
         public String shareid = "";
         public String uk = "";
         /**
-         * 转存**实际落地**的网盘绝对路径（如 /超级影库/特别行动：母狮.S03.1080P）。
+         * 转存**实际落地**的网盘绝对路径（如 /山姆影库/特别行动：母狮.S03.1080P）。
          *
          * <p>分享里的文件夹名和片名经常不一样（被改名、被顺延成「(2)」），所以落地后不能用
          * 片名去猜 —— 直接拿这里记下的路径精确取文件，永远播不错。</p>
@@ -172,7 +172,7 @@ public final class BaiduPan {
          */
         public boolean spaceFull;
         /**
-         * 因为目标目录已有同名影片而实际落地的顺延目录（如 {@code /超级影库/片名 (2)}）。
+         * 因为目标目录已有同名影片而实际落地的顺延目录（如 {@code /山姆影库/片名 (2)}）。
          * 空串 = 正常落到目标目录，没有顺延。
          */
         public String superseded = "";
@@ -182,7 +182,7 @@ public final class BaiduPan {
      * 从转存响应里取出「实际落地路径」。
      *
      * <p>百度回的是
-     * {@code {"errno":0,"extra":{"list":[{"from":"/分享里的名字","to":"/超级影库/实际名字"}]}}，
+     * {@code {"errno":0,"extra":{"list":[{"from":"/分享里的名字","to":"/山姆影库/实际名字"}]}}，
      * 取 to；没有 extra 时退回「目标目录下同名项」；再不行拿分享里的名字拼到目标目录下
      * （{@link #locate} 会核对是否真的存在）。</p>
      */
@@ -534,7 +534,7 @@ public final class BaiduPan {
             out.message = "百度登录已失效，请到 设置→百度网盘扫码 重新授权";
             return out;
         }
-        if (targetDir == null || !targetDir.startsWith("/")) targetDir = "/超级影库";
+        if (targetDir == null || !targetDir.startsWith("/")) targetDir = "/山姆影库";
         Http.desktopUa.set(true); // 整条链路用桌面 UA
         try {
             android.util.Log.d("SupeMov", "transfer: ensureDir " + targetDir);

@@ -21,7 +21,7 @@ public class Dl {
     public String tid = "";
     /** 影片名：fs_id 失效时用它回网盘里重新认片 */
     public String name = "";
-    /** 转存根目录（如 /超级影库） */
+    /** 转存根目录（如 /山姆影库） */
     public String rootDir = "";
     /** 网盘文件 fs_id / 完整路径：命中后取链最稳，避免目录里片子多了认错 */
     public long fsId;

@@ -141,7 +141,7 @@ public class DlService extends Service implements DlEngine.Observer {
             total = 100;
             done = cur.percent();
         } else {
-            title = "超级影库 下载队列";
+            title = "山姆影库 下载队列";
             text = active > 0 ? ("排队中 " + active + " 个任务") : "收尾中…";
         }
 

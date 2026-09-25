@@ -20,7 +20,7 @@ import java.util.List;
  * <p>为什么这样做：Android 10 起分区存储让「直接写 /sdcard/xxx」必须拿
  * MANAGE_EXTERNAL_STORAGE（所有文件访问）；而 App 专属外部目录
  * {@code /sdcard/Android/data/<包名>/files/} 任何版本都免权限可写。
- * v1.20 起默认落点是公共存储 {@code /sdcard/超级影库}（需要权限），
+ * v1.20 起默认落点是公共存储 {@code /sdcard/山姆影库}（需要权限），
  * 没权限时退回 App 专属目录 —— 见 {@link #defaultDir}。</p>
  *
  * <p>NAS 不需要专门的 SMB 库：盒子通过自带文件管理器 / X-plore 之类把共享挂载后，
@@ -91,16 +91,16 @@ public final class Storage {
         } catch (Throwable ignored) {
         }
         if (base == null) base = c.getFilesDir();
-        return new File(base, "超级影库").getAbsolutePath();
+        return new File(base, "山姆影库").getAbsolutePath();
     }
 
     /** 公共存储下的缺省落点（本机内置存储）。 */
-    public static final String PUBLIC_ROOT = "/sdcard/超级影库";
+    public static final String PUBLIC_ROOT = "/sdcard/山姆影库";
 
     /**
      * 默认下载目录（用户没改过时用它）。
      *
-     * <p>v1.20 起缺省落点改为公共存储 {@code /sdcard/超级影库} —— 下载完的片子用盒子
+     * <p>v1.20 起缺省落点改为公共存储 {@code /sdcard/山姆影库} —— 下载完的片子用盒子
      * 自带的文件管理器 / Kodi / X-plore 都能直接看到；代价是写它需要「所有文件访问」。
      * <b>没拿到权限时仍退回 App 专属目录</b>，否则一上来每次下载都失败，用户连原因都看不到。</p>
      */
@@ -114,14 +114,14 @@ public final class Storage {
      *
      * <p>分三路找，是为了一个都不漏：</p>
      * <ol>
-     *   <li><b>本机存储</b>：固定项 {@code /sdcard/超级影库}；</li>
+     *   <li><b>本机存储</b>：固定项 {@code /sdcard/山姆影库}；</li>
      *   <li><b>移动存储 / 移动硬盘</b>：走 {@link android.os.storage.StorageManager} 拿系统
      *       认可的存储卷（U 盘、SD 卡、USB 硬盘都在这里）。比扫目录可靠 —— 扫目录靠「能不能读」，
      *       未授权时插着的盘直接看不见；这里能把「插着但还没授权」的盘也列出来让用户去授权；</li>
      *   <li><b>兜底扫挂载点</b>：{@code /storage} 与 {@code /mnt} 下可写的目录（部分盒子把 NAS /
      *       共享盘挂在非标位置，StorageManager 不认）。</li>
      * </ol>
-     * <p>每一项都自动补上 {@code /超级影库} 子目录，与网盘侧的转存根目录同名。</p>
+     * <p>每一项都自动补上 {@code /山姆影库} 子目录，与网盘侧的转存根目录同名。</p>
      */
     public static List<Target> targets(Context c) {
         LinkedHashSet<String> seen = new LinkedHashSet<>();
@@ -136,7 +136,7 @@ public final class Storage {
             String name = new File(v).getName();
             if (name == null || name.isEmpty()) name = v;
             addTarget(out, seen, "外接存储 · " + name,
-                    new File(v, "超级影库").getAbsolutePath(), !all);
+                    new File(v, "山姆影库").getAbsolutePath(), !all);
         }
 
         // ③ 兜底：扫挂载点（NAS / 共享盘常挂在 /mnt 下）。可写的才列，避免噪音。
@@ -222,7 +222,7 @@ public final class Storage {
             if (!f.isDirectory()) continue;
             try {
                 if (f.canWrite()) {
-                    String dir = new File(f, "超级影库").getAbsolutePath();
+                    String dir = new File(f, "山姆影库").getAbsolutePath();
                     if (seen.add(dir)) {
                         out.add(new Target("外接/NAS · " + n, dir, false));
                     }
