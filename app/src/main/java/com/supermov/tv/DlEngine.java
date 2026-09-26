@@ -896,7 +896,7 @@ public final class DlEngine {
 
     private void runHashTask(Dl t, File dir) throws Exception {
         if (t.hash == null || t.hash.length() != 40) {
-            throw new IOException("这条任务没有有效的影片指纹（hash），无法向云端取址");
+            throw new IOException("这条任务没有有效的影片云指纹，无法向云端取址");
         }
         String sn = Settings.cdnSn();
 
@@ -906,8 +906,8 @@ public final class DlEngine {
         AimeiCdn.register(sn, Settings.cdnDistributor());   // 幂等；失败也继续试取址
         AimeiCdn.CdnInfo info = AimeiCdn.fetch(sn, t.hash);
         if (info.placeholder()) {
-            throw new IOException("云端没给这台设备真实地址（返回占位桩：" + info.placeholderReason
-                    + "）。序列号 " + sn + " 对该片无授权，换 sn 或在设置里改后再试");
+            // 只给一句能看懂的话：占位桩细节由 AimeiCdn 的日志输出，序列号不进界面
+            throw new IOException("本设备暂时无法取得影片授权，稍后再试");
         }
         checkCancel();
         final long total = info.fileSize;

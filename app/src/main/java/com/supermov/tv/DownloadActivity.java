@@ -233,7 +233,7 @@ public class DownloadActivity extends Activity implements DlEngine.Observer {
     private void confirmRemove(final Dl t) {
         AlertDialog dlg = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)
                 .setTitle("删除任务")
-                .setMessage("从队列移除：\n" + t.fileName
+                .setMessage("从队列移除：\n" + t.displayName()
                         + "\n\n已下载的正式文件不会被删除；未完成的断点缓存会清掉。")
                 .setPositiveButton("删除", (d, w) -> DlEngine.get().remove(t.id))
                 .setNegativeButton("取消", null)

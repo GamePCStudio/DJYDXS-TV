@@ -1,7 +1,8 @@
 # DJYDXS31NexioAM · 山姆影库（hash 片源变体）
 
 > 分支：`DJYDXS31NexioAM`，蓝本：`DJYDXS3Nexio`（网盘片源版）。
-> 对应版本：**v1.33**（`versionCode 33`），内嵌库 `db_version=2026092601`（1519 部 hash 片源）。
+> 对应版本：**v1.34**（`versionCode 34`），内嵌库 `db_version=2026092601`（1519 部 hash 片源，v1.33 起未变）。
+> v1.34 只动界面文案：sn 与 40 位云指纹不再出现在任何用户可见处，详见 §3.4。
 > 本文是**后续做其它机型变体（威动 / 视易 / 海美迪…）的模板**：先读 §1 的改名清单，
 > 再按 §6 的机型扩展步骤替换策略，片库生成见 §2，hash 链路的实测结论见 §4（**必读**），
 > 列表排序与海报墙加载见 §5。
@@ -170,6 +171,12 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
 - 落盘：`DeviceProfile.targetDir()` 在用户选的根目录下建**中文片名**目录；
   校验通过后 `renameTo(片名.ext)`，跨分区 rename 失败退回 `copyFile`；
   同级重名走 `FilmNaming.unique()` → `名字 (2)`。
+- **界面上不出现 sn / 40 位云指纹**（v1.34 起的口径）：详情页与下载管理一律显示
+  影片名称（+ 大小），中间文件在屏幕上走 `Dl.displayName()` 显示成「片名.dlpart」，
+  磁盘真名 `<hash>.dlpart` 与断点续传定位键都不受影响；取址失败的报错也不带 sn
+  （`DlEngine.runHashTask` 只说「本设备暂时无法取得影片授权，稍后再试」）。
+  细节仍留在 logcat：`AimeiCdn.fetch` 与 `DlEngine` 的 `Log.d` 会打 hash 与占位桩特征。
+  唯一还显示 sn 的地方是 设置 →「云端取址」，那是换 sn 的入口，删了就换不了机器。
 
 ---
 

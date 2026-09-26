@@ -48,7 +48,7 @@ public class DownloadAdapter extends RecyclerView.Adapter<DownloadAdapter.VH> {
     public void onBindViewHolder(@NonNull VH h, int position) {
         Dl t = items.get(position);
 
-        h.title.setText(t.fileName == null || t.fileName.isEmpty() ? t.name : t.fileName);
+        h.title.setText(t.displayName());
         String state = (t.status == Dl.QUEUED && t.queuePos > 0)
                 ? "排队中 · 第 " + t.queuePos + " 位"     // 串行队列：排在谁后面一目了然
                 : t.statusText();

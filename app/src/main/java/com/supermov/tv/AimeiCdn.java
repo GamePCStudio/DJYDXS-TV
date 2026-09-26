@@ -128,7 +128,7 @@ public final class AimeiCdn {
      */
     public static CdnInfo fetch(String sn, String hash) throws IOException {
         if (sn == null || sn.isEmpty()) throw new IOException("设备序列号未设置");
-        if (hash == null || hash.length() != 40) throw new IOException("影片 hash 无效");
+        if (hash == null || hash.length() != 40) throw new IOException("影片云指纹无效");
         String url = BASE + "api/movie/getCdnUrl?sn=" + sn + "&hash=" + hash;
         CdnInfo info = parse(get(url), hash);
         if (info.placeholder()) {

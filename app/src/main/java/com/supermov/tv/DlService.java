@@ -135,7 +135,7 @@ public class DlService extends Service implements DlEngine.Observer {
         String title;
         String text;
         if (cur != null) {
-            title = "正在下载：" + cur.fileName;
+            title = "正在下载：" + cur.displayName();
             text = (e.note().isEmpty() ? cur.statusText() : e.note())
                     + (active > 1 ? "（队列还有 " + (active - 1) + " 个）" : "");
             total = 100;

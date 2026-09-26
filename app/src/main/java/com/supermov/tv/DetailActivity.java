@@ -178,8 +178,7 @@ public class DetailActivity extends Activity {
         if (hashMode) {
             tvTransferDir.setText("机型：" + DeviceProfile.get().raw()
                     + "\n下载落盘目录：" + Settings.downloadDir()
-                    + "\n设备序列号：" + Settings.cdnSn()
-                    + "\n（序列号与落盘目录均可在 设置 中修改）");
+                    + "\n（落盘目录可在 设置 中修改）");
         } else {
             tvTransferDir.setText("网盘转存目录：" + Settings.saveDir()
                     + "\n下载落盘目录：" + Settings.downloadDir()
@@ -203,8 +202,13 @@ public class DetailActivity extends Activity {
         }
         if (hashMode) {
             if (tip.length() > 0) tip.append('\n');
-            tip.append("云端指纹 ").append(hashSrc)
-                    .append("\n下载时按云端分段清单逐段校验 SHA1，全部通过才改名为片名");
+            tip.append("影片名称：").append(movieName);
+            long size = d.movie.totalSize;
+            if (size > 0) {
+                tip.append("\n影片大小：")
+                        .append(String.format(java.util.Locale.ROOT, "%.1f GB", size / 1073741824.0));
+            }
+            tip.append("\n下载时按云端分段清单逐段校验 SHA1，全部通过才改名为片名");
         }
         tvTransferResult.setText(tip.toString());
     }
@@ -513,7 +517,7 @@ public class DetailActivity extends Activity {
                 sb.append("… 等共 ").append(same.size()).append(" 个文件\n");
                 break;
             }
-            sb.append("· ").append(t.fileName).append("　").append(t.statusText()).append("\n");
+            sb.append("· ").append(t.displayName()).append("　").append(t.statusText()).append("\n");
         }
         sb.append("\n不会重复添加下载任务。");
 

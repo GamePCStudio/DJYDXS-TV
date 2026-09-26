@@ -86,6 +86,20 @@ public class Dl {
         return dir.endsWith("/") ? dir + fileName : dir + "/" + fileName;
     }
 
+    /**
+     * 界面显示用的文件名。hash 片源下载途中的真名是「40 位云指纹.dlpart」，那串十六进制
+     * 对用户没有意义，这里只把前缀换成影片名称、保留 {@code .dlpart} 后缀（看得出还没下完）。
+     *
+     * <p><b>只影响显示</b>：真名与断点续传的定位键都不动，播文件、删文件仍走 {@link #path()}。</p>
+     */
+    public String displayName() {
+        String f = fileName == null ? "" : fileName;
+        int dot = f.indexOf(".dlpart");
+        if (dot < 0) return f.isEmpty() ? name : f;
+        String title = name == null || name.isEmpty() ? f.substring(0, dot) : name;
+        return title + f.substring(dot);
+    }
+
     /** 文件名净化：去掉非法字符与路径穿越，避免在 Android/共享目录上写失败。 */
     public static String safeName(String s) {
         if (s == null || s.isEmpty()) return "video.mp4";
