@@ -1,8 +1,9 @@
 # DJYDXS31NexioAM · 山姆影库（hash 片源变体）
 
 > 分支：`DJYDXS31NexioAM`，蓝本：`DJYDXS3Nexio`（网盘片源版）。
-> 对应版本：**v1.34**（`versionCode 34`），内嵌库 `db_version=2026092601`（1519 部 hash 片源，v1.33 起未变）。
-> v1.34 只动界面文案：sn 与 40 位云指纹不再出现在任何用户可见处，详见 §3.4。
+> 对应版本：**v1.35**（`versionCode 35`），内嵌库 `db_version=2026092601`（1519 部 hash 片源，v1.33 起未变）。
+> v1.34 只动界面文案（sn 与 40 位云指纹不再出现在任何用户可见处，见 §3.4）；
+> v1.35 在下载队列页顶部加了两行「前台极速 / 退后台限速」说明，见 §3.5。
 > 本文是**后续做其它机型变体（威动 / 视易 / 海美迪…）的模板**：先读 §1 的改名清单，
 > 再按 §6 的机型扩展步骤替换策略，片库生成见 §2，hash 链路的实测结论见 §4（**必读**），
 > 列表排序与海报墙加载见 §5。
@@ -177,6 +178,20 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
   （`DlEngine.runHashTask` 只说「本设备暂时无法取得影片授权，稍后再试」）。
   细节仍留在 logcat：`AimeiCdn.fetch` 与 `DlEngine` 的 `Log.d` 会打 hash 与占位桩特征。
   唯一还显示 sn 的地方是 设置 →「云端取址」，那是换 sn 的入口，删了就换不了机器。
+
+### 3.5 前台极速 / 后台限速：这件事要写在下载页明面上
+
+限速只有两个开关点，别在别处再乘系数：
+
+| 时机 | 代码 | 效果 |
+|---|---|---|
+| 进 下载队列页 | `DownloadActivity.onResume` → `setRateLimit(0)` | 不限速（用户正盯着进度） |
+| 离开该页 / 冷启动 | `DownloadActivity.onPause`、`DlEngine.init` → `setRateLimit(Settings.dlLimitBps())` | 按设置的后台限速 |
+
+`Settings.dlLimitMbps()` 默认 20、区间 1~40 Mbps，换算成字节见 `dlLimitBps()`
+（`1MB/s = 8Mbps`，单位别弄反）。v1.35 起页面顶部两行小字就是这个口径的人话版，
+**第二行的数值直接取 `Settings.dlLimitMbps()`**、在 `onResume` 赋值 —— 用户改完设置
+回到这页要能看到新值。所以：**改了限速语义，这两行文案必须跟着改**。
 
 ---
 

@@ -31,6 +31,7 @@ public class DownloadActivity extends Activity implements DlEngine.Observer {
 
     private RecyclerView rv;
     private TextView tvSummary;
+    private TextView tvSpeedTip;
     private TextView tvEmpty;
     private DownloadAdapter adapter;
 
@@ -44,6 +45,7 @@ public class DownloadActivity extends Activity implements DlEngine.Observer {
 
         rv = findViewById(R.id.rvDl);
         tvSummary = findViewById(R.id.tvDlSummary);
+        tvSpeedTip = findViewById(R.id.tvDlSpeedTip);
         tvEmpty = findViewById(R.id.tvDlEmpty);
 
         rv.setLayoutManager(new LinearLayoutManager(this));
@@ -106,6 +108,11 @@ public class DownloadActivity extends Activity implements DlEngine.Observer {
         DlEngine.get().addObserver(this);
         // 下载管理页在前台 = 用户正盯着进度看，此时不限速
         DlEngine.get().setRateLimit(0);
+        // 顶部两行小字：把「前台极速 / 退到后台才限速」这件事说在明面上。
+        // 第二行的数值跟着设置的后台限速走，所以放在 onResume 而不是写死在布局里。
+        tvSpeedTip.setText("本页面下载为极速50Mbps~350Mbps超高网速下载，让影片最快速度下载完成。"
+                + "极速期间，可能会对同网络其他设备上网造成干扰。\n"
+                + "退出本页面以后，降为" + Settings.dlLimitMbps() + "Mbps后台速度下载，保障本设备在线播放流畅");
         // 队列里还有排队的就接着下：进程被杀 / 服务被回收之后再回到这一页，
         // 不该让用户以为「它停下了」还要手动点一次「全部开始」。
         DlEngine.get().start();

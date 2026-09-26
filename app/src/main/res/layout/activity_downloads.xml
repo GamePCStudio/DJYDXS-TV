@@ -13,6 +13,16 @@
         android:textSize="18sp"
         android:textStyle="bold" />
 
+    <!-- 前台极速 / 后台限速的口径说明。第二行的 Mbps 由 DownloadActivity 按设置里的值填 -->
+    <TextView
+        android:id="@+id/tvDlSpeedTip"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="3dp"
+        android:lineSpacingExtra="2dp"
+        android:textColor="#FF9AA0A6"
+        android:textSize="11sp" />
+
     <TextView
         android:id="@+id/tvDlSummary"
         android:layout_width="match_parent"
