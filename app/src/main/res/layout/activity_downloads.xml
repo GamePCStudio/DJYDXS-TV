@@ -5,7 +5,7 @@
     android:orientation="vertical"
     android:padding="16dp">
 
-    <!-- 顶部第一行：「⬇ 下载队列」+ 前台不限速的说明，两句都用标题字号（DownloadActivity 赋值） -->
+    <!-- 顶部第一行：「⬇ 下载队列」18sp 粗体蓝 + 前台不限速的说明（同视图里缩成第二行的小字字号，DownloadActivity 赋值） -->
     <TextView
         android:id="@+id/tvDlTitle"
         android:layout_width="match_parent"

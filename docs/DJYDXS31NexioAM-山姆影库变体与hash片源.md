@@ -198,9 +198,11 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
 | 顶部第二行 | `tvDlSpeedTip` | 退到后台后降速的说明，含 Mbps 数值 |
 
 第一行是 `setTopTitle()` 用 `SpannableString` 分两段样式拼出来的：标题那段保持布局里的
-18sp 粗体蓝，后面接的说明只压掉加粗、换成浅灰，**字号不加 SizeSpan**（两段都继承 TextView
-的 18sp，所以是「跟在顶部文字后面、同样字号」而不是小字）。第二行的数值直接取
-`Settings.dlLimitMbps()`、在 `onResume` 赋值 —— 用户改完设置回到这页要能看到新值。
+18sp 粗体蓝，后面接的说明压掉加粗、换成浅灰，并用 `RelativeSizeSpan` **缩到和第二行一样的
+字号**。比例不写死：`tvSpeedTip.getTextSize() / tvDlTitle.getTextSize()`（= 11/18），
+布局里改任一处 sp 都不用回来动这里。**这里不能用 `AbsoluteSizeSpan(11)`** —— 它收的是
+像素，11px 在盒子上基本看不见。第二行的数值直接取 `Settings.dlLimitMbps()`、在 `onResume`
+赋值 —— 用户改完设置回到这页要能看到新值。
 所以：**改了限速语义，这两处文案必须跟着改**。
 
 ---

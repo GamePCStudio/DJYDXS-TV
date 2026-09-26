@@ -27,7 +27,7 @@ public class DownloadActivity extends Activity implements DlEngine.Observer {
 
     private static final int REQ_NOTI = 7001;
 
-    /** 顶部标题原文；第一行说明接在它后面、走普通字重（见 {@link #setTopTitle()}）。 */
+    /** 顶部标题原文；第一行说明接在它后面，走普通字重 + 第二行小字的字号（见 {@link #setTopTitle()}）。 */
     private static final String TITLE = "⬇ 下载队列";
     private static final String TITLE_TIP =
             "  本页面下载为不限速下载，影片会以最快速度下载完成。"
@@ -117,7 +117,7 @@ public class DownloadActivity extends Activity implements DlEngine.Observer {
         DlEngine.get().addObserver(this);
         // 下载管理页在前台 = 用户正盯着进度看，此时不限速
         DlEngine.get().setRateLimit(0);
-        // 顶部两行说明：第一行跟在标题后面（标题粗体蓝，接的句子普通字重浅灰，同一行同字号）；
+        // 顶部两行说明：第一行跟在标题后面（标题粗体蓝 18sp，接的句子普通字重浅灰、缩到小字字号）；
         // 第二行是小字，Mbps 取设置的后台限速 —— 放在 onResume，用户改完设置回这页要看到新值。
         setTopTitle();
         tvSpeedTip.setText("退出本页面和软件以后，下载不会停止，会降为" + Settings.dlLimitMbps()
@@ -145,15 +145,28 @@ public class DownloadActivity extends Activity implements DlEngine.Observer {
     /**
      * 顶部第一行 = 标题 + 前台不限速的说明，写在同一个 TextView 里好自然连排。
      *
-     * <p>标题那段沿用布局里的粗体蓝；后面接的说明只压掉加粗、换成浅灰。字号不动 ——
-     * 这里不加任何 SizeSpan，两段都继承 TextView 自己的 18sp。</p>
+     * <p>标题那段保持布局里的 18sp 粗体蓝；后面接的说明压掉加粗、换浅灰，并且
+     * <b>缩到和第二行 {@code tvDlSpeedTip} 一样的字号</b>。字号用比例 span 而不是写死
+     * {@code 11}：{@link android.text.style.RelativeSizeSpan} 是相对本 TextView 的
+     * 18sp 缩放，比例直接由两个视图自己的 {@code getTextSize()} 相除得到，
+     * 布局里改任何一处 sp 都不用回来动这里。</p>
+     *
+     * <p>{@code AbsoluteSizeSpan(int)} 收的是<b>像素</b>，填 11 会变成 11px（盒子上几乎看不见），
+     * 所以这里必须走比例。</p>
      */
     private void setTopTitle() {
-        android.text.SpannableString s = new android.text.SpannableString(TITLE + TITLE_TIP);
+        String full = TITLE + TITLE_TIP;
+        android.text.SpannableString s = new android.text.SpannableString(full);
+        // 说明段和第二行小字取同一个字号（两个视图的 px 相除 = 相对标题的比例）
+        float titlePx = tvTitle.getTextSize();
+        float smallPx = tvSpeedTip.getTextSize();
+        float scale = titlePx > 0f ? smallPx / titlePx : 1f;
+        s.setSpan(new android.text.style.RelativeSizeSpan(scale),
+                TITLE.length(), full.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         s.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.NORMAL),
-                TITLE.length(), s.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                TITLE.length(), full.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         s.setSpan(new android.text.style.ForegroundColorSpan(0xFF9AA0A6),
-                TITLE.length(), s.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                TITLE.length(), full.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         tvTitle.setText(s);
     }
 
