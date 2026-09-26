@@ -635,7 +635,8 @@ public final class DlEngine {
                     t.status = Dl.ERROR;
                     t.error = msg;
                 }
-                Log.d(TAG, "dl task " + t.id + " end status=" + t.status + " msg=" + msg);
+                Log.d(TAG, "dl task " + t.id + " end status=" + t.status
+                        + " msg=" + msg + " raw=" + e);
             }
             persist(t);
             current = null;
@@ -736,7 +737,7 @@ public final class DlEngine {
         note = "探测文件大小…";
         notifyChanged();
         Probe p = probe(url);
-        if (p.total <= 0) throw new IOException("未取到文件大小（HTTP " + p.code + "）");
+        if (p.total <= 0) throw new IOException("未取到文件大小（响应码 " + p.code + "）");
         long total = p.total;
         t.total = total;
         if (total <= 0) {
@@ -773,7 +774,7 @@ public final class DlEngine {
             rafOpen.setLength(total); // 预分配（断点时是幂等的）
         } catch (IOException e) {
             closeQuietly(rafOpen);
-            throw new IOException("无法创建目标文件（分区可能不支持大于 4GB 的文件，如 FAT32）："
+            throw new IOException("无法创建目标文件："
                     + e.getMessage());
         }
         final RandomAccessFile raf = rafOpen;
@@ -930,7 +931,7 @@ public final class DlEngine {
             raf = new RandomAccessFile(stage, "rw");
             raf.setLength(total);   // 预分配，各段按 start 绝对偏移写
         } catch (IOException e) {
-            throw new IOException("无法创建目标文件（分区可能不支持大于 4GB 的文件，如 FAT32）："
+            throw new IOException("无法创建目标文件："
                     + e.getMessage());
         }
         final java.nio.channels.FileChannel ch = raf.getChannel();
@@ -1064,7 +1065,7 @@ public final class DlEngine {
             if (cancel.get()) return;
             if (attempt > CDN_RESUME_RETRY) {
                 throw new IOException("分段 " + seg.index + " 续传 " + CDN_RESUME_RETRY
-                        + " 次仍未下完（已 " + human(have) + "/" + human(need) + "），CDN 可能在停流");
+                        + " 次仍未下完（已 " + human(have) + "/" + human(need) + "），云端可能在停流");
             }
             long from = seg.start + have;
             long to = seg.start + need - 1;
@@ -1079,7 +1080,7 @@ public final class DlEngine {
                     break;
                 }
                 if (code != 200 && code != 206) {
-                    throw new IOException("分段 " + seg.index + " HTTP " + code);
+                    throw new IOException("分段 " + seg.index + " 响应码 " + code);
                 }
                 if (have > 0 && code == 200) {
                     // 服务端忽略了 Range：只能整段重来，否则会把两段拼一起
@@ -1124,8 +1125,11 @@ public final class DlEngine {
             }
             segDone[idx] = 0;
             totalDone.addAndGet(-have);
-            throw new IOException("分段 " + seg.index + " SHA1 校验不符（期望 " + head(seg.sha1sum)
-                    + " 实际 " + head(actual) + "，偏移 " + seg.start + "）—— 该段已作废，重下会从这一段重来");
+            // 期望/实际的校验值只进日志：那是校验摘要，上屏违反「界面不出现指纹类标识」的口径
+            Log.d(TAG, "cdn seg " + seg.index + " sha1 不符 want=" + head(seg.sha1sum)
+                    + " got=" + head(actual) + " offset=" + seg.start);
+            throw new IOException("分段 " + seg.index + " 云端校验值不符（偏移 " + seg.start
+                    + "）—— 该段已作废，重下会从这一段重来");
         }
         synchronized (segOk) {
             segOk[idx] = true;
@@ -1149,7 +1153,7 @@ public final class DlEngine {
         long written = 0;
         while (bb.hasRemaining()) {
             int k = ch.write(bb, pos + written);
-            if (k <= 0) throw new IOException("写入返回 " + k);
+            if (k <= 0) throw new IOException("写入没有生效（系统返回 " + k + "）");
             written += k;
         }
         return written;
@@ -1162,12 +1166,12 @@ public final class DlEngine {
             throw new IOException("大小校验失败：落盘 " + len + " 字节，云端声明 " + info.fileSize + " 字节");
         }
         if (!info.consistent()) {
-            throw new IOException("分段清单不自洽：各段长度之和对不上 fileSize");
+            throw new IOException("分段清单不自洽：各段长度之和对不上云端声明的总大小");
         }
         long sumDone = 0;
         for (AimeiCdn.Segment s : info.segments) sumDone += s.length;
         if (sumDone != info.fileSize) {
-            throw new IOException("分段长度之和 " + sumDone + " 与 fileSize " + info.fileSize + " 不符");
+            throw new IOException("分段长度之和 " + sumDone + " 与云端声明的总大小 " + info.fileSize + " 不符");
         }
         if ("mkv".equalsIgnoreCase(info.extension)) {
             InputStream in = null;
@@ -1182,7 +1186,7 @@ public final class DlEngine {
                 }
                 if (off < 4 || head[0] != EBML_MAGIC[0] || head[1] != EBML_MAGIC[1]
                         || head[2] != EBML_MAGIC[2] || head[3] != EBML_MAGIC[3]) {
-                    throw new IOException("文件头不是 Matroska（读到 " + hex(head, off) + "），拼接结果不可播");
+                    throw new IOException("文件头不是预期的影片封装格式（读到 " + hex(head, off) + "），拼接结果不可播");
                 }
             } finally {
                 closeQuietly(in);
@@ -1208,7 +1212,7 @@ public final class DlEngine {
         try {
             md = java.security.MessageDigest.getInstance("SHA-1");
         } catch (Exception e) {
-            throw new IOException("设备不支持 SHA-1", e);
+            throw new IOException("本机缺少校验算法，无法核对影片完整性", e);
         }
         try {
             in = new FileInputStream(f);
@@ -1326,11 +1330,11 @@ public final class DlEngine {
                     return;
                 }
                 if (code != 200 && code != 206) {
-                    throw new IOException("HTTP " + code);
+                    throw new IOException("云端返回错误码 " + code);
                 }
                 if (code == 200 && from > 0) {
                     // 我们请求了 Range 却拿到整文件，写下去会错位 —— 必须换链，不能将错就错
-                    throw new IOException("服务端忽略 Range（HTTP 200）");
+                    throw new IOException("服务端没按指定分段返回（响应码 200，给了整个文件）");
                 }
                 in = c.getInputStream();
                 byte[] buf = new byte[BUF];
@@ -1516,7 +1520,7 @@ public final class DlEngine {
     // ==================== 杂项 ====================
 
     private void checkCancel() throws IOException {
-        if (cancel.get()) throw new IOException("cancelled");
+        if (cancel.get()) throw new IOException("已取消");
     }
 
     private void persist(Dl t) {
@@ -1645,10 +1649,135 @@ public final class DlEngine {
     private static String shortMsg(Throwable e) {
         if (e == null) return "未知错误";
         String m = e.getMessage();
-        if (m == null || m.isEmpty()) return e.getClass().getSimpleName();
+        if (m == null || m.isEmpty()) return zhClassName(e.getClass().getName());
+        m = zhSystemMsg(m);
         if (m.length() > 90) m = m.substring(0, 90);
         return m;
     }
+
+    /**
+     * 系统（libcore / OkHttp / JDK）抛的英文报错换成中文，界面才不会出现整句英文。
+     *
+     * <p>这里是<b>唯一卡口</b>：{@code :776/:933} 建文件、{@code :995} hash 分片线程、
+     * {@code :1356} 通用分片线程，最后都要过 {@link #shortMsg(Throwable)}，所以加一处
+     * 全条链路生效。替换发生在<b>截断之前</b> —— 90 字符是按字符数硬砍，先换成中文才
+     * 不会把中文尾巴砍成半截。</p>
+     *
+     * <p>两条规则：① libcore 的统一句式 {@code <动词> failed: <ERRNO> (<英文说明>)}
+     * 拆成「动作 + 原因」两张表来翻，这样 {@code open}/{@code write}/{@code ftruncate}
+     * 这些不同动作配同一个 ENOSPC 不用各写一条；② JDK/OkHttp 那几句固定话术直接整句换。
+     * <b>没命中原样返回</b> —— 宁可留英文也别把别的错说成"硬盘满了"。</p>
+     */
+    private static String zhSystemMsg(String m) {
+        // ① 正则匹配 "xxx failed: ENOXYZ (English text)"
+        java.util.regex.Matcher mt = SYS_ERRNO_PAT.matcher(m);
+        StringBuffer sb = null;
+        while (mt.find()) {
+            if (sb == null) sb = new StringBuffer();
+            String verb = SYS_VERB.get(mt.group(1));
+            String errno = mt.group(2);
+            String why = SYS_ERRNO.get(errno);
+            // 动词不认识用"操作"；errno 不认识就把名字留在括号里（只丢英文句子，不瞎猜原因）
+            String txt = (verb == null ? "操作" : verb) + "失败: 错误代码（"
+                    + (why == null ? errno : why) + "）";
+            mt.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(txt));
+        }
+        if (sb != null) {
+            mt.appendTail(sb);
+            m = sb.toString();
+        }
+        // ② JDK / OkHttp 的固定话术（主机名 / IP 会原样留在句子里，那是定位信息不是指纹）
+        for (String[] kv : SYS_PHRASE) {
+            if (m.contains(kv[0])) m = m.replace(kv[0], kv[1]);
+        }
+        return m;
+    }
+
+    /** 异常本身没有 message 时的兜底：屏上只显示中文，类名进日志。 */
+    private static String zhClassName(String cls) {
+        if (cls.endsWith("FileNotFoundException")) return "目标文件打不开（目录可能已被清理）";
+        if (cls.endsWith("UnknownHostException")) return "域名解析失败（检查设备网络）";
+        if (cls.endsWith("SocketTimeoutException")) return "网络超时（对端没有响应）";
+        if (cls.endsWith("SSLException") || cls.endsWith("SSLHandshakeException")
+                || cls.endsWith("CertificateException")) return "加密连接建立失败";
+        if (cls.endsWith("ErrnoException")) return "系统读写失败: 错误代码（未知）";
+        if (cls.endsWith("ProtocolException")) return "接口响应格式不对";
+        if (cls.endsWith("IOException")) return "读写失败";
+        Log.d(TAG, "dl unmapped exception " + cls);
+        return "未知错误";
+    }
+
+    /** {@code <动词> failed: ENOXXX (...)} —— group(1)=动词 group(2)=errno。 */
+    private static final java.util.regex.Pattern SYS_ERRNO_PAT =
+            java.util.regex.Pattern.compile("([A-Za-z]+) failed: ([A-Z]{2,16}) \\([^)]*\\)");
+
+    private static java.util.Map<String, String> kv(String... p) {
+        java.util.Map<String, String> m = new java.util.HashMap<>();
+        for (int i = 0; i + 1 < p.length; i += 2) m.put(p[i], p[i + 1]);
+        return java.util.Collections.unmodifiableMap(m);
+    }
+
+    /** libcore 报错里的动作名。 */
+    private static final java.util.Map<String, String> SYS_VERB = kv(
+            "open", "打开", "write", "写入", "read", "读取", "lseek", "定位",
+            "ftruncate", "预留空间", "truncate", "调整长度", "fallocate", "预分配空间",
+            "mkdir", "创建目录", "rename", "改名", "unlink", "删除", "delete", "删除",
+            "stat", "读文件信息", "access", "检查路径", "chmod", "设置权限",
+            "fsync", "落盘", "connect", "连接", "bind", "绑定端口", "send", "发送",
+            "recv", "接收", "mmap", "映射内存", "close", "关闭文件", "dup", "复制句柄");
+
+    /** errno → 人话。只收下载链路上真会碰到的。 */
+    private static final java.util.Map<String, String> SYS_ERRNO = kv(
+            "ENOSPC", "设备上没有剩余空间，硬盘满了",
+            "EDQUOT", "磁盘配额已用完",
+            "EROFS", "分区是只读的，写不进去",
+            "EACCES", "没有写入权限",
+            "EPERM", "权限不足，操作被拒绝",
+            "EFBIG", "文件超过分区单文件上限（FAT32 是 4GB），请换成 NTFS/exFAT",
+            "ENAMETOOLONG", "文件路径过长（影片名可能太长）",
+            "ENOENT", "路径不存在或已被移走",
+            "EISDIR", "要写的位置是个目录",
+            "ENOTDIR", "路径里有不是目录的层级",
+            "EIO", "设备读写出错（外接盘可能没插稳）",
+            "EBADF", "文件句柄已关闭",
+            "EINTR", "操作被中断，请重试",
+            "ETIMEDOUT", "连接超时",
+            "ECONNRESET", "连接被对方重置",
+            "ECONNREFUSED", "对方拒绝连接",
+            "EHOSTUNREACH", "设备访问不到该服务器",
+            "ENETUNREACH", "当前网络不可达",
+            "ENETDOWN", "网络已断开",
+            "EPIPE", "连接已断开（对端关闭）",
+            "EALREADY", "操作已在进行中",
+            "EAGAIN", "暂时无法处理，请稍后重试",
+            "EINVAL", "参数不被支持",
+            "ENOTSUP", "该操作不被支持",
+            "ELOOP", "路径里有循环软链接",
+            "EXDEV", "不能跨分区改名，请改成同分区路径");
+
+    /** JDK / OkHttp 的固定英文句子。 */
+    private static final String[][] SYS_PHRASE = {
+            {"Unable to resolve host", "域名解析失败"},
+            {"No address associated with hostname", "设备未连上网络或 DNS 不可用"},
+            {"Failed to connect to", "无法连接到"},
+            {"Connection timed out", "连接超时"},
+            {"Connect timed out", "连接超时"},
+            {"Read timed out", "读取超时"},
+            {"Socket timed out", "连接超时"},
+            {"Connection reset", "连接被重置"},
+            {"Connection closed", "连接已关闭"},
+            {"Unexpected end of stream", "数据流意外中断"},
+            {"Broken pipe", "连接已断开"},
+            {"Software caused connection abort", "本机中断了连接"},
+            {"SSL handshake aborted", "加密握手失败"},
+            {"Certificate not valid for host", "证书与域名不匹配"},
+            {"Unable to find host service", "找不到网络服务"},
+            {"Network is unreachable", "网络不可达"},
+            {"No route to host", "设备访问不到该服务器"},
+            {"Too many redirects", "重定向次数过多"},
+            {"Canceled", "已取消"},
+            {"cancelled", "已取消"},
+    };
 
     /**
      * 下载速率：**字节/秒 → Mbps**。

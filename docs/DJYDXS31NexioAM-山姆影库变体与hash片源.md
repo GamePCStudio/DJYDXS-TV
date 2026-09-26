@@ -5,6 +5,9 @@
 > v1.34 只动界面文案（sn 与 40 位云指纹不再出现在任何用户可见处，见 §3.4）；
 > v1.35 在下载队列页顶部加了「前台极速 / 退后台限速」说明，见 §3.5；
 > v1.36 把那段说明的措辞改了，并把它拆成两行排版（第一行接在标题后，见 §3.5）。
+> **本地已改但还没出包的三笔**：① 第一行说明的字号修正（`6d2d870`，见 §3.5）；
+> ② 下载报错全中文化（见 §3.6）；③ 分段校验失败不再把 SHA1 摘要值打上屏（§3.6）。
+> 远程 `DJYDXS31NexioAM` 只到 `56a9b7f`，这三笔都没进任何 APK，真机观感未验证。
 > 本文是**后续做其它机型变体（威动 / 视易 / 海美迪…）的模板**：先读 §1 的改名清单，
 > 再按 §6 的机型扩展步骤替换策略，片库生成见 §2，hash 链路的实测结论见 §4（**必读**），
 > 列表排序与海报墙加载见 §5。
@@ -204,6 +207,54 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
 像素，11px 在盒子上基本看不见。第二行的数值直接取 `Settings.dlLimitMbps()`、在 `onResume`
 赋值 —— 用户改完设置回到这页要能看到新值。
 所以：**改了限速语义，这两处文案必须跟着改**。
+
+### 3.6 下载报错的中文化：唯一卡口 `DlEngine.zhSystemMsg()`
+
+系统抛上来的英文句子不能原样上屏。所有下载错误的文案都要过
+`DlEngine.shortMsg(Throwable)`（`:1645` 附近），它现在做三件事：
+**先翻译 → 再按 90 字符截断 → 返回**。翻译必须在截断之前，否则
+90 是按字符数硬砍，会把中文尾巴切成半截。四类上屏路径（建文件 `:777/:934`、
+hash 分片线程、通用分片线程、`onError` 兜底）都从这一个函数走，
+**新增报错不要再在各处 `throw` 里自己拼英文**。
+
+`zhSystemMsg` 两条规则：
+
+1. **libcore 句式** `<动词> failed: <ERRNO> (<English text>)` 用正则拆开，
+   动词查 `SYS_VERB`、errno 查 `SYS_ERRNO`，拼成「X失败: 错误代码（原因）」。
+   这样 `open`/`write`/`ftruncate` 配同一个 `ENOSPC` 不用各写一条。
+   动词不认识退成「操作」；**errno 不认识就把 errno 名留在括号里**，
+   不瞎猜原因 —— 宁可显示 `E2BIG` 也别把别的错说成"硬盘满了"。
+2. **JDK / OkHttp 固定话术**（`Unable to resolve host` / `Failed to connect to` /
+   `Read timed out` / `Unexpected end of stream` …）走 `SYS_PHRASE` 整句替换。
+   主机名和 IP 会原样留在句子里 —— 那是定位信息，不属于 sn/指纹那一类。
+
+实测（同构程序跑 17 组真值，脚本 `Temp/ZhMsg2.java`）：
+
+| 输入（系统原文） | 上屏 |
+|---|---|
+| `<path>: open failed: ENOSPC (No space left on device)` | `<path>: 打开失败: 错误代码（设备上没有剩余空间，硬盘满了）` |
+| `write failed: ENOSPC (...)` | `写入失败: 错误代码（设备上没有剩余空间，硬盘满了）` |
+| `<path>: ftruncate failed: ENOSPC (...)` | `<path>: 预留空间失败: 错误代码（设备上没有剩余空间，硬盘满了）` |
+| `mkdir failed: ENAMETOOLONG (...)` | `创建目录失败: 错误代码（文件路径过长（影片名可能太长））` |
+| `rename failed: EXDEV (...)` | `改名失败: 错误代码（不能跨分区改名，请改成同分区路径）` |
+| `Unable to resolve host "api.mymei.vip": No address associated with hostname` | `域名解析失败 "api.mymei.vip": 设备未连上网络或 DNS 不可用` |
+| `Read timed out` | `读取超时` |
+| `frobnicate failed: ENOSPC (...)`（动词不在表里） | `操作失败: 错误代码（设备上没有剩余空间，硬盘满了）` |
+
+配套的两处口径修正：
+
+- **FAT32/4GB 的说法挪到了 `EFBIG` 的释义里**。原来 `:777/:934` 在 `IOException`
+  前面硬拼了「无法创建目标文件（分区可能不支持大于 4GB 的文件，如 FAT32）：」，
+  实测 36 字前缀 + 38 字路径 + 2 + 26 = **102 字 > 90，被砍成半截**；
+  而且这句话对 ENOSPC 是错的归因。现在前缀只剩「无法创建目标文件：」（75 字，放得下），
+  `EFBIG` 才说「文件超过分区单文件上限（FAT32 是 4GB），请换成 NTFS/exFAT」。
+- **摘要值不再上屏**（对齐 §3.4 的 v1.34 口径）：`:1131` 的分段校验失败原来把
+  期望/实际的 SHA1 前缀打进错误文案，现在文案只说「云端校验值不符（偏移 X）」，
+  `want=/got=` 进 `Log.d`。
+
+已知残留：`java.net.SocketException: ` 这类 JDK 异常类名前缀、以及
+`数据流意外中断 on com.android.okhttp.address@1a2b3c` 的 ` on <对象>` 尾巴，
+是句子内部的固定结构，`SYS_PHRASE` 只换得了前半句。
 
 ---
 

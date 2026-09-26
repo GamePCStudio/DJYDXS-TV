@@ -136,7 +136,7 @@ public final class AimeiCdn {
             return info;
         }
         if (!info.consistent()) {
-            throw new IOException("分段清单不自洽：各段长度之和与 fileSize 不等");
+            throw new IOException("分段清单不自洽：各段长度之和与云端声明的总大小不等");
         }
         return info;
     }
@@ -147,17 +147,19 @@ public final class AimeiCdn {
         try {
             o = new JSONObject(body);
         } catch (Exception e) {
-            throw new IOException("取址响应不是 JSON：" + trim(body));
+            // 原始响应体进日志，不上屏（多半是英文错误页）
+            Log.d(TAG, "cdn 取址响应无法解析 body=" + trim(body));
+            throw new IOException("云端取址返回的内容无法解析（不是可识别的数据格式）");
         }
         int code = o.optInt("code", -1);
         if (code != 0) {
             String msg = o.optString("message", "");
             throw new IOException(code == 40001
-                    ? "设备序列号未被接受（" + (msg.isEmpty() ? "sn 不存在" : msg) + "），请先在设置里注册或换个 sn"
-                    : "取址失败 code=" + code + " " + msg);
+                    ? "设备序列号未被接受（该序列号未登记），请先在设置里注册或更换序列号"
+                    : "取址失败 错误码=" + code + " " + msg);
         }
         JSONObject d = o.optJSONObject("data");
-        if (d == null) throw new IOException("取址响应没有 data 字段");
+        if (d == null) throw new IOException("云端取址响应里缺少必要内容");
         CdnInfo info = new CdnInfo();
         info.hash = d.optString("hash", wantHash);
         info.extension = d.optString("extension", ".mkv").replace(".", "").toLowerCase(Locale.ROOT);
@@ -289,13 +291,17 @@ public final class AimeiCdn {
         try {
             int code = c.getResponseCode();
             in = code >= 400 ? c.getErrorStream() : c.getInputStream();
-            if (in == null) throw new IOException("HTTP " + code + "（无响应体）");
+            if (in == null) throw new IOException("云端返回错误码 " + code + "（没有响应内容）");
             BufferedReader r = new BufferedReader(new InputStreamReader(in, "UTF-8"));
             StringBuilder sb = new StringBuilder();
             char[] buf = new char[4096];
             int n;
             while ((n = r.read(buf)) > 0) sb.append(buf, 0, n);
-            if (code >= 400) throw new IOException("HTTP " + code + " " + trim(sb.toString()));
+            // 响应体常是英文状态行/HTML，上屏只会污染界面 —— 细节留给日志
+            if (code >= 400) {
+                Log.d(TAG, "cdn http " + code + " body=" + trim(sb.toString()));
+                throw new IOException("云端返回错误码 " + code);
+            }
             return sb.toString();
         } finally {
             closeQuietly(in);

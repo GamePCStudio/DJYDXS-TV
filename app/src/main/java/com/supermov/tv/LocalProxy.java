@@ -194,7 +194,7 @@ public final class LocalProxy {
             }
             return c;
         }
-        throw new IOException("too many redirects");
+        throw new IOException("重定向次数过多");
     }
 
     private void copyHeader(HttpURLConnection from, StringBuilder to, String name) {
