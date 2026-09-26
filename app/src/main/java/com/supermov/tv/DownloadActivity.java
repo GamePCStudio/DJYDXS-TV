@@ -27,9 +27,17 @@ public class DownloadActivity extends Activity implements DlEngine.Observer {
 
     private static final int REQ_NOTI = 7001;
 
+    /** 顶部标题原文；第一行说明接在它后面、走普通字重（见 {@link #setTopTitle()}）。 */
+    private static final String TITLE = "⬇ 下载队列";
+    private static final String TITLE_TIP =
+            "  本页面下载为不限速下载，影片会以最快速度下载完成。"
+                    + "根据设备网络情况可实现极速50Mbps~350Mbps超高网速下载。"
+                    + "极速期间，可能会对同网络其他设备上网造成干扰。";
+
     private final Handler main = new Handler(Looper.getMainLooper());
 
     private RecyclerView rv;
+    private TextView tvTitle;
     private TextView tvSummary;
     private TextView tvSpeedTip;
     private TextView tvEmpty;
@@ -44,6 +52,7 @@ public class DownloadActivity extends Activity implements DlEngine.Observer {
         setContentView(R.layout.activity_downloads);
 
         rv = findViewById(R.id.rvDl);
+        tvTitle = findViewById(R.id.tvDlTitle);
         tvSummary = findViewById(R.id.tvDlSummary);
         tvSpeedTip = findViewById(R.id.tvDlSpeedTip);
         tvEmpty = findViewById(R.id.tvDlEmpty);
@@ -108,11 +117,11 @@ public class DownloadActivity extends Activity implements DlEngine.Observer {
         DlEngine.get().addObserver(this);
         // 下载管理页在前台 = 用户正盯着进度看，此时不限速
         DlEngine.get().setRateLimit(0);
-        // 顶部两行小字：把「前台极速 / 退到后台才限速」这件事说在明面上。
-        // 第二行的数值跟着设置的后台限速走，所以放在 onResume 而不是写死在布局里。
-        tvSpeedTip.setText("本页面下载为极速50Mbps~350Mbps超高网速下载，让影片最快速度下载完成。"
-                + "极速期间，可能会对同网络其他设备上网造成干扰。\n"
-                + "退出本页面以后，降为" + Settings.dlLimitMbps() + "Mbps后台速度下载，保障本设备在线播放流畅");
+        // 顶部两行说明：第一行跟在标题后面（标题粗体蓝，接的句子普通字重浅灰，同一行同字号）；
+        // 第二行是小字，Mbps 取设置的后台限速 —— 放在 onResume，用户改完设置回这页要看到新值。
+        setTopTitle();
+        tvSpeedTip.setText("退出本页面和软件以后，下载不会停止，会降为" + Settings.dlLimitMbps()
+                + "Mbps后台速度下载，保障本设备在线播放流畅。无限速的极速下载必须将设备保持在本页面");
         // 队列里还有排队的就接着下：进程被杀 / 服务被回收之后再回到这一页，
         // 不该让用户以为「它停下了」还要手动点一次「全部开始」。
         DlEngine.get().start();
@@ -131,6 +140,21 @@ public class DownloadActivity extends Activity implements DlEngine.Observer {
     @Override
     public void onChanged() {
         main.post(this::refresh);
+    }
+
+    /**
+     * 顶部第一行 = 标题 + 前台不限速的说明，写在同一个 TextView 里好自然连排。
+     *
+     * <p>标题那段沿用布局里的粗体蓝；后面接的说明只压掉加粗、换成浅灰。字号不动 ——
+     * 这里不加任何 SizeSpan，两段都继承 TextView 自己的 18sp。</p>
+     */
+    private void setTopTitle() {
+        android.text.SpannableString s = new android.text.SpannableString(TITLE + TITLE_TIP);
+        s.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.NORMAL),
+                TITLE.length(), s.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        s.setSpan(new android.text.style.ForegroundColorSpan(0xFF9AA0A6),
+                TITLE.length(), s.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        tvTitle.setText(s);
     }
 
     private void refresh() {

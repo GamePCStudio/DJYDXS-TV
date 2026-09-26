@@ -5,15 +5,17 @@
     android:orientation="vertical"
     android:padding="16dp">
 
+    <!-- 顶部第一行：「⬇ 下载队列」+ 前台不限速的说明，两句都用标题字号（DownloadActivity 赋值） -->
     <TextView
-        android:layout_width="wrap_content"
+        android:id="@+id/tvDlTitle"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="⬇ 下载队列"
         android:textColor="#FF1E88E5"
         android:textSize="18sp"
         android:textStyle="bold" />
 
-    <!-- 前台极速 / 后台限速的口径说明。第二行的 Mbps 由 DownloadActivity 按设置里的值填 -->
+    <!-- 第二行小字：退到后台后的限速说明，Mbps 由 DownloadActivity 按设置里的值填 -->
     <TextView
         android:id="@+id/tvDlSpeedTip"
         android:layout_width="match_parent"
