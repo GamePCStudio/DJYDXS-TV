@@ -1,7 +1,7 @@
 # DJYDXS31NexioAM · 山姆影库（hash 片源变体）
 
 > 分支：`DJYDXS31NexioAM`，蓝本：`DJYDXS3Nexio`（网盘片源版）。
-> 对应版本：**v1.32**（`versionCode 32`），内嵌库 `db_version=2026092502`。
+> 对应版本：**v1.33**（`versionCode 33`），内嵌库 `db_version=2026092601`（1519 部 hash 片源）。
 > 本文是**后续做其它机型变体（威动 / 视易 / 海美迪…）的模板**：先读 §1 的改名清单，
 > 再按 §6 的机型扩展步骤替换策略，片库生成见 §2，hash 链路的实测结论见 §4（**必读**），
 > 列表排序与海报墙加载见 §5。
@@ -18,7 +18,7 @@
 | Java 包名 / namespace | `com.supermov.tv` | **不变**（见下方口径） | `app/build.gradle` |
 | 网盘转存根目录 | `/电影影大师` | **`/山姆影库`** | `Settings.java:42` |
 | 下载落盘目录名 | 含应用名 | **含应用名** | `Storage.java:94,98` |
-| 内嵌片库 | 网盘库（pan_url + v_episode） | **4K hash 库**（movie.hash，1109 条） | `assets/SuperMOV.db` |
+| 内嵌片库 | 网盘库（pan_url + v_episode） | **4K hash 库**（movie.hash，1519 条） | `assets/SuperMOV.db` |
 | 片源路径 | 百度网盘分享 → 转存 → 直链 | **云端 hash → 分段直链 → 拼接** | `AimeiCdn.java` / `DlEngine.runHashTask` |
 | 分类栏 | 4 栏（4K全景声/最新剧集/蓝光/杜比5.1） | **2 栏（4K电影 / 4K纪录片）** | `MovieStore.java:252` |
 | 数据库在线更新 | `db/SuperMOV.json` | **`db/SuperMOV-am.json`**（单独一份） | `DbUpdater.java:43` |
@@ -38,32 +38,61 @@ CI 现在**不会**构建本分支：`.github/workflows/build.yml:5` 的分支�
 内嵌库不再手改，一律由脚本从上游 SQLite 生成：
 
 ```bash
-python -X utf8 tools/build_am_db.py
-# 读  c:/py/DJYDXS31NexioAM/tmdbam.db 的 movie_tmdb_4k（4K 版本，1109 行）
-# 读  C:/py/艾美mov/ew3.db 的 preview_poster / small_poster / movie_image（海报）
+python -X utf8 tools/build_am_db.py            # 默认：只出 hash 片源（当前 1519 部）
+python -X utf8 tools/build_am_db.py --with-pan # 另并 SuperMOV.db 的网盘 4K（现在不并，见 §2.1）
+# 读  c:/py/DJYDXS31NexioAM/tmdbam.db   :: movie_tmdb_4k（40 位 hash 片单）
+# 读  c:/py/DJYDXS31NexioAM/cdn_census.db :: census（云端真实容器，剔 .ic2）
+# 读  C:/py/艾美mov/ew3.db              :: preview_poster / small_poster / movie_image（海报）
 # 写  app/src/main/assets/SuperMOV.db 与 SuperMOV.version
 ```
 
-生成侧的关键决定，改脚本前先看懂：
+### 2.1 `tmdbam.db` 从哪来：上游四段链 + **必须先快照**
+
+内嵌库的片单不是手写的，是 `C:\py\艾美mov\` 里那套脚本的产物：
+
+```
+ew3.db（厂商活库，46 表）
+  → ew3_tmdb_map.py    逐个 en_name 搜 TMDB，增量写 tmdb_map（已有行跳过）
+  → ew3_finalize.py    离线重判：feat_ids 含 11 + file_name_ext='mkv' + douban_id 非空
+                        + CLIP_PAT 排短片 → 丢掉并重建 movie_tmdb_4k
+  → ew3_tv_fill.py     纪录片分集（第N季第M集 / Season N Episode M）走 /tv 补到集
+  → cp ew3_tmdb.db C:/py/DJYDXS31NexioAM/tmdbam.db      ← 就是一份改名拷贝
+  → cdn_census.py <sn> 逐个 hash 问云端容器（相对路径，必须在该目录里跑）
+```
+
+**`ew3.db` 会被原地改写**：同一个文件、同一天，先后读到 `8238 行 / MAX(times)=2021`
+和 `11088 行 / MAX(times)=2026`，文件大小 50683904 与 mtime 都没动（旁边长出
+`ew3.db-wal` / `ew3.db-shm`）。所以**跑链路前先 `cp` 一份快照**，本轮用的是
+`C:/py/DJYDXS31NexioAM/ew3_snapshot_20260926.db`（11088 行 / 最大 2026）。
+
+这就是「2026 年的片子明明有 4K 却不在库里」的全部原因 —— **`tmdbam.db` 是 09-25 上午
+的旧快照**，`movie_tmdb_4k` 1109 行；`ew3_tmdb_map.py` 又是按 `movie_id` 增量跳过已跑过的，
+所以老片一直复用旧判定、新片根本没进 `tmdb_map`，`ew3_finalize.py` 自然扫不到。
+09-26 重跑：`tmdb_map` 1224 → **1698**（feat-11 全覆盖，本轮 474 条新增、命中 ABC 450、
+网络失败 0）→ `movie_tmdb_4k` **1562 行**（1533 电影 + 29 分集）→ 云端真实 mkv **1519 部**。
+2022+ 从 0 涨到 **358 部**，2026 年 31 部（《超级少女》`movie_id 604791` → TMDB 1081003，
+A1 标题全等+年份精确，57.56 GB）。**hash 侧自己就覆盖到新片，网盘并库因此被关掉**（§4.4）。
+
+生成侧的其他关键决定，改脚本前先看懂：
 
 1. **schema 照抄蓝本库**（DDL 从旧 asset 库现取），只在 `movie` 上 `ALTER TABLE`
    加一列 `hash TEXT`。这样 `MovieStore` / `MovieDb` 的既有查询几乎不用动。
 2. 视图 `v_movie_app` 重写：多带 `COALESCE(m.hash,'') AS hash` 与 `source_type`
    （`hash` / `baidu` / 空）。`v_episode` 保留但**本库里 0 行** —— 4K hash 库没有
    网盘路径，硬凑剧集表只会让详情页列出假文件。
-3. `fid` 沿用蓝本的版块号语义：`112` = 单片（1037 条），`37` = 按集收录（29 条）。
+3. `fid` 沿用蓝本的版块号语义：`112` = 单片（1490 条），`37` = 按集收录（29 条）。
    分类栏白名单就按这两个 fid 出栏，见 §1。
 4. `meta` 写 `schema_version=2`（`MovieDb.SCHEMA_SUPPORTED=2`，别越过）、
-   `db_version=2026092502`、`db_build_id=am4k-…`。`SuperMOV.version` 与
+   `db_version=2026092601`、`db_build_id=am4k-…`。`SuperMOV.version` 与
    `db_version` 必须一致，`MovieStore` 靠它决定要不要重新拷库。
-5. 未来一份库里**同时**有 `pan_url` 和 `hash`：`MovieStore.detail()` 会把 hash 线路
-   排在 `boxes[0]`，网盘线路排其后。想让网盘优先就调那一段顺序，别在 UI 层判断。
+5. 一条 `hash` 对应一个落盘文件，`MovieStore.detail()` 把 hash 线路排在 `boxes[0]`；
+   真并了网盘行时它也排在 `pan_url` 之前。想让网盘优先就调那一段顺序，别在 UI 层判断。
 6. **只收 mkv 片源**：脚本按 `file_name_ext == 'mkv'` 过滤并打印被删条数。
-   但这一列在源头就不可信（1109 行全写 mkv，云端却会回 `ic2`），所以真正的清点是
+   但这一列在源头就不可信（1562 行全写 mkv，云端却会回 `ic2`），所以真正的清点是
    第二段：跑 `cdn_census.py` 逐个 hash 问云端，按 `cloud_ext == 'mkv'` 再筛，
-   详见 §4.2。上游 ew3.db 的 `movie.file_name_ext` 全量分布可作参照 ——
-   `ic2 5603 / mkv 2382 / iso 157 / m2ts 57 / 空 27 / mp4 11 / mkva 1`（共 8238 行），
-   即**四分之三的艾美片库是加密的**，扩库时这道过滤会真的开始咬人。
+   详见 §4.2。上游快照（09-26，11088 行）的 `movie.file_name_ext` 全量分布可作参照 ——
+   `ic2 5603 / mkv 5232 / iso 157 / m2ts 57 / 空 27 / mp4 11 / mkva 1`，
+   即**将近一半的艾美片库是加密容器**，扩库时这道过滤会真的开始咬人。
 
 生成后自检（脚本末尾自带，也可以在 python 里手跑）：影片数、fid 分布、
 `hash` 非空条数、海报 URL、`v_movie_app` 列清单。
@@ -169,7 +198,7 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
 
 ### 4.2 「只保留 mkv 片源」为什么必须问云端
 
-`tmdbam.db::movie_tmdb_4k` 的 `file_name_ext` 这一列 1109 行**全写着 `mkv`**，
+`tmdbam.db::movie_tmdb_4k` 的 `file_name_ext` 这一列 1562 行**全写着 `mkv`**，
 但同一批 hash 里 `600700` 云端回的是 `ic2` —— 也就是说这一列不可信，
 按它过滤等于没过滤。所以片源清点是逐个 hash 调 `getCdnUrl` 认**云端真实容器**：
 
@@ -177,26 +206,50 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
   （`movie_id / lib_ext / cloud_ext / file_size / segs / sum_len / stub / err`），
   已清点的自动跳过，可断点续跑。
 - 抽样 24 条：`cloud_ext` 全部 `mkv`，除 `600700` 一条 `ic2`。
-- **全量清点（1109 条）结果**（sn `9CF8DB078B44`，串行 + 0.9~1.6s 抖动跑完）：
+- **全量清点结果**（sn `9CF8DB078B44`，串行 + 0.9~1.6s 抖动跑完；09-25 清 1109 条，
+  09-26 重跑上游后又补 453 条，现在盖住全部 1562 条）：
 
   | `cloud_ext` | 条数 | 说明 |
   |---|---|---|
-  | `mkv` | **1066** | 真实清单，`sum(segm.length) == fileSize` 全过 |
+  | `mkv` | **1519** | 真实清单，`sum(segm.length) == fileSize` 全过（0 行不自洽） |
   | `ic2` | **43** | 全部同时命中 `fileSize == 9999999999` 占位特征 |
-  | 合计 | 1109 | `stub` 43 / `err` **0** |
+  | 合计 | 1562 | `stub` 43 / `err` **0** |
 
-  43 条 `ic2` 里前几个是 `600636 王牌保镖 / 600637 不可能的事 / 600638 捉鬼敢死队2 /
-  600639 雷霆沙赞 / 600641 地狱男爵：血皇后崛起 / 600644 速度与激情6`。
-  中途有 35 条报 WinError 10013（本地 socket 权限，不是云端问题），重跑一遍全部恢复。
+  43 条 `ic2` 的 `movie_id` 全落在 `600636..600902`（例：`600636 王牌保镖 /
+  600637 不可能的事 / 600638 捉鬼敢死队2 / 600639 雷霆沙赞 / 600641 地狱男爵：血皇后崛起 /
+  600644 速度与激情6`），也就是 09-25 那批老片；**09-26 新增的 453 个 hash 一条桩都没有**。
+  真实清单的体积：中位 **49.2 GB**、最小 8.7 GB、最大 85.1 GB、分段 90~872 段。
+  补清点这一轮第一遍有 **116 条本地网络报错**（100× `WinError 10013` 套接字权限、
+  12× `11001 getaddrinfo failed`、1× `10053` 连接中止），**不是云端拒绝** ——
+  这些行的 `err` 非空，第二遍只重试它们，全部恢复成 `err` 0。
 
 `tools/build_am_db.py` 的入库过滤现在是**两道**：①`file_name_ext == 'mkv'`；
 ②按 `cdn_census.db` 里 `cloud_ext == 'mkv'`、且 `stub`/`err` 皆空再筛一遍
 （非 mkv 的一律不进库，每条剔除都会打印片名与原因）。第二道是**硬门**：
 清点表缺了、或者没盖住全部片单，脚本直接退出而不是把「没清到」的片当非 mkv 删掉。
 
-本次重建（`db_version=2026092502`）实测：第一道 `总 1109 → 留 mkv 1109 / 删 0`
+`db_version=2026092601` 这次重建实测：第一道 `总 1562 → 留 mkv 1562 / 删 0`
 （这一列全写着 mkv，等于没过滤，正是必须问云端的理由）；
-第二道 `留 1066 / 剔 43`。内嵌库最终 **1066 部 = fid 112 单片 1037 + fid 37 按集 29**。
+第二道 `留 1519 / 剔 43`。内嵌库最终 **1519 部 = fid 112 单片 1490 + fid 37 按集 29**。
+上一版（`2026092502`）是 `总 1109 → 留 1066 / 剔 43 = 1037 + 29`。
+
+### 4.4 网盘并库：算过之后**关掉**了（`--with-pan`）
+
+09-25 那版库只到 2021，为了让 2022~2026 的 4K 片有货，`build_am_db.py` 里写过一段
+并 `C:/py/SuperMOVDB/SuperMOV.db`（fid=112 `4KSDR.Remux`）网盘片的逻辑。
+09-26 重跑上游（§2.1）之后重新量化了一遍：
+
+| | 条数 | 2022+ | 体积中位 | ≥30 GB | 取址 |
+|---|---|---|---|---|---|
+| hash 片源 | **1519** | 358（2026 年 31 部） | 49.2 GB | 绝大多数 | 免登录分段直链 + 逐段 SHA1 |
+| 网盘净新增 | 255 | 184（2024+ 174 部） | **17.2 GB** | 48 部 | 要先登录百度、转存才能下 |
+
+去重口径：fid=112 候选 436 → 内部去重 413（同片多帖留 `total_size` 最大）→ 与 hash 侧
+同豆瓣 158 条 → 净新增 255。也就是说**网盘侧带来的新片，hash 侧现在已经自己有了**，
+剩下的 255 条里只有 48 条体积像真 4K（中位 17.2 GB 基本是 1080p 重导），
+而它们会把首屏占满（`release_date` 更新到 2026-09，点开却要登录转存）。
+2026-09-26 决定：**默认不并**，代码留在 `--with-pan` 后面，`meta.db_source` 会跟着变，
+以后要并随时并得回来。
 
 ### 4.3 剩下的真实风险
 
@@ -214,18 +267,20 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
 
 `MovieStore` 的排序串只有两份（`ORDER_BY_PIN` 带置顶、`ORDER_BY_PLAIN` 不带），
 键都是 `COALESCE(release_date,'') DESC, COALESCE(year,0) DESC, src_tid DESC`，
-`queryPage()` 分页时统一套用。对**设备上真正跑的**内嵌库（`db_version=2026092502`）
+`queryPage()` 分页时统一套用。对**设备上真正跑的**内嵌库（`db_version=2026092601`）
 按这个串实测：
 
 | 版块 | 条数 | 逆序对 | `release_date` 为空 | 首屏前三 |
 |---|---|---|---|---|
-| 112 4K电影 | 1037 | **0** | 0 | 速度与激情9(2021-05-19) / 比得兔2(2021-03-25) / 哥斯拉大战金刚(2021-03-24) |
-| 37 4K纪录片 | 29 | **0** | 0 | 七个世界一个星球 S1E7(2019-12-08) → E6 → E5 |
+| 112 4K电影 | 1490 | **0** | 0 | 超级少女(2026-06-24) / 揭秘日(2026-06-10) / 诺曼底72小时(2026-05-28) |
+| 37 4K纪录片 | 29 | **0** | 0 | 七个世界，一个星球 第1季第7集(2019-12-08) → E6 → E5 |
+
+末屏也就是最老的：112 栏是《生活多美好》(1946-12-20) 与《绿野仙踪》(1939-08-21)。
 
 也就是说「按时间倒序」不需要动 SQL —— 要做的是**让它在真机上可验证**。
 所以 `MainActivity` 每次拿下一页会打一行
-`list fid=… page=… first=片名(2021-05-19)`，logcat 里直接看到列表头部是谁；
-配合设置页那行「数据 v2026092502」，就能区分「排序不对」和「设备上跑的还是旧内嵌库」。
+`list fid=… page=… first=片名(2026-06-24)`，logcat 里直接看到列表头部是谁；
+配合设置页那行「数据 v2026092601」，就能区分「排序不对」和「设备上跑的还是旧内嵌库」。
 （排序键用 `release_date` 而不是 `updated_at`：入库时间会随重建抖动，上映日期才是用户认的「新片」。）
 
 ### 5.2 海报慢在哪：解码，不是下载
@@ -343,8 +398,15 @@ assets（APK 体积会明显涨）；②真找到又小又快的同形状缩略�
 - [ ] **CI 不构建本分支**：`build.yml:5` 白名单没有 `DJYDXS31NexioAM`。
 - [x] ~~**正片权益未通**~~：换用已授权 sn `9CF8DB078B44` 后已通（§4.1）。同时修掉了
       「`fileSize >= 9e9` 就算占位桩」这个误杀 —— 4K 原盘本来就是 40~83 GB。
-- [x] ~~**全量 mkv 清点未跑完**~~：1109 条全部清完（`stub` 43 / `err` 0），
-      内嵌库已按云端真实容器重建成 1066 部，详见 §4.2。
+- [x] ~~**全量 mkv 清点未跑完**~~：1562 条全部清完（`stub` 43 / `err` 0），
+      内嵌库已按云端真实容器重建成 1519 部，详见 §4.2。
+- [x] ~~**库只到 2021、2026 新片进不来**~~：根因不是过滤规则，是 `tmdbam.db` 用了
+      `ew3.db` 的旧快照（1224 条 feat-11）。09-26 先快照再重跑上游四段链，
+      feat-11 1698 → `movie_tmdb_4k` 1562 → 真实 mkv 1519，2022+ 有 358 部（§2.1）。
+      **代价是这条链今后必须定期重跑**，见下面那条待办。
+- [ ] **上游快照会过期，且看不出过期**：`ew3.db` 原地改写、mtime 不动，唯一可靠的判据是
+      `select count(*), max(times) from movie` 与 `(','||feat_ids||',') like '%,11,%'` 的条数。
+      每次出包前跑一遍 §2.1 的链（先 `cp` 快照），并核对 `tmdb_map` 是否盖住全部 feat-11。
 - [x] ~~**海报墙进页必崩**~~：v1.30 真机 logcat 是 `BitmapFactory.decodeStream` 单次
       申请 24,000,012 字节 OOM（§5.2）。v1.31 起降采样 + 有界缓存，v1.32 再给工作线程
       加 `catch (Throwable)` 兜底 —— 加载失败只留空格子，不再带崩进程。
