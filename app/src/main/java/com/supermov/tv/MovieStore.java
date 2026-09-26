@@ -178,6 +178,14 @@ public final class MovieStore {
         public String uid = "";
         /** "1080P.Remux" 之类的原始归类，详情页可显示。 */
         public String classification = "";
+        /** 归组键（分集行 = 剧名#季；单片行 = 自身 uid）。仅归组后的查询会填。 */
+        public String seriesKey = "";
+        /** 剧名（去掉「第N季第M集」的那部分）；单片为空。 */
+        public String seriesName = "";
+        public int seasonNo;
+        public int episodeNo;
+        /** 这部剧共几集（角标「共 N 集」）；单片为 0/1。 */
+        public int episodeCount;
     }
 
     public static class Box {
@@ -243,8 +251,13 @@ public final class MovieStore {
      * 拿名字当 key 早晚失配；fid 是数据侧的主键，稳。本变体（AM 4K 库）的对应关系 ——</p>
      * <pre>
      *   112  movie       → 4K电影     （1490 部，全部 hash 片源）
-     *    37  tv_episode  → 4K纪录片   （按集收录，29 集）
+     *    37  tv_episode  → 4K纪录片   （按集收录，29 集归成 5 部剧）
      * </pre>
+     *
+     * <p><b>37 不再单独出栏</b>（v1.38 起）：它并进 4K电影，改成题材过滤器行里一个与
+     * 科幻/动作平行的「纪录片」子标签，见 {@link #MERGE_INTO} 与 {@link #fidWhere(int)}。
+     * 保留 fid 这个 key 而不是把数据改成同一个 fid，是为了让「纪录片」标签能精确等于
+     * 原来那一栏的内容 —— 按 genres 里的「纪录」筛会把 112 栏里 20 部标了纪录的单片也拉进来。</p>
      *
      * <p>这一栏的条数完全由 {@code tools/build_am_db.py} 的产物决定，改动内嵌库后必须回到
      * 这里同步 —— 数字对不上时以库里实测为准，别拿注释当事实。</p>
@@ -252,8 +265,22 @@ public final class MovieStore {
      * <p>蓝本（网盘库）另有 58「蓝光影片」与 2「杜比5.1影片」两栏；AM 库里没有这两个
      * fid 的片子，留在白名单里只会出栏出两个永远为空的栏目，所以一并去掉。</p>
      */
-    private static final int[] CAT_FIDS = {112, 37};
-    private static final String[] CAT_NAMES = {"4K电影", "4K纪录片"};
+    private static final int[] CAT_FIDS = {112};
+    private static final String[] CAT_NAMES = {"4K电影"};
+
+    /**
+     * 板块归并：{@code fid} 从 {@code key} 那个板块起就查不到内容，得并到 {@code value} 里去。
+     *
+     * <p>查询侧只认这一张表：{@link #fidWhere(int)} 会把它展开成 {@code fid IN (…)}，
+     * {@link #filtersFor(int)} 的题材统计也跟着它走。以后要并第二个板块，只加一行。</p>
+     */
+    private static final Map<Integer, int[]> MERGE_INTO = mergeInto();
+
+    private static Map<Integer, int[]> mergeInto() {
+        Map<Integer, int[]> m = new HashMap<>();
+        m.put(112, new int[]{112, 37});
+        return java.util.Collections.unmodifiableMap(m);
+    }
 
     /**
      * 版块（分类栏）：严格按 {@link #CAT_FIDS} 的顺序与 {@link #CAT_NAMES} 的显示名产出，
@@ -299,6 +326,20 @@ public final class MovieStore {
     private static final Map<Integer, List<Filter>> filterCache = new HashMap<>();
 
     /**
+     * 归并进来的板块在过滤器行里单独占一个标签。{@link #MERGE_INTO} 让 37 的片子混进
+     * 4K电影 的「全部」里，这里再把它们收拢成一个可点开的子标签。
+     *
+     * <p>为什么不靠 genres 里的「纪录」自动生成：实测合并后「纪录」只排题材频次第 13
+     * （49 部，其中 20 部是 112 栏本来就在的单片），而下面的自动规则只取前 10，
+     * 自动生成出来的标签永远是空的 —— 必须显式加。</p>
+     */
+    private static final int[] SUB_TAB_FIDS = {37};
+    private static final String[] SUB_TAB_NAMES = {"纪录片"};
+
+    /** {@link #filtersFor} 生成的「按板块筛」标签的 key 前缀，见 {@link #category}。 */
+    private static final String SUB_FID_PREFIX = "@fid=";
+
+    /**
      * 某版块的过滤器：数据库驱动 —— 从该版块影片的题材标签里取出现频次最高的若干个。
      *
      * <p>这样以后数据侧新增题材（比如「悬疑」「武侠」）不需要改 App 代码，重启即生效。</p>
@@ -340,6 +381,17 @@ public final class MovieStore {
             if (e.getValue() < 2) continue;
             out.add(new Filter(e.getKey(), idx++, e.getKey()));
         }
+        // 归并进来的板块补一个固定标签，排在自动题材标签后面（如 4K电影 里的「纪录片」）
+        int[] group = MERGE_INTO.get(fid);
+        if (group != null) {
+            for (int i = 0; i < SUB_TAB_FIDS.length; i++) {
+                boolean owned = false;
+                for (int g : group) {
+                    if (g == SUB_TAB_FIDS[i]) owned = true;
+                }
+                if (owned) out.add(new Filter(SUB_TAB_NAMES[i], idx++, SUB_FID_PREFIX + SUB_TAB_FIDS[i]));
+            }
+        }
         synchronized (filterCache) {
             filterCache.put(fid, out);
         }
@@ -370,7 +422,11 @@ public final class MovieStore {
         StringBuilder where = new StringBuilder(fidWhere(fid));
         List<String> args = new ArrayList<>();
         String key = filterKey(fid, typeid);
-        if (!key.isEmpty()) {
+        if (key.startsWith(SUB_FID_PREFIX)) {
+            // 「纪录片」这类归并板块的标签：按 fid 精确收窄，不碰 genres
+            where.append(" AND fid=?");
+            args.add(key.substring(SUB_FID_PREFIX.length()));
+        } else if (!key.isEmpty()) {
             where.append(" AND genres LIKE ?");
             args.add("%\"" + key + "\"%");
         }
@@ -403,6 +459,10 @@ public final class MovieStore {
             out.pageCount = 1;
             return;
         }
+        if (seriesReady()) {
+            queryPageGrouped(out, q, where, args, page);
+            return;
+        }
         int p = Math.max(1, page);
         Cursor c = null;
         try {
@@ -427,6 +487,182 @@ public final class MovieStore {
         } finally {
             if (c != null) c.close();
         }
+    }
+
+    /**
+     * 分集归组后的分页：一部剧（或一部单片）出一张卡。
+     *
+     * <p><b>为什么是两步取数而不是一个相关子查询</b>：把「取组内集号最小那行」写成
+     * {@code (SELECT src_tid FROM v_movie_app x WHERE x.series_key=… LIMIT 1)} 实测
+     * 一页 40 张卡要 <b>531 ms</b> —— 视图里挂着三个 {@code pan_link} 子查询被一起拖进
+     * 去了；换成查基表是 3.6 ms。这里连基表都不查：第一步只选出这一页是哪些剧，
+     * 第二步用 {@code series_key IN (40 个)} 走 {@code ix_movie_series} 把候选行一次捞全，
+     * 组内第一行即代表卡。三步里没有任何逐行子查询，实测整页 <b>1.4~4 ms</b>
+     * （与不归组的平铺查询 1.1 ms 同一量级，见文档 §5.4）。</p>
+     *
+     * <p>代表卡取<b>筛选后</b>集号最小的那行，所以海报天然跟着「最小集号」走；
+     * 而角标「共 N 集」用 {@link #seriesCounts()} 的全量集数，不受当前筛选影响。</p>
+     */
+    private static void queryPageGrouped(Paged<List<Movie>> out, SQLiteDatabase q,
+                                         String where, List<String> args, int page) {
+        int p = Math.max(1, page);
+        Cursor c = null;
+        try {
+            int total = 0;
+            c = q.rawQuery("SELECT COUNT(*) FROM (SELECT 1 FROM v_movie_app WHERE "
+                    + where + " GROUP BY series_key)", toArray(args));
+            if (c.moveToFirst()) total = c.getInt(0);
+            c.close();
+            c = null;
+            out.pageCount = Math.max(1, (total + PAGE_SIZE - 1) / PAGE_SIZE);
+            if ((p - 1) * PAGE_SIZE >= total) return;
+
+            List<String> ga = new ArrayList<>(args);
+            ga.add(String.valueOf(PAGE_SIZE));
+            ga.add(String.valueOf((p - 1) * PAGE_SIZE));
+            List<String> keys = new ArrayList<>();
+            c = q.rawQuery("SELECT series_key FROM v_movie_app WHERE " + where
+                    + " GROUP BY series_key ORDER BY " + groupOrderBy() + " LIMIT ? OFFSET ?",
+                    toArray(ga));
+            while (c.moveToNext()) keys.add(c.getString(0));
+            c.close();
+            c = null;
+            if (keys.isEmpty()) return;
+
+            StringBuilder ph = new StringBuilder();
+            List<String> a2 = new ArrayList<>(args);
+            for (int i = 0; i < keys.size(); i++) {
+                ph.append(i == 0 ? "?" : ",?");
+                a2.add(keys.get(i));
+            }
+            c = q.rawQuery("SELECT " + listCols() + SERIES_COLS + " FROM v_movie_app WHERE "
+                    + where + " AND series_key IN (" + ph + ") ORDER BY series_key, "
+                    + "COALESCE(season_no,0), COALESCE(episode_no,0), src_tid", toArray(a2));
+            Map<String, Movie> pick = new HashMap<>();
+            while (c.moveToNext()) {
+                Movie m = readListRow(c);
+                if (m.seriesKey != null && !pick.containsKey(m.seriesKey)) {
+                    pick.put(m.seriesKey, m);   // 组内已按集号排好，第一行就是代表卡
+                }
+            }
+            c.close();
+            c = null;
+
+            Map<String, Integer> counts = seriesCounts();
+            for (String k : keys) {
+                Movie m = pick.get(k);
+                if (m == null) continue;
+                Integer n = counts.get(k);
+                m.episodeCount = n == null ? 1 : n;
+                if (m.episodeCount > 1) {
+                    // 角标接在「2019 · 117分钟」后面；buildRemarks 里没有集号这个概念，
+                    // 而总集数要跨行才知道，所以只能在这里补，不能塞回 buildRemarks。
+                    m.remarks = m.remarks.isEmpty()
+                            ? "共 " + m.episodeCount + " 集" : m.remarks + " · 共 " + m.episodeCount + " 集";
+                }
+                out.data.add(m);
+            }
+        } catch (Throwable e) {
+            Log.d(TAG, "queryPageGrouped 查询失败: " + e);
+        } finally {
+            if (c != null) c.close();
+        }
+    }
+
+    /** 归组排序：组内取 MAX 即代表整组；单片组里只有一行，结果与平铺排序完全一致。 */
+    private static String groupOrderBy() {
+        return (pinTopReady() ? "MAX(COALESCE(pin_top,0)) DESC, " : "")
+                + "MAX(COALESCE(release_date,'')) DESC, MAX(COALESCE(year,0)) DESC, "
+                + "MAX(src_tid) DESC";
+    }
+
+    /** 跟在 {@link #listCols()} 后面追加的归组列；老库没有这几列时 {@code seriesReady()} 为假，不会拼上。 */
+    private static final String SERIES_COLS = ",series_key,series_name,season_no,episode_no";
+
+    /** 某条记录所属剧集的分集清单，按 季 → 集 排；单片返回空表。 */
+    public static List<Movie> seriesEpisodes(String tid) {
+        List<Movie> out = new ArrayList<>();
+        if (tid == null || tid.isEmpty() || !seriesReady()) return out;
+        SQLiteDatabase q = database();
+        if (q == null) return out;
+        Cursor c = null;
+        try {
+            String sk = null;
+            c = q.rawQuery("SELECT series_key FROM v_movie_app WHERE src_tid=?", new String[]{tid});
+            if (c.moveToFirst()) sk = c.getString(0);
+            c.close();
+            c = null;
+            if (sk == null || sk.isEmpty()) return out;
+            // 故意不选 series_name：那会把每集自己的片名覆盖成剧名，小海报就没法区分集号了
+            c = q.rawQuery("SELECT " + listCols() + ",series_key,season_no,episode_no "
+                    + "FROM v_movie_app WHERE series_key=? "
+                    + "ORDER BY COALESCE(season_no,0), COALESCE(episode_no,0), src_tid",
+                    new String[]{sk});
+            while (c.moveToNext()) out.add(readListRow(c));
+        } catch (Throwable e) {
+            Log.d(TAG, "seriesEpisodes 查询失败: " + e);
+        } finally {
+            if (c != null) c.close();
+        }
+        return out;
+    }
+
+    private static volatile Map<String, Integer> seriesCnt;
+
+    /** 整部剧的总集数（与当前筛选无关），海报角标「共 N 集」用。全库只有 5 部剧，一次查全并缓存。 */
+    private static Map<String, Integer> seriesCounts() {
+        Map<String, Integer> m = seriesCnt;
+        if (m != null) return m;
+        m = new HashMap<>();
+        Cursor c = null;
+        try {
+            SQLiteDatabase q = db;
+            if (q != null) {
+                c = q.rawQuery("SELECT series_key, COUNT(*) FROM movie "
+                        + "WHERE series_name IS NOT NULL GROUP BY series_key", null);
+                while (c.moveToNext()) m.put(c.getString(0), c.getInt(1));
+            }
+        } catch (Throwable e) {
+            Log.d(TAG, "seriesCounts 失败: " + e);
+        } finally {
+            if (c != null) c.close();
+        }
+        seriesCnt = m;
+        return m;
+    }
+
+    /**
+     * 视图里有没有 series_key（即内嵌库是不是 2026092602 及以后）。
+     *
+     * <p>{@link #hashReady()} 同一套：探到才拼进 SQL。探不到说明装的是旧库，
+     * {@link #queryPage} 走平铺老路径，界退回「一集一张卡」而不是整页空白。</p>
+     */
+    private static volatile Boolean seriesKnown;
+
+    private static boolean seriesReady() {
+        Boolean v = seriesKnown;
+        if (v != null) return v;
+        boolean ok = false;
+        Cursor c = null;
+        try {
+            SQLiteDatabase q = db;
+            if (q != null) {
+                c = q.rawQuery("PRAGMA table_info(v_movie_app)", null);
+                while (c.moveToNext()) {
+                    if ("series_key".equals(c.getString(1))) {
+                        ok = true;
+                        break;
+                    }
+                }
+            }
+        } catch (Throwable e) {
+            Log.d(TAG, "探测 v_movie_app.series_key 失败: " + e);
+        } finally {
+            if (c != null) c.close();
+        }
+        seriesKnown = ok;
+        Log.d(TAG, "分集归组列 series_key 可用 = " + ok);
+        return ok;
     }
 
     /**
@@ -565,13 +801,44 @@ public final class MovieStore {
         m.totalSize = lng(c, 20);
         m.hash = opt(c, hashIdx(c));
         m.remarks = buildRemarks(m.year, (int) lng(c, 9), m.videoCount);
+        readSeries(c, m);
         if (m.name.isEmpty()) m.name = m.nameEn;
         return m;
     }
 
-    /** fid 是数据侧的真实版块号；fid<=0 视为不过滤（兜底）。 */
+    /**
+     * 归组列。列不存在（老库、或 {@link #seriesEpisodes} 故意没选 {@code series_name}）
+     * 时 {@code getColumnIndex} 返回 -1，{@link #opt} 给空串 —— 平铺路径与分集清单都不会被影响。
+     *
+     * <p>{@code name} 在剧级卡上换成剧名：海报墙和详情页都不该出现
+     * 「七个世界，一个星球 第1季第1集」这种带集号的标题。</p>
+     */
+    private static void readSeries(Cursor c, Movie m) {
+        m.seriesKey = opt(c, c.getColumnIndex("series_key"));
+        m.seriesName = opt(c, c.getColumnIndex("series_name"));
+        int sn = c.getColumnIndex("season_no");
+        int en = c.getColumnIndex("episode_no");
+        m.seasonNo = sn < 0 ? 0 : (int) lng(c, sn);
+        m.episodeNo = en < 0 ? 0 : (int) lng(c, en);
+        if (!m.seriesName.isEmpty()) m.name = m.seriesName;
+    }
+
+    /**
+     * fid 是数据侧的真实版块号；fid&lt;=0 视为不过滤（兜底）。
+     *
+     * <p>归并板块（{@link #MERGE_INTO}）在这里展开成 {@code fid IN (…)}，所以 4K电影 一栏
+     * 本身就带着纪录片的片子；纪录片那个子标签反过来用 {@code fid=37} 收窄。</p>
+     */
     private static String fidWhere(int fid) {
-        return fid <= 0 ? "1=1" : "fid=" + fid;
+        if (fid <= 0) return "1=1";
+        int[] group = MERGE_INTO.get(fid);
+        if (group == null || group.length < 2) return "fid=" + fid;
+        StringBuilder sb = new StringBuilder("fid IN (");
+        for (int i = 0; i < group.length; i++) {
+            if (i > 0) sb.append(',');
+            sb.append(group[i]);
+        }
+        return sb.append(')').toString();
     }
 
     // ==================================================================
@@ -634,9 +901,15 @@ public final class MovieStore {
         return d;
     }
 
-    /** 详情比列表多取一列：简介正文（下标随 hash 列是否存在而移位，所以按列名取）。 */
+    /**
+     * 详情比列表多取的列。
+     *
+     * <p>带上 {@link #SERIES_COLS} 是为了让剧级条目在详情页也显示<b>剧名</b>而不是
+     * 「剧名 第1季第1集」—— 代表行本身是第 1 集，标题里带着集号会和下面的分集列表重复。
+     * 单片行 {@code series_name} 为空，{@link #readSeries} 不会动 {@code name}。</p>
+     */
     private static String detailCols() {
-        return listCols() + ",synopsis";
+        return listCols() + SERIES_COLS + ",synopsis";
     }
 
     private static Movie readDetailRow(Cursor c) {

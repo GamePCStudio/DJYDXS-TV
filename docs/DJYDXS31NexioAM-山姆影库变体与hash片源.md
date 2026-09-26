@@ -1,11 +1,16 @@
 # DJYDXS31NexioAM · 山姆影库（hash 片源变体）
 
 > 分支：`DJYDXS31NexioAM`，蓝本：`DJYDXS3Nexio`（网盘片源版）。
-> 对应版本：**v1.37**（`versionCode 37`），内嵌库 `db_version=2026092601`（1519 部 hash 片源，v1.33 起未变）。
+> 对应版本：**v1.37**（`versionCode 37`）已出包；工作区里的改动攒给 **v1.38（还没出包）**，
+> 内嵌库 `db_version=2026092602`（1519 条 hash 片源 = 1490 部单片 + 5 部纪录片 29 集，v1.33 起部数未变）。
 > v1.34 只动界面文案（sn 与 40 位云指纹不再出现在任何用户可见处，见 §3.4）；
 > v1.35 在下载队列页顶部加了「前台极速 / 退后台限速」说明，见 §3.5；
 > v1.36 把那段说明的措辞改了，并把它拆成两行排版（第一行接在标题后，见 §3.5）；
-> v1.37 = 第一行说明缩成第二行小字字号（§3.5）+ 下载报错全中文化（§3.6）。
+> v1.37 = 第一行说明缩成第二行小字字号（§3.5）+ 下载报错全中文化（§3.6）；
+> v1.38（待出包）= 纪录片分集归组：海报墙一部剧一张卡 + 详情页横向分集小海报 + 全下（§5.4），
+> 「4K纪录片」大分栏取消、变成 4K电影 里的一个子标签（§5.4）；
+> 另外收了 v1.37 报错中文化的四条尾巴（剥英文骨架、截断上限 90→120，§3.6）、
+> 详情页两处上屏文案瘦身、全下加剩余空间提示（§5.4），设置页再去掉三处技术标识值回显（§3.6）。
 > 本文是**后续做其它机型变体（威动 / 视易 / 海美迪…）的模板**：先读 §1 的改名清单，
 > 再按 §6 的机型扩展步骤替换策略，片库生成见 §2，hash 链路的实测结论见 §4（**必读**），
 > 列表排序与海报墙加载见 §5。
@@ -22,9 +27,9 @@
 | Java 包名 / namespace | `com.supermov.tv` | **不变**（见下方口径） | `app/build.gradle` |
 | 网盘转存根目录 | `/电影影大师` | **`/山姆影库`** | `Settings.java:42` |
 | 下载落盘目录名 | 含应用名 | **含应用名** | `Storage.java:94,98` |
-| 内嵌片库 | 网盘库（pan_url + v_episode） | **4K hash 库**（movie.hash，1519 条） | `assets/SuperMOV.db` |
+| 内嵌片库 | 网盘库（pan_url + v_episode） | **4K hash 库**（movie.hash，1519 条 = 1490 单片 + 5 部纪录片 29 集） | `assets/SuperMOV.db` |
 | 片源路径 | 百度网盘分享 → 转存 → 直链 | **云端 hash → 分段直链 → 拼接** | `AimeiCdn.java` / `DlEngine.runHashTask` |
-| 分类栏 | 4 栏（4K全景声/最新剧集/蓝光/杜比5.1） | **2 栏（4K电影 / 4K纪录片）** | `MovieStore.java:252` |
+| 分类栏 | 4 栏（4K全景声/最新剧集/蓝光/杜比5.1） | **1 栏「4K电影」**；原「4K纪录片」并进它、退化成题材行末尾的「纪录片」子标签（§5.4） | `MovieStore.java:268` |
 | 数据库在线更新 | `db/SuperMOV.json` | **`db/SuperMOV-am.json`**（单独一份） | `DbUpdater.java:43` |
 
 **改名口径（做下一个变体时照抄这条，别扩大范围）**：只改 ①显示名 ②`applicationId`
@@ -85,10 +90,13 @@ A1 标题全等+年份精确，57.56 GB）。**hash 侧自己就覆盖到新片�
    （`hash` / `baidu` / 空）。`v_episode` 保留但**本库里 0 行** —— 4K hash 库没有
    网盘路径，硬凑剧集表只会让详情页列出假文件。
 3. `fid` 沿用蓝本的版块号语义：`112` = 单片（1490 条），`37` = 按集收录（29 条）。
-   分类栏白名单就按这两个 fid 出栏，见 §1。
+   v1.38 起 37 不再单独出栏，而是被 `MovieStore.MERGE_INTO` 并进 112 的「全部」，
+   另在题材行末尾给一个 `@fid=37` 的「纪录片」子标签收窄回去，见 §5.4。
 4. `meta` 写 `schema_version=2`（`MovieDb.SCHEMA_SUPPORTED=2`，别越过）、
-   `db_version=2026092601`、`db_build_id=am4k-…`。`SuperMOV.version` 与
+   `db_version=2026092602`、`db_build_id=am4k-…`。`SuperMOV.version` 与
    `db_version` 必须一致，`MovieStore` 靠它决定要不要重新拷库。
+   **分集三列是纯增列，所以 `schema_version` 保持 2** —— 抬到 3 会让 v1.37 及更早的
+   安装包判定「库太新，请升级应用」（`MovieDb.isSchemaReadable`）而直接拦人。
 5. 一条 `hash` 对应一个落盘文件，`MovieStore.detail()` 把 hash 线路排在 `boxes[0]`；
    真并了网盘行时它也排在 `pan_url` 之前。想让网盘优先就调那一段顺序，别在 UI 层判断。
 6. **只收 mkv 片源**：脚本按 `file_name_ext == 'mkv'` 过滤并打印被删条数。
@@ -100,6 +108,38 @@ A1 标题全等+年份精确，57.56 GB）。**hash 侧自己就覆盖到新片�
 
 生成后自检（脚本末尾自带，也可以在 python 里手跑）：影片数、fid 分布、
 `hash` 非空条数、海报 URL、`v_movie_app` 列清单。
+
+### 2.2 分集归组四列，以及 `--upgrade`：只为加列时别重跑上游
+
+`movie` 上多四个派生列（`tools/build_am_db.py:86` `SERIES_COLS`）：
+
+| 列 | 分集行 | 单片行 |
+|---|---|---|
+| `series_key` | `s:剧名#S季` | **自己的 `uid`** |
+| `series_name` | 剧名（去掉「第N季第M集」） | `NULL` |
+| `season_no` / `episode_no` | 季号 / 集号 | `NULL` |
+
+两点要说清：
+
+- **每一行都有 `series_key`**，单片自成一组。上层因此只有一条 `GROUP BY series_key`
+  的代码路径，不用为「这部不是剧」开分支，也不会出现「归组后单片消失」。
+- **分组键是标题句式，不是豆瓣 id**（`EP_TITLE`，脚本 `:84`）：实测豆瓣 id 在本库里
+  有 288 组、579 行共用同一个 id（同一片子在论坛被发过两次），拿它归组会把电影栏
+  1490 张卡悄悄压成 **1199** 张 —— 用户看到的就是「片少了」。
+
+只有 `title_cn`（空则 `title`）形如「XX 第N季第M集」的行会被认成分集，本库里正好
+就是 fid=37 那 29 行 → 5 部剧。以后 112 栏冒出「第N集」句式的多集片，会自动被归上，
+不需要改代码。
+
+```bash
+python -X utf8 tools/build_am_db.py --upgrade app/src/main/assets/SuperMOV.db
+```
+
+`--upgrade` 只做三件事：补列（`add_series_schema`，按 PRAGMA 幂等）→ 重算派生值
+（`fill_series`）→ 重写 `v_movie_app`，然后**校验行数没变**才抬 `db_version` 并重写
+`.version`。为什么不直接重跑全量：全量要再吃一遍 `tmdbam.db` / `ew3.db` /
+`cdn_census.db`，那几个是**会被原地改写的活库**（§2.1），为了四个派生列去冒
+「影片数变了」的风险不值得。加列是纯增量，走这条路结果可复现。
 
 ---
 
@@ -169,6 +209,7 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
 
 - 详情页：库里 `hash` 非空 → `boxes[0].type == "hash"` → `DetailActivity.hashMode`。
   此时**隐藏「在线播放」与「转存」**（两者都依赖网盘分享链接），只留「下载」。
+  分集剧（v1.38）连「下载」那一行都不留，入口整段交给分集区，见 §5.4。
 - 下载入口：不要求网盘登录、不解析分享、没有多选文件那一步 ——
   一个 hash 就是一个落盘文件。
 - 落盘：`DeviceProfile.targetDir()` 在用户选的根目录下建**中文片名**目录；
@@ -209,50 +250,83 @@ GET  https://api.mymei.vip/api/movie/getCdnUrl?sn=<sn>&hash=<40位hash>
 ### 3.6 下载报错的中文化：唯一卡口 `DlEngine.zhSystemMsg()`
 
 系统抛上来的英文句子不能原样上屏。所有下载错误的文案都要过
-`DlEngine.shortMsg(Throwable)`（`:1645` 附近），它现在做三件事：
-**先翻译 → 再按 90 字符截断 → 返回**。翻译必须在截断之前，否则
-90 是按字符数硬砍，会把中文尾巴切成半截。四类上屏路径（建文件 `:777/:934`、
+`DlEngine.shortMsg(Throwable)`（`:1651`），它现在做四件事：
+**先翻译 → 再剥英文骨架 → 截断（120 字符，断处补 `…`）→ 返回**。翻译必须在截断之前，否则
+截断是按字符数硬砍，会把中文尾巴切成半截。四类上屏路径（建文件 `:777/:934`、
 hash 分片线程、通用分片线程、`onError` 兜底）都从这一个函数走，
 **新增报错不要再在各处 `throw` 里自己拼英文**。
 
-`zhSystemMsg` 两条规则：
+`zhSystemMsg` 三条规则：
 
 1. **libcore 句式** `<动词> failed: <ERRNO> (<English text>)` 用正则拆开，
-   动词查 `SYS_VERB`、errno 查 `SYS_ERRNO`，拼成「X失败: 错误代码（原因）」。
+   动词查 `SYS_VERB`、errno 查 `SYS_ERRNO`，拼成「X失败：错误代码（原因）」
+   （**冒号是全角**，与 `:1360`「第 N 个分片失败：」同一句式，否则同一屏两种冒号）。
    这样 `open`/`write`/`ftruncate` 配同一个 `ENOSPC` 不用各写一条。
    动词不认识退成「操作」；**errno 不认识就把 errno 名留在括号里**，
    不瞎猜原因 —— 宁可显示 `E2BIG` 也别把别的错说成"硬盘满了"。
 2. **JDK / OkHttp 固定话术**（`Unable to resolve host` / `Failed to connect to` /
    `Read timed out` / `Unexpected end of stream` …）走 `SYS_PHRASE` 整句替换。
    主机名和 IP 会原样留在句子里 —— 那是定位信息，不属于 sn/指纹那一类。
+3. **剥英文骨架**（v1.38 起）：整句替换只能换掉话术本身，句子的**外壳**是系统拼的，
+   所以再过两条正则 —— `ENG_CLS_PREFIX` 去句首的 `java.net.SocketException: `
+   类名前缀（允许嵌套多层），`ENG_CONN_TAIL` 去句尾 okhttp 的连接对象身份
+   （`on com.android.okhttp.Address@2f3a1b4c` 和 `on Connection{host:443, proxy=DIRECT…}`
+   两种写法）。**后者是技术标识，不该上屏**，在电视上也只是噪声。
+   剥完整句空了（消息只剩前缀）就退回 `zhClassName()` 按异常类型给中文，不显示空行。
 
-实测（同构程序跑 17 组真值，脚本 `Temp/ZhMsg2.java`）：
+实测（同构程序跑 **16 组**真值，`C:/tmp/msgcheck/MsgCheck.java`；每组的上屏原文与字符数
+落在 `C:/tmp/msgcheck/out.txt`）。它不是手抄表 —— 生成脚本把 `DlEngine.java` 的
+`shortMsg` 到 `SYS_PHRASE` 整段**原样切过去**，所以表里的翻译不会和代码走岔。
+跑法：`python -X utf8 C:/tmp/mk_msgcheck.py` 生成，再 `javac MsgCheck.java` +
+`java -Dstdout.encoding=UTF-8 MsgCheck > out.txt`（**必须显式给 stdout 编码**，
+这台机器控制台是 GBK，重定向到文件也会花屏）：
 
-| 输入（系统原文） | 上屏 |
+| 输入（系统原文） | 上屏（右侧为实测字符数） |
 |---|---|
-| `<path>: open failed: ENOSPC (No space left on device)` | `<path>: 打开失败: 错误代码（设备上没有剩余空间，硬盘满了）` |
-| `write failed: ENOSPC (...)` | `写入失败: 错误代码（设备上没有剩余空间，硬盘满了）` |
-| `<path>: ftruncate failed: ENOSPC (...)` | `<path>: 预留空间失败: 错误代码（设备上没有剩余空间，硬盘满了）` |
-| `mkdir failed: ENAMETOOLONG (...)` | `创建目录失败: 错误代码（文件路径过长（影片名可能太长））` |
-| `rename failed: EXDEV (...)` | `改名失败: 错误代码（不能跨分区改名，请改成同分区路径）` |
-| `Unable to resolve host "api.mymei.vip": No address associated with hostname` | `域名解析失败 "api.mymei.vip": 设备未连上网络或 DNS 不可用` |
-| `Read timed out` | `读取超时` |
-| `frobnicate failed: ENOSPC (...)`（动词不在表里） | `操作失败: 错误代码（设备上没有剩余空间，硬盘满了）` |
+| `<path>: open failed: ENOSPC (No space left on device)` | `<path>: 打开失败：错误代码（设备上没有剩余空间，硬盘满了）`（82） |
+| `write failed: ENOSPC (...)` | `写入失败：错误代码（设备上没有剩余空间，硬盘满了）`（25） |
+| `<path>: ftruncate failed: ENOSPC (...)` | `<path>: 预留空间失败：错误代码（设备上没有剩余空间，硬盘满了）`（84） |
+| `mkdir failed: ENAMETOOLONG (File name too long)` | `创建目录失败：错误代码（文件路径过长（影片名可能太长））`（28） |
+| `rename failed: EXDEV (Invalid cross-device link)` | `改名失败：错误代码（不能跨分区改名，请改成同分区路径）`（27） |
+| `frobnicate failed: ENOSPC (...)`（动词不在表里） | `操作失败：错误代码（设备上没有剩余空间，硬盘满了）`（25） |
+| `open failed: EFBIG (File too large)` | `打开失败：错误代码（文件超过分区单文件上限（FAT32 是 4GB），请换成 NTFS/exFAT）`（50） |
+| `ftruncate failed: EFBIG (...)` | `预留空间失败：错误代码（文件超过…NTFS/exFAT）`（**52，全表最长单句**） |
+| `Unable to resolve host "api.mymei.vip": No address associated with hostname` | `域名解析失败 "api.mymei.vip": 设备未连上网络或 DNS 不可用`（40，主机名保留） |
+| `Read timed out` | `读取超时`（4） |
+| `Connection reset` | `连接被重置`（5） |
+| `java.net.SocketException: Unexpected end of stream on com.android.okhttp.Address@2f3a1b4c` | `数据流意外中断`（7） |
+| `Unexpected end of stream on Connection{api.mymei.vip:443, proxy=DIRECT hostAddress=…:443 cipherSuite=TLS_AES_128 protocol=h2}` | `数据流意外中断`（7；**只换话术不剥尾巴时这句 120+ 字，断在 `protocol=`**） |
+| `java.io.IOException: java.net.SocketTimeoutException: Read timed out` | `读取超时`（4，嵌套前缀一起剥掉） |
+| `java.net.SocketException: `（消息只剩类名前缀） | `读写失败`（4，剥空后退回 `zhClassName`） |
+
+`<path>` 用的是典型落盘路径 `/storage/emsd1_forward/山姆影库/艾登堡/登堡：乐园里的动物朋友们 第1季第1集.mkv`
+（55 字）。最后一条组合（路径 + EFBIG 中文句）实测 **107 字**。
+
+**为什么上限从 90 提到 120**：单句中文最长 52 字，绝不会撞线；撞线的是**带落盘路径**的消息
+—— 55 字路径 + `: ` 2 字 + 50 字中文 = 107，旧的 90 会把「请换成 NTFS/exFAT）」砍成
+「…请换成 NTFS/exF」这种半截话，而这句恰恰是告诉用户「换分区格式」的动作。120 放得下这条，
+再长的用 `substring(0,119) + "…"` 收口 —— 有省略号就说明被截过，不会静默吞尾巴。
 
 配套的两处口径修正：
 
 - **FAT32/4GB 的说法挪到了 `EFBIG` 的释义里**。原来 `:777/:934` 在 `IOException`
   前面硬拼了「无法创建目标文件（分区可能不支持大于 4GB 的文件，如 FAT32）：」，
-  实测 36 字前缀 + 38 字路径 + 2 + 26 = **102 字 > 90，被砍成半截**；
+  实测 36 字前缀 + 38 字路径 + 2 + 26 = **102 字，当时超 90 被砍成半截**；
   而且这句话对 ENOSPC 是错的归因。现在前缀只剩「无法创建目标文件：」（75 字，放得下），
   `EFBIG` 才说「文件超过分区单文件上限（FAT32 是 4GB），请换成 NTFS/exFAT」。
 - **摘要值不再上屏**（对齐 §3.4 的 v1.34 口径）：`:1131` 的分段校验失败原来把
   期望/实际的 SHA1 前缀打进错误文案，现在文案只说「云端校验值不符（偏移 X）」，
-  `want=/got=` 进 `Log.d`。
+  `want=/got=` 进 `Log.d`。v1.38 同一口径又收了**容器头十六进制**（`:1189` 的
+  `1A45DFA3` 挪进 `Log.w`）与**设置页三处值回显**：保存成功的 toast 从「设备序列号已设为
+  `<值>`」改成「设备序列号已保存」；校验失败的 toast 原来写「要 12 位十六进制，例如
+  `<真值>`」—— 那个"示例"就是当前授权 sn，属于值上屏，改成「要 12 位十六进制，即 WiFi MAC
+  地址去掉分隔符」；本机直通弹窗去掉「设备指纹：<值>」那一行（`ptDeviceKey()` 仍用于
+  记忆失效判断，只是不上屏）。
+  两处**保留**：设置页顶部那行 `设备序列号: <值>`（配置项，不回显没法核对有没有输错），
+  以及编辑弹窗里预填的输入框内容。全项目现在只剩 `AimeiCdn.DEFAULT_SN` 这个常量本身带值。
 
-已知残留：`java.net.SocketException: ` 这类 JDK 异常类名前缀、以及
-`数据流意外中断 on com.android.okhttp.address@1a2b3c` 的 ` on <对象>` 尾巴，
-是句子内部的固定结构，`SYS_PHRASE` 只换得了前半句。
+**还剩什么**：`SYS_PHRASE`/`SYS_ERRNO` 没覆盖到的英文句子**原样返回**，这是故意的 ——
+宁可留英文也别瞎猜成别的错。真机撞到新句式就往两张表里加一条，别在调用点各改各的。
 
 ---
 
@@ -430,6 +504,73 @@ java.lang.OutOfMemoryError: Failed to allocate a 24000012 byte allocation
 要再快只剩两个办法，都属于**数据侧决策**，没定：①生成库时把 ~350 px 缩略图烘进
 assets（APK 体积会明显涨）；②真找到又小又快的同形状缩略图域名再换 URL。
 
+### 5.4 分集归组：一部剧一张卡 + 详情页横向分集（v1.38）
+
+**动机**：纪录片在库里本来就是「一集一条记录、一集一张海报」，`七个世界，一个星球`
+七集就是七张卡、标题各带「第1季第N集」。改成**一部剧一张卡，分集在详情页里挑**。
+数据侧的四个派生列见 §2.2，这里是从上到下的三层。
+
+**① 查询层 `MovieStore.queryPageGrouped()`（`MovieStore.java:506`）** —— 三步，无逐行子查询：
+
+| 步 | SQL 骨架 | 实测 |
+|---|---|---|
+| 1 总数 | `COUNT(*) FROM (SELECT 1 FROM v_movie_app WHERE … GROUP BY series_key)` | 0.9~3.0 ms |
+| 2 本页是哪些剧 | `SELECT series_key … GROUP BY series_key ORDER BY <groupOrderBy> LIMIT ? OFFSET ?` | 同页一并 |
+| 3 候选行 | `… WHERE … AND series_key IN (40 个) ORDER BY series_key, season_no, episode_no` | 1.4 ms |
+
+组内**第一行即代表卡**，所以海报天然跟着「最小集号」那集走；排序键
+`groupOrderBy()` 用 `MAX(pin_top) / MAX(release_date) / MAX(year) / MAX(src_tid)`
+取组内最优 —— 单片组里只有一行，结果与归组前的平铺排序**逐位一致**。
+第 3 步回来后取 `seriesCounts()`（全库 `GROUP BY` 一次并缓存）补角标
+「共 N 集」，用的是**全量集数**，不受当前筛选影响。
+为什么不写成 `(SELECT … LIMIT 1)` 的相关子查询：拖进了视图里那三个 `pan_link`
+子查询，一页 40 卡实测 **531 ms**；换成上面的两步是 1.4~4 ms（平铺对照 1.1 ms）。
+
+**② 栏目层**：`CAT_FIDS` 只剩 `{112}` 一栏「4K电影」，fid=37 通过
+`MERGE_INTO = {112 → [112,37]}` 被 `fidWhere()` 展开成 `fid IN (112,37)` 混进「全部」。
+子标签**必须显式加**（`SUB_TAB_FIDS` / `SUB_TAB_NAMES`，`MovieStore.java:336`）：
+实测合并后「纪录」在题材频次里只排第 13，而 `filtersFor()` 的自动规则只取前 10，
+靠自动生成出来的永远是空标签。它的 key 是 `@fid=37` 前缀，`category()` 认这个前缀
+就按 `fid=?` 精确收窄，而不是 `genres LIKE` —— 后者会把 112 栏里 20 部标了「纪录」的
+**单片**也拉进来，那就不是原来那一栏的内容了。
+
+**③ 界面层**：
+
+- 海报卡：`readSeries()`（`MovieStore.java:816`）把剧级卡的 `name` 换成**剧名**，
+  所以墙上和详情页标题都不会再出现「七个世界，一个星球 第1季第1集」；
+  「共 7 集」拼在 `remarks` 尾巴上，也就是海报内底部那条角标（`2019 · 54分钟 · 共 7 集`），
+  而**不是**片名那一行 —— 片名要拿去当下载目录名，绝不能带「共 N 集」。
+- 详情页 `DetailActivity`：`hashMode` 且剧名非空 → `isSeries`，异步查
+  `MovieStore.seriesEpisodes(tid)` 摆一排**横向小海报**（`item_episode.xml`，
+  样式与首页海报墙一致，宽度定死 96dp 因为 `PosterView` 按宽算 2:3）。
+  小海报下面写「第N集」（跨季才带季号），右上角一个「⬇ 全下 N 集」。
+  区块下面两行说明（`DetailActivity.java:459`）：**共 N 集，合计约 X GB** / 点海报只下一集、
+  全下排全部 / 都存进目录「剧名」，文件名 = 各集标题。第三行原来写作
+  「都落在同一个目录「…」里，文件名用各集自己的完整标题。」—— 12sp 下要吃两行，砍成现在这句。
+- **入队回执只留三行**（`DetailActivity.java:1028`）：`✔ 已加入下载队列 N 集，共 X GB` +
+  落盘路径 + （空间不足时）一行 ⚠。原来这里还逐集列出文件名，7 集在 13sp 下占半屏，
+  清单改成进 `Log.d("SupeMov", "已入队 N 个任务 → <path> · 各集名…")`（`:1017`）。
+- **剩余空间只提示、不拦截**（`DetailActivity.java:1016` 的 `d.getUsableSpace()`）：
+  合计超过目标分区剩余时在回执里加「⚠ 目标分区只剩 X，不够这次的 Y，可能中途写不下」。
+  为什么不拦：五部剧一次全下是 76.5~162.8 GB，外接盘常常是插着当唯一存储，
+  拦下来用户就没法「先下几集算几集」；真写爆了会撞 `ENOSPC`，§3.6 的卡口给中文且断点能续。
+- 下载：**每集一条任务，`hash` / `tid` / `name` 各用自己的**，落盘目录共用剧名那一层。
+  最终文件名来自 `Dl.name`（`DlEngine` 整理文件那步），整部剧都填剧名的话第 2~N 集会
+  撞车、被 `FilmNaming.unique()` 改名成「剧名 (2).mkv」，下完分不出哪集是哪集。
+  目录选择是弹窗回调，所以「这次要给哪几集入队」先存 `hashQueue` 字段再回调取用。
+- 剧级页把「操作」那一整行（含「⬇ 下载」）隐藏：单集下载与全下都在分集区，
+  再留一个「下载」只会让人以为两个按钮是两回事。
+
+**实测（`db_version=2026092602`）**：4K电影「全部」1495 张卡 = 1490 部单片 + 5 部剧
+（归组前是 1519 张）；「纪录片」子标签 5 张卡，角标分别 共7/共5/共7/共4/共6 集，
+代表卡都是各剧的第1季第1集；合计大小 七个世界 162.8 GB、蓝色星球2 143.0 GB、
+地球脉动2 98.2 GB、王朝 87.0 GB、大太平洋 76.5 GB。
+
+**降级口径**（都是「装错版本也别白屏」）：`seriesReady()` 探到视图有 `series_key`
+才走归组路径，老库自动回到平铺「一集一张卡」；`schema_version` 保持 **2** 不动，
+所以 v1.37 及更早的包读新库照样正常（只是看不见归组）。反过来，新包遇到任何一集
+取不到 40 位指纹时整体退回单片形态，不摆一排点了没反应的海报。
+
 ---
 
 ## 6. 机型识别与后处理：做下一个版本只改这里
@@ -497,11 +638,21 @@ assets（APK 体积会明显涨）；②真找到又小又快的同形状缩略�
 - [ ] **海报首屏还是慢**：§5.2 的降采样 + 双层缓存只解决了内存和重复下载，
       单张 2~4 MB 的原始 payload 没动。真正的解法在 §5.3 末尾那两个选项里，
       需要定：烘图进 assets（APK 变大）还是换 URL。
-- [ ] **hash 片没有剧集清单**：`v_episode` 为 0 行，详情页「库内已收录 N 个视频文件」
-      那段不会出现。若未来一部片对应多个 hash（多集/CD2），要在 `movie` 之外加一张
-      hash 清单表，并让 `runHashTask` 支持一条任务多文件 —— 现在是一对一。
+- [x] ~~**hash 片没有剧集清单**~~（v1.38 半解决）：`v_episode` 仍是 0 行，详情页
+      「库内已收录 N 个视频文件」那段不会出现 —— 多集纪录片改走**每集一条 movie 记录 +
+      四个派生列归组**（§2.2、§5.4），一条任务仍是一个 hash 一个文件，没有引入
+      「一条任务多文件」。若将来一部片要下多个 hash 但**不想**在库里占多条，
+      才需要另加一张 hash 清单表并让 `runHashTask` 支持多文件。
 - [ ] **设置里的 `distributor` 没有 UI**：只有 `Settings.setCdnDistributor()`，
       切换厂商风味（`yszn/yunmao/emei/mymeihome/v2share`）目前得改代码。
+- [ ] **分集区只覆盖 hash 片源**：`isSeries` 的判据是 `hashMode && 剧名非空`（§5.4）。
+      网盘片源那种「一个分享里多集」还是走老的多选文件对话框，两条路没合流。
+      蓝本变体若要同样的「一部剧一张卡」，得先决定分集信息从 `v_episode` 还是 movie 行来。
+- [x] ~~**全下没有本地剩余空间预检**~~（v1.38 已加，**只提示不拦截**）：入队后按
+      `d.getUsableSpace()` 与本次合计比较，不足时在回执里加一行 ⚠（`DetailActivity.java:1016`，
+      见 §5.4）。仍然不做硬拦截，也不做「按剩余空间自动挑几集」—— 写爆会撞 `ENOSPC`，
+      §3.6 的卡口给中文且断点能续。注意只检了**一次**：七集连下到一半把盘填满时，
+      提示不会滚动更新，靠的还是写盘时报错。
 - [ ] **暂停后保留 `<hash>.dlpart` 与预分配大小**：40 GB 的片暂停着也占满空间，
       是否要在暂停时 `setLength(已下)` 收缩，等有真机反馈再定。
 - [ ] `AM` 专用数据库清单 `db/SuperMOV-am.json` **尚未上线**：现在点

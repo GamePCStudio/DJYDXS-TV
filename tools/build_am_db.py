@@ -54,7 +54,10 @@ DEFAULT_OUT = ASSETS / "SuperMOV.db"
 
 # 2026092502：按云端真实容器二次过滤，剔掉 43 条 .ic2（库里 file_name_ext 全写 mkv，不可信）
 # 2026092601：重跑上游映射（ew3.db 旧快照 → 新快照），1066 → 1519 部，2022+ 从 0 涨到 358
-DB_VERSION = 2026092601
+# 2026092602：加分集归组四列（series_key/series_name/season_no/episode_no），行数不变 1519
+DB_VERSION = 2026092602
+# 保持 2 不动：加列是纯增量的，旧 App 的 SELECT 是显式列名、多出来的列它不读。
+# 抬这里等于逼所有已装 App 报「请升级应用」（MovieDb.isSchemaReadable），没必要。
 SCHEMA_VERSION = 2
 
 # 版块：hash 片库只有 4K 电影与 4K 纪录片两类，与 MovieStore.CAT_FIDS 一一对应
@@ -70,6 +73,85 @@ PAN_TID_BASE = 1000000
 
 # 技术标记（进 classification）与题材标记（进 genres，供分类栏下方的过滤器用）
 TECH_TAGS = {"4K", "HDR", "SDR", "全景声", "杜比", "DTS", "IMAX", "3D", "杜比视界"}
+
+# ----------------------------------------------------------------------
+# 分集归组
+# ----------------------------------------------------------------------
+
+# 分集标题的唯一句式：「七个世界，一个星球 第1季第7集」。
+# 不用豆瓣 id 当分组键：实测 fid=112 电影栏 1490 行里有 288 组、579 行共用同一个豆瓣 id
+# （同一片子在论坛被发过两次），拿它归组会让电影栏 1490 张卡悄悄缩成 1199 张。
+EP_TITLE = re.compile(r"^(?P<series>.+?)\s*第(?P<season>\d+)季第(?P<episode>\d+)集\s*$")
+
+SERIES_COLS = (("series_key", "TEXT"), ("series_name", "TEXT"),
+               ("season_no", "INTEGER"), ("episode_no", "INTEGER"))
+
+
+def add_series_schema(dst):
+    """给 movie 补分集四列。幂等 —— 和 hash 列一样按 PRAGMA 探测后再 ALTER。"""
+    cols = {r[1] for r in dst.execute("PRAGMA table_info(movie)")}
+    for name, typ in SERIES_COLS:
+        if name not in cols:
+            dst.execute("ALTER TABLE movie ADD COLUMN %s %s" % (name, typ))
+
+
+def fill_series(dst):
+    """按标题算归组键。**每一行都有 series_key**：分集行 = 剧名#季，单片行 = 自己的 uid。
+
+    这样上层只有一条 ``GROUP BY series_key`` 的代码路径，不用为「这部电影不是剧」开分支；
+    单片自成一组，归组后的行为与平铺完全一致。
+    """
+    upd = []
+    for mid, name, uid in dst.execute(
+            "SELECT id, COALESCE(NULLIF(title_cn, ''), title), uid FROM movie"):
+        m = EP_TITLE.match(((name or "")).strip())
+        if m:
+            series = m.group("series").strip()
+            upd.append(("s:%s#S%s" % (series, m.group("season")), series,
+                        int(m.group("season")), int(m.group("episode")), mid))
+        else:
+            upd.append((uid, None, None, None, mid))
+    dst.executemany(
+        "UPDATE movie SET series_key=?, series_name=?, season_no=?, episode_no=? WHERE id=?",
+        upd)
+    # 列表页两步取数：先 GROUP BY series_key 选出本页是哪些剧，再按 series_key IN (…) 捞候选行。
+    # 集号要参与组内排序，所以它进索引；顺序与「代表卡取最小集号那行」的读法一致。
+    dst.execute("CREATE INDEX IF NOT EXISTS ix_movie_series "
+                "ON movie(series_key, season_no, episode_no, src_tid)")
+    dst.commit()
+    eps = dst.execute("SELECT count(*) FROM movie WHERE series_name IS NOT NULL").fetchone()[0]
+    grp = dst.execute("SELECT count(DISTINCT series_key) FROM movie "
+                      "WHERE series_name IS NOT NULL").fetchone()[0]
+    print("分集归组：%d 行命中「第N季第M集」，合成 %d 部剧；其余为单片（自成一组）" % (eps, grp))
+
+
+def upgrade_only(path):
+    """只给已经出库的库补分集列 + 重写视图，不碰上游数据源。
+
+    全量重跑要再吃一遍 tmdbam.db / ew3.db / cdn_census.db —— 那几个是活库，会被原地改写，
+    为了加四个派生列去冒「影片数变了」的风险不值得。加列是纯增量的，走这条路结果可复现。
+    """
+    dst = sqlite3.connect(str(path))
+    before = dst.execute("SELECT count(*) FROM movie").fetchone()[0]
+    add_series_schema(dst)
+    fill_series(dst)
+    dst.executescript("DROP VIEW IF EXISTS v_movie_app;")
+    dst.executescript(V_MOVIE_APP)
+    after = dst.execute("SELECT count(*) FROM movie").fetchone()[0]
+    if before != after:
+        raise SystemExit("行数变了 %d -> %d，升级不该动数据" % (before, after))
+    dst.execute("DELETE FROM meta WHERE key='db_version'")
+    dst.execute("INSERT INTO meta(key,value) VALUES('db_version',?)", [str(DB_VERSION)])
+    dst.commit()
+    build_id = dst.execute("SELECT value FROM meta WHERE key='db_build_id'").fetchone()[0]
+    dst.execute("VACUUM")
+    dst.close()
+    path.with_suffix(".version").write_text(
+        "db_version=%d\nschema_version=%d\ndb_build_id=%s\n" % (DB_VERSION, SCHEMA_VERSION, build_id),
+        encoding="utf-8")
+    print("已升级 %s -> db_version=%d（schema_version 保持 %d：加列是纯增量的，旧 App 照读）"
+          % (path, DB_VERSION, SCHEMA_VERSION))
+
 
 
 def rows(db, sql, args=()):
@@ -130,6 +212,12 @@ SELECT
     m.updated_at                                   AS updated_at,
     COALESCE(m.pin_top, 0)                         AS pin_top,
     COALESCE(m.hash, '')                           AS hash,
+    -- 分集归组。COALESCE 到 uid 是「忘了跑 fill_series」时的降级：
+    -- 每行自成一组，App 的 GROUP BY series_key 退化成一比一，界面回到平铺而不是出错。
+    COALESCE(m.series_key, m.uid)                  AS series_key,
+    m.series_name                                  AS series_name,
+    COALESCE(m.season_no, 0)                       AS season_no,
+    COALESCE(m.episode_no, 0)                      AS episode_no,
     CASE WHEN COALESCE(m.hash,'') != '' THEN 'hash' ELSE 'baidu' END AS source_type,
     (SELECT l.id       FROM pan_link l WHERE l.movie_id = m.id AND l.status = 'ok'
       ORDER BY l.video_count DESC LIMIT 1)         AS pan_link_id,
@@ -315,6 +403,7 @@ def build(out_path, template, dry, with_pan=False):
     cols = {r[1] for r in dst.execute("PRAGMA table_info(movie)")}
     if "hash" not in cols:
         dst.execute("ALTER TABLE movie ADD COLUMN hash TEXT")
+    add_series_schema(dst)
     dst.executescript(V_MOVIE_APP)
     dst.executescript(V_EPISODE)
 
@@ -445,6 +534,9 @@ def build(out_path, template, dry, with_pan=False):
                "WHERE release_date>='2026-01-01' ORDER BY release_date DESC LIMIT 1")
     probe(dst, "SELECT count(*) FROM v_movie_app WHERE source_type='baidu' "
                "AND coalesce(pan_url,'')=''")
+    fill_series(dst)
+    probe(dst, "SELECT series_name, count(*), min(episode_no), max(episode_no) FROM v_movie_app "
+               "WHERE series_name IS NOT NULL GROUP BY series_key")
     build_id = dst.execute("SELECT value FROM meta WHERE key='db_build_id'").fetchone()[0]
     dst.execute("VACUUM")
     dst.close()
@@ -478,7 +570,14 @@ if __name__ == "__main__":
     ap.add_argument("--dry", action="store_true")
     ap.add_argument("--with-pan", action="store_true",
                     help="另并 SuperMOV.db 的网盘 4K（默认只出 hash 片源）")
+    ap.add_argument("--upgrade", type=Path, metavar="DB",
+                    help="只对已存在的库补分集列 + 重写视图，不读上游数据源")
     a = ap.parse_args()
+    if a.upgrade:
+        if not a.upgrade.exists():
+            sys.exit("找不到库：%s" % a.upgrade)
+        upgrade_only(a.upgrade)
+        sys.exit(0)
     need = [SRC_LIB, SRC_EW3, a.template] + ([SRC_PAN] if a.with_pan else [])
     for p in need:
         if not p.exists():

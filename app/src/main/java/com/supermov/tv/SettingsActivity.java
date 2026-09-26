@@ -333,12 +333,12 @@ public class SettingsActivity extends Activity {
                 .setPositiveButton("保存", (d, w) -> {
                     String v = input.getText().toString().trim().toUpperCase(java.util.Locale.ROOT);
                     if (!v.matches("[0-9A-F]{12}")) {
-                        Toast.makeText(this, "要 12 位十六进制，例如 9CF8DB078B44",
+                        Toast.makeText(this, "要 12 位十六进制，即 WiFi MAC 地址去掉分隔符",
                                 Toast.LENGTH_LONG).show();
                         return;
                     }
                     Settings.setCdnSn(v);
-                    Toast.makeText(this, "设备序列号已设为 " + v, Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, "设备序列号已保存", Toast.LENGTH_SHORT).show();
                     rebuild();
                 })
                 .setNegativeButton("取消", null)
@@ -766,8 +766,7 @@ public class SettingsActivity extends Activity {
     }
 
     private void showPtResetDialog() {
-        final String body = "本机记录：" + ptOkText() + "\n"
-                + "设备指纹：\n" + Settings.ptDeviceKey() + "\n\n"
+        final String body = "本机记录：" + ptOkText() + "\n\n"
                 + "清除后下次播放会重新逐级试 8 → 6 → 2 声道。\n"
                 + "换功放、换 HDMI 线、刷固件之后建议清一次。";
         new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)

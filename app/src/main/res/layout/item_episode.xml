@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 详情页「分集」区的横向小海报：样式与首页海报墙的 item_movie 一致，只是定宽更小。
+     宽度写死而不是 wrap_content：PosterView 按宽度算 2:3 高度，横向容器里给不出百分比宽度。 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="96dp"
+    android:layout_height="wrap_content"
+    android:layout_marginEnd="6dp"
+    android:clickable="true"
+    android:descendantFocusability="blocksDescendants"
+    android:focusable="true"
+    android:orientation="vertical"
+    android:padding="6dp">
+
+    <com.supermov.tv.PosterView
+        android:id="@+id/ivEpisodePic"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_movie_normal"
+        android:contentDescription="分集海报"
+        android:scaleType="centerCrop" />
+
+    <TextView
+        android:id="@+id/tvEpisodeLabel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:ellipsize="end"
+        android:gravity="center_horizontal"
+        android:maxLines="1"
+        android:textColor="#FFFFFFFF"
+        android:textSize="10sp" />
+</LinearLayout>

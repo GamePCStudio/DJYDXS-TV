@@ -1186,7 +1186,9 @@ public final class DlEngine {
                 }
                 if (off < 4 || head[0] != EBML_MAGIC[0] || head[1] != EBML_MAGIC[1]
                         || head[2] != EBML_MAGIC[2] || head[3] != EBML_MAGIC[3]) {
-                    throw new IOException("文件头不是预期的影片封装格式（读到 " + hex(head, off) + "），拼接结果不可播");
+                    // 头四字的十六进制只进日志：它是容器签名不是影片指纹，但电视上这串就是噪声
+                    Log.w(TAG, "dl bad container head: " + hex(head, off));
+                    throw new IOException("文件头不是预期的影片封装格式，拼接结果不可播");
                 }
             } finally {
                 closeQuietly(in);
@@ -1651,7 +1653,9 @@ public final class DlEngine {
         String m = e.getMessage();
         if (m == null || m.isEmpty()) return zhClassName(e.getClass().getName());
         m = zhSystemMsg(m);
-        if (m.length() > 90) m = m.substring(0, 90);
+        // 整句被剥空了（消息只剩类名前缀）就退回按异常类型给中文
+        if (m.isEmpty()) m = zhClassName(e.getClass().getName());
+        if (m.length() > 120) m = m.substring(0, 119) + "…";
         return m;
     }
 
@@ -1660,12 +1664,15 @@ public final class DlEngine {
      *
      * <p>这里是<b>唯一卡口</b>：{@code :776/:933} 建文件、{@code :995} hash 分片线程、
      * {@code :1356} 通用分片线程，最后都要过 {@link #shortMsg(Throwable)}，所以加一处
-     * 全条链路生效。替换发生在<b>截断之前</b> —— 90 字符是按字符数硬砍，先换成中文才
-     * 不会把中文尾巴砍成半截。</p>
+     * 全条链路生效。替换发生在<b>截断之前</b> —— 截断是按字符数硬砍，先换成中文才不会
+     * 把中文尾巴砍成半截。上限 120：最长的一句中文（EFBIG 那句 51 字）本身不会撞线，
+     * 撞线的是<b>带落盘路径</b>的消息（典型路径 55 字 + 51 字），90 会把「请换成 NTFS/…」
+     * 砍成半截，所以留到 120 并在断处补省略号。</p>
      *
-     * <p>两条规则：① libcore 的统一句式 {@code <动词> failed: <ERRNO> (<英文说明>)}
+     * <p>三条规则：① libcore 的统一句式 {@code <动词> failed: <ERRNO> (<英文说明>)}
      * 拆成「动作 + 原因」两张表来翻，这样 {@code open}/{@code write}/{@code ftruncate}
-     * 这些不同动作配同一个 ENOSPC 不用各写一条；② JDK/OkHttp 那几句固定话术直接整句换。
+     * 这些不同动作配同一个 ENOSPC 不用各写一条；② JDK/OkHttp 那几句固定话术直接整句换；
+     * ③ 换完再剥掉英文骨架（句首类名前缀、句尾连接对象身份）。
      * <b>没命中原样返回</b> —— 宁可留英文也别把别的错说成"硬盘满了"。</p>
      */
     private static String zhSystemMsg(String m) {
@@ -1678,7 +1685,7 @@ public final class DlEngine {
             String errno = mt.group(2);
             String why = SYS_ERRNO.get(errno);
             // 动词不认识用"操作"；errno 不认识就把名字留在括号里（只丢英文句子，不瞎猜原因）
-            String txt = (verb == null ? "操作" : verb) + "失败: 错误代码（"
+            String txt = (verb == null ? "操作" : verb) + "失败：错误代码（"
                     + (why == null ? errno : why) + "）";
             mt.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(txt));
         }
@@ -1690,8 +1697,21 @@ public final class DlEngine {
         for (String[] kv : SYS_PHRASE) {
             if (m.contains(kv[0])) m = m.replace(kv[0], kv[1]);
         }
-        return m;
+        // ③ 剥英文骨架：句首的 `java.net.SocketException: ` 类名前缀，和 okhttp 句尾的
+        //    ` on com.android.okhttp.Address@2f3a1b4c` —— 后者是连接对象身份，在电视上
+        //    只是噪声（而且属于技术标识，不该上屏）。剥完整句空了就保留原样，别显示空行。
+        String sk = ENG_CONN_TAIL.matcher(ENG_CLS_PREFIX.matcher(m).replaceFirst("")).replaceAll("");
+        return sk.trim();
     }
+
+    /** 句首的完整异常类名前缀，如 {@code java.net.SocketException: }；允许嵌套包了好几层。 */
+    private static final java.util.regex.Pattern ENG_CLS_PREFIX = java.util.regex.Pattern.compile(
+            "^(?:(?:[a-z][\\w$]*\\.)+[A-Z]\\w*Exception:\\s*)+");
+
+    /** okhttp 尾巴的连接对象身份：{@code  on com.android.okhttp.Address@2f3a1b4c} 或
+     *  {@code  on Connection{api.x.com:443, proxy=DIRECT …}}（OkHttp 两种句式都会出现）。 */
+    private static final java.util.regex.Pattern ENG_CONN_TAIL = java.util.regex.Pattern.compile(
+            "\\s+on\\s+(?:[\\w$.]+@[0-9A-Fa-f]{4,}|[A-Za-z][\\w$.]*\\{[^}]*\\})");
 
     /** 异常本身没有 message 时的兜底：屏上只显示中文，类名进日志。 */
     private static String zhClassName(String cls) {
@@ -1700,7 +1720,7 @@ public final class DlEngine {
         if (cls.endsWith("SocketTimeoutException")) return "网络超时（对端没有响应）";
         if (cls.endsWith("SSLException") || cls.endsWith("SSLHandshakeException")
                 || cls.endsWith("CertificateException")) return "加密连接建立失败";
-        if (cls.endsWith("ErrnoException")) return "系统读写失败: 错误代码（未知）";
+        if (cls.endsWith("ErrnoException")) return "系统读写失败：错误代码（未知）";
         if (cls.endsWith("ProtocolException")) return "接口响应格式不对";
         if (cls.endsWith("IOException")) return "读写失败";
         Log.d(TAG, "dl unmapped exception " + cls);

@@ -9,12 +9,14 @@ import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -44,6 +46,12 @@ import java.util.concurrent.Executors;
  * 而是把该片名下的**全部**视频递归枚举出来让用户挑：播放走单选，下载走多选（默认全选）。
  * 下载时**按网盘里的目录结构原样落盘**（{@code 目标目录/片名文件夹/第二季/03.mkv}）——
  * 网盘里是什么层级，本地就是什么层级，不同文件夹里的同名集也不会互相覆盖。</p>
+ *
+ * <p><b>分集剧（hash 片源）</b>：纪录片这类「一集一条记录」的影片，海报墙上一部剧只出一张卡
+ * （集号最小那张的海报，角标写「共 N 集」），进详情页则在片名下面摆一排<b>横向小海报</b>
+ * —— 点某一集的海报只下这一集，右上角的「⬇ 全下 N 集」一次排入全部。这一排海报完全来自
+ * 本地库（{@link MovieStore#seriesEpisodes(String)}），不联网；每集用自己的影片指纹取址，
+ * 但都落在同一个「剧名」目录里，文件名用各集自己的完整标题。</p>
  */
 public class DetailActivity extends Activity {
 
@@ -59,6 +67,12 @@ public class DetailActivity extends Activity {
     private TextView btnTransfer;
     private TextView tvTransferDir;
     private TextView tvTransferResult;
+    private View seriesBlock;
+    private LinearLayout llEpisodes;
+    private TextView tvSeriesTip;
+    private TextView btnDownloadAll;
+    private View tvActionsLabel;
+    private View llActions;
 
     private MovieStore.Detail detail;
     private String movieName = "";
@@ -76,6 +90,23 @@ public class DetailActivity extends Activity {
     private boolean locating = false;
     /** 命中项的文件夹名：列表里只显示它**里面**的相对路径，避免每行都重复一遍片名 */
     private String anchorFolder = "";
+
+    /**
+     * 这部剧的分集清单（含当前这一集）；单片为空。
+     *
+     * <p>由 {@link MovieStore#seriesEpisodes(String)} 异步查出来。库里每集是独立一条记录、
+     * 各有各的 hash 与海报，所以「选集」不需要碰网盘，纯本地就能列出来。</p>
+     */
+    private final List<MovieStore.Movie> episodes = new ArrayList<>();
+    /** 是不是「一部剧 + 多集」：真则下载入口整体交给分集区（单集 + 全下）。 */
+    private boolean isSeries = false;
+    /**
+     * 下一次入队要写的目标集。
+     *
+     * <p>选目录是弹窗回调，回到这里时早换了一轮事件循环，只能把「要给哪几集入队」存在字段上，
+     * 让 {@link #enqueueHash(String)} 去取。单集下载放一条，全下放全部。</p>
+     */
+    private final List<MovieStore.Movie> hashQueue = new ArrayList<>();
 
     /** 拿到「该片名下全部视频文件」后的回调；files 为空时 err 给出原因。 */
     private interface FilesCb {
@@ -102,6 +133,12 @@ public class DetailActivity extends Activity {
         btnTransfer = findViewById(R.id.btnTransfer);
         tvTransferDir = findViewById(R.id.tvTransferDir);
         tvTransferResult = findViewById(R.id.tvTransferResult);
+        seriesBlock = findViewById(R.id.llSeriesBlock);
+        llEpisodes = findViewById(R.id.llEpisodes);
+        tvSeriesTip = findViewById(R.id.tvSeriesTip);
+        btnDownloadAll = findViewById(R.id.btnDownloadAll);
+        tvActionsLabel = findViewById(R.id.tvActionsLabel);
+        llActions = findViewById(R.id.llActions);
 
         fid = getIntent().getIntExtra("fid", 0);
         tid = nz(getIntent().getStringExtra("tid"));
@@ -118,6 +155,7 @@ public class DetailActivity extends Activity {
         btnPlay.setOnClickListener(v -> doPlay());
         btnDownload.setOnClickListener(v -> doDownload());
         btnTransfer.setOnClickListener(v -> doTransfer());
+        btnDownloadAll.setOnClickListener(v -> downloadAllEpisodes());
     }
 
     /** 海报：列表页已经带了 pic 就直接用；没有就等详情解析出来再补。 */
@@ -172,9 +210,18 @@ public class DetailActivity extends Activity {
             sharePwd = first.pwd;
         }
 
+        // 「一部剧 → 下面列分集」：库里每个分集本来是一条独立记录（自己的海报、
+        // 自己的影片指纹），只是标题都带「第N季第M集」。是不是剧，看这条记录的剧名
+        // （单片为空）就够了，不用等异步查询回来再决定 —— 否则操作区会闪一下。
+        isSeries = hashMode && !d.movie.seriesName.isEmpty();
+        if (isSeries) loadEpisodes();
+
         setActionsVisible(true);
         // 电视遥控器：进页面就把焦点放到主操作上，否则满屏静态文字看不出能按哪儿
-        btnDownload.post(() -> btnDownload.requestFocus());
+        // （剧级页没有「下载」按钮，焦点由 bindEpisodes() 交给第一集的海报）
+        btnDownload.post(() -> {
+            if (!isSeries) btnDownload.requestFocus();
+        });
         if (hashMode) {
             tvTransferDir.setText("机型：" + DeviceProfile.get().raw()
                     + "\n下载落盘目录：" + Settings.downloadDir()
@@ -189,7 +236,7 @@ public class DetailActivity extends Activity {
         // 全部来自本地数据库，不需要任何网络请求。原来这个信息要等“定位网盘文件”
         // 跑完才拿得到，且会被 MAX_FILES 上限截断（《海贼王》1175 集只能看到 300）。
         StringBuilder tip = new StringBuilder();
-        if (!d.episodes.isEmpty()) {
+        if (!d.episodes.isEmpty() && !isSeries) {
             long total = 0;
             for (MovieStore.Episode e : d.episodes) total += e.size;
             tip.append("库内已收录 ").append(d.episodes.size()).append(" 个视频文件");
@@ -203,10 +250,13 @@ public class DetailActivity extends Activity {
         if (hashMode) {
             if (tip.length() > 0) tip.append('\n');
             tip.append("影片名称：").append(movieName);
-            long size = d.movie.totalSize;
-            if (size > 0) {
-                tip.append("\n影片大小：")
-                        .append(String.format(java.util.Locale.ROOT, "%.1f GB", size / 1073741824.0));
+            // 剧级页的「多大、几集」由分集区汇总（bindEpisodes），这里只报代表集没意义
+            if (!isSeries) {
+                long size = d.movie.totalSize;
+                if (size > 0) {
+                    tip.append("\n影片大小：")
+                            .append(String.format(java.util.Locale.ROOT, "%.1f GB", size / 1073741824.0));
+                }
             }
             tip.append("\n下载时按云端分段清单逐段校验 SHA1，全部通过才改名为片名");
         }
@@ -219,8 +269,14 @@ public class DetailActivity extends Activity {
         int pan = visible && !hashMode ? v : View.GONE;
         btnPlay.setVisibility(pan);
         btnTransfer.setVisibility(pan);
-        btnDownload.setVisibility(v);
+        // 剧级页不下「整部一个文件」这种单集下载：入口全在分集区（点海报下这一集 + 全下），
+        // 这里再留一个「下载」只会让人以为两个按钮是两回事。
+        int row = visible && !isSeries ? v : View.GONE;
+        btnDownload.setVisibility(row);
+        tvActionsLabel.setVisibility(row);
+        llActions.setVisibility(row);
         tvTransferDir.setVisibility(v);
+        // 分集区自己管显隐：海报要等异步查询回来才摆得上，提前露出来会是一段空标题
     }
 
     private String humanLast(String json) {
@@ -339,6 +395,110 @@ public class DetailActivity extends Activity {
         } catch (Throwable e) {
             return "";
         }
+    }
+
+    // ==================== ⓪ 分集：一部剧 → 横向小海报列表 ====================
+
+    /** 查这部剧的分集清单：纯本地库查询，不碰网络。 */
+    private void loadEpisodes() {
+        pool.execute(() -> {
+            final List<MovieStore.Movie> eps = MovieStore.seriesEpisodes(tid);
+            main.post(() -> bindEpisodes(eps));
+        });
+    }
+
+    /**
+     * 摆出分集海报。
+     *
+     * <p>只要有任何一集取不到可单独下载的影片指纹，就整体退回单片形态（隐藏分集区、
+     * 把「下载」按钮放回来）—— 摆一排点了没反应的海报比少一排海报糟得多。</p>
+     */
+    private void bindEpisodes(List<MovieStore.Movie> eps) {
+        boolean usable = eps.size() > 1;
+        for (MovieStore.Movie m : eps) {
+            if (m.hash == null || m.hash.length() != 40) usable = false;
+        }
+        if (!usable) {
+            isSeries = false;
+            episodes.clear();
+            setActionsVisible(detail != null);
+            return;
+        }
+        episodes.clear();
+        episodes.addAll(eps);
+
+        long total = 0;
+        for (MovieStore.Movie m : eps) total += m.totalSize;
+        LayoutInflater li = LayoutInflater.from(this);
+        // 解码目标宽度按小海报的实际宽度给，别按首页那种大格子解码
+        int cellPx = (int) (getResources().getDisplayMetrics().density * 84);
+        llEpisodes.removeAllViews();
+        for (MovieStore.Movie m : eps) {
+            View item = li.inflate(R.layout.item_episode, llEpisodes, false);
+            final ImageView iv = item.findViewById(R.id.ivEpisodePic);
+            final TextView label = item.findViewById(R.id.tvEpisodeLabel);
+            label.setText(episodeLabel(m));
+            iv.setImageDrawable(null);
+            if (m.pic != null && !m.pic.isEmpty()) {
+                iv.setTag(m.pic);
+                ImageLoader.load(m.pic, iv, cellPx);
+            }
+            item.setOnClickListener(v -> downloadEpisode(m));
+            // 焦点反馈与首页海报墙一致：整卡放大 + 描边 + 标题变亮
+            item.setOnFocusChangeListener((v, has) -> {
+                v.setScaleX(has ? 1.08f : 1f);
+                v.setScaleY(has ? 1.08f : 1f);
+                v.setAlpha(has ? 1f : 0.75f);
+                iv.setBackgroundResource(has ? R.drawable.bg_movie_focus : R.drawable.bg_movie_normal);
+                label.setTextColor(has ? 0xFF42A5F5 : 0xFFFFFFFF);
+            });
+            llEpisodes.addView(item);
+        }
+
+        btnDownloadAll.setText("⬇ 全下 " + eps.size() + " 集");
+        tvSeriesTip.setText("共 " + eps.size() + " 集"
+                + (total > 0 ? "，合计约 " + DlEngine.human(total) : "")
+                + "\n点分集海报 = 只下这一集；「全下」= 一次排入上面全部。"
+                + "\n都存进目录「" + movieName + "」，文件名 = 各集标题。");
+        seriesBlock.setVisibility(View.VISIBLE);
+        if (llEpisodes.getChildCount() > 0) llEpisodes.getChildAt(0).requestFocus();
+    }
+
+    /** 小海报底下的标题：只有集号时是「第3集」，跨季才带上季号；没有集号的退化成整条标题。 */
+    private static String episodeLabel(MovieStore.Movie m) {
+        if (m.episodeNo <= 0) return m.name;
+        return m.seasonNo > 1 ? "第" + m.seasonNo + "季第" + m.episodeNo + "集"
+                : "第" + m.episodeNo + "集";
+    }
+
+    /** 点某一集的海报：只下这一集。 */
+    private void downloadEpisode(final MovieStore.Movie ep) {
+        final String what = "下载「" + episodeLabel(ep) + "」";
+        List<Dl> same = queuedOfTid(ep.tid);
+        if (!same.isEmpty()) {
+            showAlreadyQueued(same, () -> queueHash(ep, what));
+            return;
+        }
+        queueHash(ep, what);
+    }
+
+    /** 「全下」：整部剧一次排进队列，已经在队列里的集自动跳过。 */
+    private void downloadAllEpisodes() {
+        if (episodes.isEmpty()) return;   // 分集清单还没查回来
+        List<MovieStore.Movie> fresh = new ArrayList<>();
+        for (MovieStore.Movie m : episodes) {
+            if (queuedOfTid(m.tid).isEmpty()) fresh.add(m);
+        }
+        int dup = episodes.size() - fresh.size();
+        if (fresh.isEmpty()) {
+            toast("这 " + episodes.size() + " 集都已经在下载队列里了");
+            startActivity(new Intent(this, DownloadActivity.class));
+            return;
+        }
+        if (dup > 0) {
+            tvTransferResult.setText("已有 " + dup + " 集在下载队列中，本次只排剩下的 " + fresh.size() + " 集");
+        }
+        queueHashDownloads(fresh, "全下 " + fresh.size() + " 集");
     }
 
     // ==================== ① 在线播放 ====================
@@ -470,9 +630,19 @@ public class DetailActivity extends Activity {
         // ① 快速判重：这部影片已经在队列里
         List<Dl> same = queuedOfTid(tid);
         if (!same.isEmpty()) {
-            showAlreadyQueued(same);
+            showAlreadyQueued(same, this::recheckPanFiles);
             return;
         }
+        recheckPanFiles();
+    }
+
+    /**
+     * 网盘片源的下载主流程：解析分享 → ② 按 {@code fsId}/网盘路径精确判重
+     * → 单文件直接选目录，多文件先让用户勾。
+     *
+     * <p>「仍要重下」也走这里：已经入队的文件会被跳过，所以重按一次不会真下两份。</p>
+     */
+    private void recheckPanFiles() {
         withFiles((fs, err) -> {
             if (!err.isEmpty()) {
                 tvTransferResult.setText("✘ " + err);
@@ -507,8 +677,13 @@ public class DetailActivity extends Activity {
         return out;
     }
 
-    /** 点下载时发现已在队列：给一条「去下载管理」的路，而不是默默重复入队。 */
-    private void showAlreadyQueued(List<Dl> same) {
+    /**
+     * 点下载时发现已在队列：给一条「去下载管理」的路，而不是默默重复入队。
+     *
+     * <p>「仍要重下」怎么做必须由调用方给：网盘片源的重下要重新解析分享链接，hash 片源
+     * 是直接重新入队，分集剧还得先确定重下哪一集 —— 三条路完全不同，这里不猜。</p>
+     */
+    private void showAlreadyQueued(List<Dl> same, final Runnable retry) {
         StringBuilder sb = new StringBuilder();
         sb.append("《").append(movieName).append("》已经在下载队列里了：\n\n");
         int n = 0;
@@ -527,15 +702,7 @@ public class DetailActivity extends Activity {
                 .setMessage(sb.toString())
                 .setPositiveButton("打开下载管理", (d, w) ->
                         startActivity(new Intent(this, DownloadActivity.class)))
-                .setNeutralButton("仍要重下", (d, w) -> withFiles((fs, err) -> {
-                    if (!err.isEmpty()) {
-                        tvTransferResult.setText("✘ " + err);
-                        toast(err);
-                        return;
-                    }
-                    if (fs.size() == 1) showDirPicker(fs);
-                    else showPickMulti(fs);
-                }))
+                .setNeutralButton("仍要重下", (d, w) -> retry.run())
                 .setNegativeButton("取消", null)
                 .create();
         dlg.show();
@@ -764,17 +931,53 @@ public class DetailActivity extends Activity {
      * <b>中文片名</b>目录，下载完成后把中间文件 {@code <hash>.dlpart} 改成 {@code 片名.mkv}。
      * 片名按目标分区的文件系统规矩当场裁过（见 {@link FilmNaming}），避免出现
      * 「下完 40 GB 才发现目录名建歪」。</p>
+     *
+     * <p>这条是**单片**路径。分集剧不走这里 —— 它的下载入口在分集区
+     * （{@link #downloadEpisode(MovieStore.Movie)} / {@link #downloadAllEpisodes()}）。</p>
      */
     private void downloadHash() {
+        final MovieStore.Movie one = new MovieStore.Movie();
+        one.tid = tid;
+        one.hash = hashSrc;
+        one.name = movieName;
+        one.totalSize = detail == null ? 0 : detail.movie.totalSize;
         List<Dl> same = queuedOfTid(tid);
         if (!same.isEmpty()) {
-            showAlreadyQueued(same);
+            showAlreadyQueued(same, () -> queueHash(one, "下载"));
             return;
         }
-        showDirPicker("下载到", this::startDownloadHash);
+        queueHash(one, "下载");
     }
 
-    private void startDownloadHash(final String root) {
+    /** 单个目标入队；目录弹窗标题沿用原来的「下载到」（单片的标题就是片名，不用另写）。 */
+    private void queueHash(MovieStore.Movie one, String what) {
+        queueHashDownloads(java.util.Collections.singletonList(one), what);
+    }
+
+    /**
+     * 记下「这一次要给哪几集入队」，再去挑落盘根目录。
+     *
+     * <p>为什么要先存字段：选目录是弹窗回调，回来时早换了轮事件循环，参数传不下去。
+     * {@code prefix} 拼成目录弹窗的标题（沿用原有的「下载到 / 下载 N 个文件到」句式）。</p>
+     */
+    private void queueHashDownloads(List<MovieStore.Movie> targets, String prefix) {
+        hashQueue.clear();
+        hashQueue.addAll(targets);
+        showDirPicker(prefix + "到", this::enqueueHash);
+    }
+
+    /**
+     * 按 {@link #hashQueue} 入队。落盘目录共用剧名那一层（通用版策略：根目录下建中文片名目录），
+     * 但**任务的名字 / 影片指纹 / 帖子 tid 按集各一份**。
+     *
+     * <p>名字必须逐集不同：最终文件名是从 {@code Dl.name} 来的（见 DlEngine 整理文件那步），
+     * 整部剧都填剧名的话，第 2~N 集会撞车，被 {@link FilmNaming} 的查重改名成
+     * 「剧名 (2).mkv」，下完根本分不出哪集是哪集。</p>
+     */
+    private void enqueueHash(final String root) {
+        final List<MovieStore.Movie> targets = new ArrayList<>(hashQueue);
+        hashQueue.clear();
+        if (targets.isEmpty()) return;
         tvTransferResult.setText("正在加入下载队列…");
         pool.execute(() -> {
             File d = DeviceProfile.get().targetDir(new File(root), movieName);
@@ -786,25 +989,46 @@ public class DetailActivity extends Activity {
                 });
                 return;
             }
-            Dl t = new Dl();
-            t.source = Dl.SRC_HASH;
-            t.hash = hashSrc;
-            t.fid = fid;
-            t.tid = tid;
-            t.name = movieName;
-            t.dir = d.getAbsolutePath();
-            t.fileName = DlEngine.hashStageName(t);
-            t.created = System.currentTimeMillis();
-            final long id = DlEngine.get().enqueue(this, t);
+            int n = 0;
+            long bytes = 0;
+            StringBuilder listing = new StringBuilder();
+            for (MovieStore.Movie ep : targets) {
+                Dl t = new Dl();
+                t.source = Dl.SRC_HASH;
+                t.hash = ep.hash;
+                t.fid = fid;
+                t.tid = ep.tid;
+                t.name = ep.name == null || ep.name.isEmpty() ? movieName : ep.name;
+                t.dir = d.getAbsolutePath();
+                t.fileName = DlEngine.hashStageName(t);
+                t.created = System.currentTimeMillis();
+                if (DlEngine.get().enqueue(this, t) > 0) {
+                    n++;
+                    bytes += ep.totalSize;
+                    if (listing.length() < 400) listing.append(" · ").append(t.name);
+                }
+            }
+            final int cnt = n;
+            final long tb = bytes;
             final String path = d.getAbsolutePath();
+            // 剩余空间只做**提示不拦截**：库里的分集剧最大一部 162.8 GB，电视上外接盘
+            // 常插着就写满，下爆会有 ENOSPC 中文报错且能续传，所以不拦着用户。
+            final long usable = d.getUsableSpace();
+            android.util.Log.d("SupeMov", "已入队 " + cnt + " 个任务 → " + path + listing);
             main.post(() -> {
-                if (id <= 0) {
+                if (cnt <= 0) {
                     tvTransferResult.setText("✘ 加入下载队列失败（目录不可写？）：" + path);
                     toast("加入下载队列失败");
                     return;
                 }
-                tvTransferResult.setText("✔ 已加入下载队列\n云端取址、逐段校验后落盘到：" + path);
-                toast("已开始下载");
+                String space = usable > 0 && tb > usable
+                        ? "\n⚠ 目标分区只剩 " + DlEngine.human(usable) + "，不够这次的 "
+                                + DlEngine.human(tb) + "，可能中途写不下"
+                        : "";
+                tvTransferResult.setText("✔ 已加入下载队列 " + (cnt > 1 ? cnt + " 集" : "1 个文件")
+                        + (tb > 0 ? "，共 " + DlEngine.human(tb) : "")
+                        + "\n云端取址、逐段校验后落盘到：" + path + space);
+                toast(cnt > 1 ? "已开始下载 " + cnt + " 集" : "已开始下载");
                 startActivity(new Intent(this, DownloadActivity.class));
             });
         });
