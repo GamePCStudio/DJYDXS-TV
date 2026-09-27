@@ -101,7 +101,7 @@ public final class NfoWriter {
      * @return 中文结果摘要，直接上屏
      */
     public static String backfill(File root, Progress cb) {
-        if (!TmdbClient.ready()) return "还没填 TMDB 接口密钥，先去上面填好再补生成。";
+        if (!TmdbClient.ready()) return "TMDB 接口密钥没配好，补生成跑不了。";
         Map<String, MovieStore.TmdbRef> index = MovieStore.tmdbRefIndex();
         if (index.isEmpty()) return "影片库里没有 TMDB 编号，补不了。";
         List<File> videos = new ArrayList<>();

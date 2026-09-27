@@ -68,15 +68,16 @@ public class SettingsActivity extends Activity {
                 "开：每部下完，在影片旁边补一个「与影片同名」的 .nfo 和海报图。\n"
                         + "关：什么都不写，只留影片。\n"
                         + "缺省关着的原因：Jellyfin / Emby 读本地 NFO 的优先级高于它自己联网刮，\n"
-                        + "而且这个优先级关不掉 —— 认错一部就会盖掉播放器本来能刮对的结果，宁缺毋滥。\n"
-                        + "要先在下面填 TMDB 接口密钥，否则开了也不会生成。",
+                        + "而且这个优先级关不掉 —— 认错一部就会盖掉播放器本来能刮对的结果，宁缺毋滥。",
                 v -> {
                     Settings.setNfoEnabled(!Settings.nfoEnabled());
                     rebuild();
                 }));
-        group.addView(option("TMDB 接口密钥: " + (Settings.tmdbApiKey().isEmpty() ? "未填写" : "已填写"),
-                "生成海报和 NFO 要访问 TMDB。密钥只存在这台机器的设置里，不会写进安装包、也不会上传。\n"
-                        + "两种都能用：32 位十六进制（v3 key），或一长串带点号的令牌（v4 只读访问令牌）",
+        group.addView(option("TMDB 接口密钥: " + (Settings.tmdbKeyCustom() ? "已自定义" : "用内置"),
+                "生成海报和 NFO 要访问 TMDB，这里已经内置了一个，打开上面的开关就能直接用。\n"
+                        + "内置的那个用不了（被限流、被吊销）时，在这里填一个新的顶掉它：\n"
+                        + "32 位十六进制（v3 key），或一长串带点号的令牌（v4 只读访问令牌）。\n"
+                        + "留空保存 = 恢复用内置的。",
                 v -> showTmdbKeyDialog()));
         group.addView(option("补生成已下载影片的海报/NFO",
                 "扫一遍下载目录，给「有影片文件、旁边没有 NFO」的片子补上资料 ——\n"
@@ -374,7 +375,7 @@ public class SettingsActivity extends Activity {
      * TMDB 接口密钥。
      *
      * <p>不回显已保存的值：密钥不该出现在屏幕上（截图、投屏、远程协助都会看到）。
-     * 输入框永远空白，填了就是覆盖，清空就是关掉这项能力的网络侧。</p>
+     * 输入框永远空白，填了就是覆盖内置的那个，留空保存就是恢复用内置的。</p>
      */
     private void showTmdbKeyDialog() {
         final android.widget.EditText input = new android.widget.EditText(this);
@@ -382,13 +383,13 @@ public class SettingsActivity extends Activity {
         input.setHint("粘贴密钥（32 位十六进制，或带点号的长令牌）");
         android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(
                 this, android.R.style.Theme_DeviceDefault_Dialog)
-                .setTitle("TMDB 接口密钥（当前" + (Settings.tmdbApiKey().isEmpty() ? "未填写" : "已填写") + "）")
+                .setTitle("TMDB 接口密钥（当前" + (Settings.tmdbKeyCustom() ? "已自定义" : "用内置") + "）")
                 .setView(input)
                 .setPositiveButton("保存", (d, w) -> {
                     String v = input.getText().toString().trim();
                     if (v.isEmpty()) {
                         Settings.setTmdbApiKey("");
-                        Toast.makeText(this, "已清空密钥，不会再生成", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, "已恢复用内置密钥", Toast.LENGTH_SHORT).show();
                         rebuild();
                         return;
                     }
@@ -398,7 +399,7 @@ public class SettingsActivity extends Activity {
                         return;
                     }
                     Settings.setTmdbApiKey(v);
-                    Toast.makeText(this, "密钥已存到本机", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, "已改用自定义密钥", Toast.LENGTH_SHORT).show();
                     rebuild();
                 })
                 .setNegativeButton("取消", null)
@@ -415,7 +416,8 @@ public class SettingsActivity extends Activity {
      */
     private void runNfoBackfill() {
         if (!TmdbClient.ready()) {
-            Toast.makeText(this, "先填 TMDB 接口密钥", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "TMDB 接口密钥没配好，去上面的「TMDB 接口密钥」看一眼",
+                    Toast.LENGTH_LONG).show();
             return;
         }
         final File root = new File(Settings.downloadDir());

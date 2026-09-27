@@ -260,22 +260,48 @@ public final class Settings {
     }
 
     /**
-     * TMDB 接口密钥。存在本机 SharedPreferences 里，<b>不写进代码、不进仓库</b>：
-     * 仓库是公开的，密钥一旦提交就等于公开。32 位十六进制是 v3 key（走 api_key 参数），
-     * 带点号的长串是 v4 令牌（走 Authorization 头），两种都支持。
+     * 内置的 TMDB v3 密钥。
+     *
+     * <p><b>口径（2026-09-27 用户拍板）：内置，省掉盒子上手输一次。</b>公开仓库 + 可反编译的
+     * APK 意味着这个值对任何人可见，所以按<b>已公开、可随时吊销</b>对待：只在 TMDB 后台留着
+     * 只读刮削配额，别绑任何账号权限。</p>
+     *
+     * <p>32 位十六进制是 v3 key（走 {@code api_key} 参数）；带点号的长串是 v4 令牌
+     * （走 {@code Authorization} 头），两种都支持，见 {@code TmdbClient.open}。</p>
+     */
+    private static final String TMDB_KEY_BUILTIN = "304ca56b1b7b57ca7a47d9b59946be94";
+
+    /**
+     * TMDB 接口密钥：优先用设置里自定义的那个，没填就用内置。
+     *
+     * <p>留自定义这条路是因为内置 key 一旦被 TMDB 限流/吊销，盒子不用换包就能自救；
+     * 设置页留空 = 恢复内置。日志里永远只打 path 不打 query，key 不会进 logcat。</p>
      */
     public static String tmdbApiKey() {
-        if (p() == null) return "";
         try {
-            return p().getString(K_TMDB_KEY, "").trim();
+            if (p() != null) {
+                String s = p().getString(K_TMDB_KEY, "").trim();
+                if (!s.isEmpty()) return s;
+            }
         } catch (Throwable e) {
-            return "";
+            // 读不到设置就用内置，别让整个功能哑掉
         }
+        return TMDB_KEY_BUILTIN;
     }
 
+    /** 空串 = 清掉自定义、回到内置。 */
     public static void setTmdbApiKey(String key) {
         if (p() == null) return;
         p().edit().putString(K_TMDB_KEY, key == null ? "" : key.trim()).apply();
+    }
+
+    /** 设置里是否填了自定义密钥（没填就是在用 {@link #TMDB_KEY_BUILTIN}）。 */
+    public static boolean tmdbKeyCustom() {
+        try {
+            return p() != null && !p().getString(K_TMDB_KEY, "").trim().isEmpty();
+        } catch (Throwable e) {
+            return false;
+        }
     }
 
     // ---------- 播放进度记忆（v1.15）----------
