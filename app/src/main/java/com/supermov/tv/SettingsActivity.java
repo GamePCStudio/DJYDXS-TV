@@ -79,16 +79,23 @@ public class SettingsActivity extends Activity {
                         + "32 位十六进制（v3 key），或一长串带点号的令牌（v4 只读访问令牌）。\n"
                         + "留空保存 = 恢复用内置的。",
                 v -> showTmdbKeyDialog()));
-        group.addView(option("补生成已下载影片的海报/NFO",
-                "扫一遍下载目录，给「有影片文件、旁边没有 NFO」的片子补上资料 ——\n"
-                        + "下载时开关还没打开的、以前下完的都在这一批里。已经有 NFO 的一律不动。\n"
-                        + "认法是按文件名回片库里找 TMDB 编号，对不上的直接跳过，不会硬贴资料",
-                v -> runNfoBackfill()));
+        group.addView(option("补生成缺失的海报/NFO",
+                "扫一遍「下载目录」，给旁边还没有 NFO 的影片补上资料与海报 ——\n"
+                        + "下载时开关还没打开的、以前下完的都在这一批里。已经有 NFO 的一部不动。\n"
+                        + "认法：先按文件名回片库里找 TMDB 编号，片库里没有的再按片名上网查\n"
+                        + "（查得到唯一结果才写，同名好几个版本又分不出年份的就不写，不硬贴资料）",
+                v -> runNfoBackfill(false)));
+        group.addView(option("全部重新生成海报/NFO",
+                "把「下载目录」里每一部影片都重新刮一遍，盖掉已有的 NFO ——\n"
+                        + "上面那项扫到 0 个文件、或贴错了资料想推倒重来时用这个。\n"
+                        + "片子存在别的盘（U盘 / 移动硬盘 / NAS）的，先把上面的「下载目录」\n"
+                        + "改到那个盘，这两项都只认「下载目录」那一个位置",
+                v -> runNfoBackfill(true)));
 
         // ②.6 云端取址（hash 片源）
         group.addView(sectionLabel("云端取址"));
-        group.addView(option("设备序列号: " + Settings.cdnSn(),
-                "hash 片源用它向厂商云端换取分段下载地址。\n"
+        group.addView(option("设备序列号: 末3位 " + snTail(),
+                "hash 片源用它向厂商云端换取分段下载地址，完整值只在点进去以后才显示。\n"
                         + "缺省是一台已登记的艾美盒子 WiFi MAC（12 位大写十六进制，无分隔符）。\n"
                         + "取址若被回「占位桩」（该序列号对这片无授权），换成已授权机器的序列号",
                 v -> showEditSnDialog()));
@@ -372,6 +379,15 @@ public class SettingsActivity extends Activity {
     }
 
     /**
+     * 序列号只在设置页露末 3 位（够核对「是不是这台」，又不会把整串 MAC 摊在屏幕上 ——
+     * 截图、投屏、远程协助都能看到）。完整值要点进编辑框才显示。
+     */
+    private String snTail() {
+        String sn = Settings.cdnSn();
+        return sn.length() <= 3 ? sn : sn.substring(sn.length() - 3);
+    }
+
+    /**
      * TMDB 接口密钥。
      *
      * <p>不回显已保存的值：密钥不该出现在屏幕上（截图、投屏、远程协助都会看到）。
@@ -409,12 +425,14 @@ public class SettingsActivity extends Activity {
     }
 
     /**
-     * 补生成：扫下载目录，给「有影片、没同名 NFO」的片子补资料。
+     * 补生成 / 重生成：扫「下载目录」。
+     *
+     * @param regenerate false = 只处理旁边还没有 NFO 的；true = 每部都重刮并盖掉已有 NFO
      *
      * <p>整个过程在一部一部串行访问 TMDB（内部已限速），几百部要跑十几分钟，所以给一个
      * 能看进度的对话框 + 「停止」按钮；边跑边把当前处理到哪一个显示出来。</p>
      */
-    private void runNfoBackfill() {
+    private void runNfoBackfill(final boolean regenerate) {
         if (!TmdbClient.ready()) {
             Toast.makeText(this, "TMDB 接口密钥没配好，去上面的「TMDB 接口密钥」看一眼",
                     Toast.LENGTH_LONG).show();
@@ -433,7 +451,7 @@ public class SettingsActivity extends Activity {
         NfoWriter.abort = false;
         final AlertDialog dlg = new android.app.AlertDialog.Builder(
                 this, android.R.style.Theme_DeviceDefault_Dialog)
-                .setTitle("补生成海报 / NFO")
+                .setTitle(regenerate ? "全部重新生成海报 / NFO" : "补生成缺失的海报 / NFO")
                 .setView(box)
                 .setNegativeButton("停止", (d, w) -> {
                     NfoWriter.abort = true;
@@ -442,7 +460,7 @@ public class SettingsActivity extends Activity {
                 .create();
         dlg.show();
         new Thread(() -> {
-            final String result = NfoWriter.backfill(root,
+            final String result = NfoWriter.backfill(root, regenerate,
                     (text, done, total) -> runOnUiThread(() -> {
                         if (!isFinishing()) box.setText(text);
                     }));

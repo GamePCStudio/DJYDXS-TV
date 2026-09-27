@@ -11,8 +11,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -1000,14 +1002,15 @@ public final class MovieStore {
      * 还可能被 {@link FilmNaming#unique} 加上「 (2)」，所以两边都先归一化再比。</p>
      *
      * <p><b>重名不索引：</b>同一个归一化片名如果对应<b>两个不同的 TMDB id</b>
-     * （库里实测 18 组：美女与野兽 / 狮子王 / 哥斯拉 这类翻拍，1519 行里占 1.5%），
+     * （库里实测 18 组 / 36 个版本：美女与野兽 / 狮子王 / 哥斯拉 这类翻拍，1519 行里占 1.5%），
      * 这个键直接不放进索引。因为盘上文件名不带年份，{@code unique} 加的「(2)」又是按下载
      * 先后排的量，没法判断这个文件到底是哪一版 —— 猜错了就把 2017 年的海报贴到 1991 年的片上，
-     * 而本地 NFO 的优先级还盖过播放器的在线刮削，属于「贴错不如不贴」。</p>
+     * 而本地 NFO 的优先级还盖过播放器的在线刮削，属于「贴错不如不贴」。
+     * 这批键由 {@link #ambiguousTitleKeys()} 供 {@link NfoWriter} 的联网认片退路用。</p>
      */
     public static Map<String, TmdbRef> tmdbRefIndex() {
         Map<String, TmdbRef> out = new HashMap<>();
-        List<String> drop = new ArrayList<>();
+        Set<String> drop = new LinkedHashSet<>();
         SQLiteDatabase q = database();
         if (q == null) return out;
         Cursor c = null;
@@ -1031,9 +1034,27 @@ public final class MovieStore {
             if (c != null) c.close();
         }
         out.keySet().removeAll(drop);
-        Log.d(TAG, "tmdbRefIndex：可用键 " + out.size() + "，同名不同片已排除 " + drop.size());
+        AMBIGUOUS_KEYS = drop;
+        // 1519 行里有 24 行是撞名的（同一组常有三四行），去重后是 18 组 —— 打组数，别打行数
+        Log.d(TAG, "tmdbRefIndex：可用键 " + out.size() + "，同名不同片已排除 " + drop.size() + " 组");
         return out;
     }
+
+    /**
+     * 上一次 {@link #tmdbRefIndex()} 剔掉的那批「同名不同片」键（实测 18 个）。
+     *
+     * <p>存在的意义：{@link NfoWriter} 那条联网按片名认的退路也得知道这些名字认不准 ——
+     * 盘上文件名不带年份时，{@code /search/movie} 就算只回一条同名结果也不能认：
+     * 实测「超能敢死队」库里两个版本（2016 {@code 43074} / 2021 {@code 425909}），
+     * TMDB 搜索结果里只有一个的中文名叫得完全一样，唯一判据会放行，等于赌是哪一版。</p>
+     *
+     * <p>没建过索引时为空集（那时补生成还没开始，走不到这个判断）。</p>
+     */
+    public static Set<String> ambiguousTitleKeys() {
+        return AMBIGUOUS_KEYS;
+    }
+
+    private static volatile Set<String> AMBIGUOUS_KEYS = Collections.emptySet();
 
     /**
      * 片名归一化：只留汉字、字母、数字，其余（空格、标点、被 {@link FilmNaming#safe} 换成

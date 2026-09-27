@@ -55,6 +55,13 @@ public final class NfoWriter {
     /** 分集剧的「剧 id / 季清单」解析结果，按剧缓存一次，七集只用一套请求。 */
     private static final Map<String, ShowMeta> SHOW_CACHE = new HashMap<>();
 
+    /** 「按片名联网查 id」的结果缓存；没认出来也记一笔（值为 null），补生成重跑不再打网络。 */
+    private static final Map<String, MovieStore.TmdbRef> NAME_CACHE = new HashMap<>();
+
+    /** 文件名里的年份：前后都不能再粘数字，免得把 {@code 20260101} 之类当年份。 */
+    private static final java.util.regex.Pattern YEAR_PAT =
+            java.util.regex.Pattern.compile("(?<!\\d)(19|20)\\d{2}(?!\\d)");
+
     /** 置 true 时补生成在处理下一个文件前停下（设置页那个「停止」按钮用）。 */
     public static volatile boolean abort;
 
@@ -98,17 +105,23 @@ public final class NfoWriter {
     /**
      * 扫某个目录（一般是下载根目录），把「有视频文件、没有同名 NFO」的片子补齐。
      *
+     * @param regenerate true = 连已经有 NFO 的一并重刮覆盖（设置页那项「全部重生成」）；
+     *                   false = 已经有同名 NFO 的一部不动
      * @return 中文结果摘要，直接上屏
      */
-    public static String backfill(File root, Progress cb) {
+    public static String backfill(File root, boolean regenerate, Progress cb) {
         if (!TmdbClient.ready()) return "TMDB 接口密钥没配好，补生成跑不了。";
         Map<String, MovieStore.TmdbRef> index = MovieStore.tmdbRefIndex();
-        if (index.isEmpty()) return "影片库里没有 TMDB 编号，补不了。";
         List<File> videos = new ArrayList<>();
         collect(root, 0, videos);
-        if (videos.isEmpty()) return "目录里没找到影片文件：" + root.getAbsolutePath();
+        if (videos.isEmpty()) {
+            return "扫到 0 个影片文件。\n\n扫的是「下载目录」这一项：\n" + root.getAbsolutePath()
+                    + "\n\n片子要是存在别的盘（U盘 / 移动硬盘 / NAS），先去上面把「下载目录」"
+                    + "改成那个盘上的目录，再回来点这一项。";
+        }
+        if (index.isEmpty()) Log.d(TAG, "NFO 补生成：内嵌库没查到 TMDB 编号，只能靠联网按片名认");
 
-        int made = 0, had = 0, unmatched = 0, failed = 0, processed = 0;
+        int made = 0, had = 0, unmatched = 0, failed = 0, processed = 0, bySearch = 0;
         boolean stopped = false;
         List<String> examples = new ArrayList<>();
         for (int i = 0; i < videos.size(); i++) {
@@ -117,21 +130,33 @@ public final class NfoWriter {
                 break;
             }
             File v = videos.get(i);
-            if (nfoOf(v).exists()) {
-                had++;                       // 先生成过了，不必认片名
+            String stem = nameWithoutExt(v.getName());
+            boolean hadNfo = nfoOf(v).exists();
+            if (hadNfo && !regenerate) {
+                had++;                       // 只补缺的：这份 NFO 不动
+                Log.d(TAG, "NFO 补生成：已有 NFO，不动 " + v.getName());
                 continue;
             }
             if (cb != null) {
                 cb.onStep("正在补 " + v.getName() + "（" + (i + 1) + "/" + videos.size() + "）",
                         i, videos.size());
             }
-            MovieStore.TmdbRef ref = index.get(MovieStore.titleKey(nameWithoutExt(v.getName())));
+            MovieStore.TmdbRef ref = index.get(MovieStore.titleKey(stem));
+            boolean fromSearch = ref == null;
+            if (fromSearch) {
+                ref = searchMovie(stem);     // 库里认不到：联网按片名查
+                if (ref != null) bySearch++;
+            }
             if (ref == null) {
                 unmatched++;
+                Log.d(TAG, "NFO 补生成：片名没对上 " + v.getName());
                 if (examples.size() < 3) examples.add(v.getName());
                 continue;
             }
-            String r = generate(v, ref);
+            Log.d(TAG, "NFO 补生成：" + v.getName() + " → TMDB " + ref.tmdbId
+                    + (fromSearch ? "（按片名联网查的）" : "（内嵌库）")
+                    + (hadNfo ? "，覆盖重刮" : ""));
+            String r = generate(v, ref, regenerate);
             processed++;
             if ("已生成".equals(r)) made++;
             else if ("已有 NFO，跳过".equals(r)) had++;
@@ -141,19 +166,27 @@ public final class NfoWriter {
             }
         }
         StringBuilder sb = new StringBuilder();
-        if (stopped) sb.append("已手动停止（停在第 ").append(processed + 1).append(" 个）。\n");
-        sb.append("扫到 ").append(videos.size()).append(" 个影片文件：\n")
+        if (stopped) sb.append("已手动停止（处理完 ").append(processed).append(" 个）。\n");
+        sb.append(regenerate ? "全部重生成，扫到 " : "只补缺的，扫到 ")
+          .append(videos.size()).append(" 个影片文件：\n")
+          .append(hadNfoNote(had, regenerate))
+          .append("新取到资料 ").append(processed)
+          .append("（其中 ").append(bySearch).append(" 个是按片名联网查到的）\n")
           .append("已生成 ").append(made)
-          .append("，已有 NFO 跳过 ").append(had)
-          .append("，片名没对上 ").append(unmatched)
-          .append("，取不到资料 ").append(failed).append("。");
+          .append("，取不到资料 ").append(failed)
+          .append("，片名没对上 ").append(unmatched).append("。");
         if (!examples.isEmpty()) {
             sb.append("\n\n例子：\n");
             for (String s : examples) sb.append("· ").append(s).append('\n');
         }
+        sb.append("\n扫的是下载目录：").append(root.getAbsolutePath());
         sb.append("\n没对上的两种情况：不是本片库下下来的（或改过名）；片名重名但其实是不同年代的翻拍，"
                 + "文件名里认不出来，就不猜了 —— 这一类请单独下载时自动生成（下载任务带云指纹，认得准）。");
         return sb.toString();
+    }
+
+    private static String hadNfoNote(int had, boolean regenerate) {
+        return regenerate ? "" : "已有 NFO 不动 " + had + " 个，\n";
     }
 
     private static void collect(File dir, int depth, List<File> out) {
@@ -185,9 +218,17 @@ public final class NfoWriter {
 
     /** @return 一句中文结论（上屏与日志共用） */
     private static synchronized String generate(File video, MovieStore.TmdbRef ref) {
+        return generate(video, ref, false);
+    }
+
+    /**
+     * @param overwrite true = 已经有同名 NFO 也重刮一份盖掉（「全部重生成」）；
+     *                  false = 有 NFO 就原样返回「已有 NFO，跳过」
+     */
+    private static synchronized String generate(File video, MovieStore.TmdbRef ref, boolean overwrite) {
         if (video == null || !video.exists()) return "影片文件不在";
         try {
-            return ref.isTv() ? forEpisode(video, ref) : forMovie(video, ref);
+            return ref.isTv() ? forEpisode(video, ref, overwrite) : forMovie(video, ref, overwrite);
         } catch (Throwable e) {
             Log.d(TAG, "NFO 生成异常: " + e);
             return "生成出错：" + e;
@@ -199,9 +240,9 @@ public final class NfoWriter {
         return new File(video.getParentFile(), nameWithoutExt(video.getName()) + ".nfo");
     }
 
-    private static String forMovie(File video, MovieStore.TmdbRef ref) {
+    private static String forMovie(File video, MovieStore.TmdbRef ref, boolean overwrite) {
         File nfo = nfoOf(video);
-        if (nfo.exists()) return "已有 NFO，跳过";
+        if (nfo.exists() && !overwrite) return "已有 NFO，跳过";
         Map<String, String> q = params("language", "zh-CN",
                 "append_to_response", "credits,alternative_titles");
         JSONObject d = TmdbClient.get("/movie/" + ref.tmdbId, q);
@@ -253,9 +294,9 @@ public final class NfoWriter {
         return writeSet(video, nfo, sb.toString(), posterPath, fanartPath);
     }
 
-    private static String forEpisode(File video, MovieStore.TmdbRef ref) {
+    private static String forEpisode(File video, MovieStore.TmdbRef ref, boolean overwrite) {
         File nfo = nfoOf(video);
-        if (nfo.exists()) return "已有 NFO，跳过";
+        if (nfo.exists() && !overwrite) return "已有 NFO，跳过";
         ShowMeta show = resolveShow(ref);
         if (show == null) return "认不出这部剧（「"
                 + (ref.seriesName.isEmpty() ? ref.title : ref.seriesName) + "」在 TMDB 对不上）";
@@ -263,10 +304,10 @@ public final class NfoWriter {
         if (ep == null) return "TMDB 没有「" + show.title + "」第 "
                 + ref.seasonNo + " 季第 " + ref.episodeNo + " 集";
 
-        // 剧级：tvshow.nfo + 剧海报（一个目录只写一次）
+        // 剧级：tvshow.nfo + 剧海报（一个目录只写一次；重生成时连剧级一起重刮）
         File showDir = video.getParentFile();
         File tvNfo = new File(showDir, "tvshow.nfo");
-        if (!tvNfo.exists()) {
+        if (!tvNfo.exists() || overwrite) {
             StringBuilder sb = new StringBuilder();
             xmlHead(sb).append("<tvshow>\n");
             t(sb, "title", show.title);
@@ -460,6 +501,119 @@ public final class NfoWriter {
             if (meta != null && meta.hasEpisode(ref)) return meta;
         }
         return null;
+    }
+
+    /**
+     * 内嵌库片名认不到时，联网按片名查 TMDB 电影 id（设置页「补生成」的第二条认法）。
+     *
+     * <h3>为什么敢用搜索</h3>
+     * 实测：随机 40 个库内唯一片名打 {@code /search/movie}，<b>40/40 首条就是库里那个 id</b>；
+     * 而那 18 组重名跨片（美女与野兽 / 哥斯拉 / 超人…，共 36 个版本）的搜索结果里，两个版本会
+     * <b>同时出现在前两条</b>，光看片名分不开。所以判据是「<b>候选唯一才认</b>」，
+     * 年份只是让它收敛的手段：
+     *
+     * <ol>
+     *   <li>候选的归一化片名（{@code title} 或 {@code original_title}）必须和文件名<b>完全同键</b>，
+     *       不比「相似」「前缀包含」；</li>
+     *   <li>文件名里认得出 4 位年份（1917~2099）→ 只在这一年{@code release_date} 对得上的候选里挑，
+     *       而且<b>仍然要求只剩一条</b>；</li>
+     *   <li>认不出年份、而同名候选又有好几个 → 一律不认。把 2017 年的海报贴到 1991 年的片上，
+     *       比不贴更糟（本地 NFO 会盖掉播放器自己联网刮的结果）。</li>
+     * </ol>
+     *
+     * <p>实测（<b>全部 18 组</b>跨片重名，不是抽样）：不带年份时 17/18 组被上面的判据拒掉；
+     * 剩下放行那组是「超能敢死队」—— TMDB 只回一条同名结果，可库里其实有 2016 和 2021 两个版本，
+     * 文件名没年份照样分不开，所以 {@link MovieStore#ambiguousTitleKeys()} 里这批键在没年份时
+     * 根本不发搜索（见 {@link #searchMovie}）。带年份时 36 个版本里 31 个唯一命中、
+     * 5 个主动放弃、<b>0 个认错</b>；放弃的都是<b>同名又同年</b>：告密者 2023 年 TMDB 同时回
+     * {@code 985617} 与库内那条 {@code 1070802}，阿拉丁 1992 同时回 3 条，所以「取第一条」
+     * 等于赌，必须放弃。</p>
+     *
+     * <p>结果（包括「查过但没认出来」）按「片名键|年」缓存，补生成重跑不再重复打网络。</p>
+     */
+    private static MovieStore.TmdbRef searchMovie(String stem) {
+        String q = queryFromStem(stem);
+        if (q.isEmpty()) return null;
+        int year = yearFromStem(stem);
+        String want = MovieStore.titleKey(q);
+        if (year <= 0 && MovieStore.ambiguousTitleKeys().contains(want)) {
+            // 库里有多个版本共用这个片名，而文件名没年份 → 网络也救不了，不发请求
+            Log.d(TAG, "NFO 补生成：「" + q + "」在库里有多个版本，文件名没年份分不开，不猜");
+            return null;
+        }
+        String cacheKey = want + "|" + year;
+        synchronized (NAME_CACHE) {
+            if (NAME_CACHE.containsKey(cacheKey)) return NAME_CACHE.get(cacheKey);
+        }
+        MovieStore.TmdbRef got = askSearch(q, year);
+        synchronized (NAME_CACHE) {
+            NAME_CACHE.put(cacheKey, got);
+        }
+        return got;
+    }
+
+    private static MovieStore.TmdbRef askSearch(String q, int year) {
+        Map<String, String> p = params("query", q, "language", "zh-CN", "include_adult", "true");
+        if (year > 0) p.put("year", String.valueOf(year));
+        JSONObject res = TmdbClient.get("/search/movie", p);
+        JSONArray arr = res == null ? null : res.optJSONArray("results");
+        if (arr == null || arr.length() == 0) return null;
+        String want = MovieStore.titleKey(q);
+        String wantYear = year > 0 ? String.valueOf(year) : null;
+        List<String> sameTitle = new ArrayList<>();   // 片名同键的候选
+        List<String> sameBoth = new ArrayList<>();    // 片名同键 + 发行年份也对上的候选
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject o = arr.optJSONObject(i);
+            if (o == null || o.optInt("id") <= 0) continue;
+            String k = MovieStore.titleKey(o.optString("title", ""));
+            if (k.isEmpty()) k = MovieStore.titleKey(o.optString("original_title", ""));
+            if (!k.equals(want)) continue;                 // 片名不完全同键：不是它
+            String id = String.valueOf(o.optInt("id"));
+            if (!sameTitle.contains(id)) sameTitle.add(id);
+            if (wantYear != null && o.optString("release_date", "").startsWith(wantYear)
+                    && !sameBoth.contains(id)) sameBoth.add(id);
+        }
+        // 有年份就用「片名+年份」这条更硬的判据。注意仍然要求唯一：实测 TMDB 会对同名
+        // 且同年的不同版本一次回好几条（告密者 2023 就同时回 985617 和 1070802），
+        // 取第一条等于赌，赌错就把别人家的海报贴过来。
+        if (wantYear != null) return sameBoth.size() == 1 ? ref(sameBoth.get(0), q) : null;
+        // 没年份可用：同名候选只有一个才敢认
+        return sameTitle.size() == 1 ? ref(sameTitle.get(0), q) : null;
+    }
+
+    private static MovieStore.TmdbRef ref(String tmdbId, String title) {
+        MovieStore.TmdbRef r = new MovieStore.TmdbRef();
+        r.tmdbId = tmdbId;
+        r.subtype = "movie";
+        r.title = title;
+        return r;
+    }
+
+    /** 文件名片段 → 搜索用的片名：年份往后（清晰度 / 组名之类）和「(2)」排重尾巴都切掉。 */
+    private static String queryFromStem(String stem) {
+        String s = stem == null ? "" : stem;
+        int y = yearStart(s);
+        if (y > 0) s = s.substring(0, y);                    // 年份在开头就不切（真有《2012》这种片名）
+        s = s.replaceAll("[(（]\\s*\\d+\\s*[)）]\\s*$", "");  // 「 (2)」排重尾巴
+        return s.replaceAll("[._\\-\\s]+$", "").trim();
+    }
+
+    /** 文件名里的上映年份；认不出返回 0。 */
+    private static int yearFromStem(String stem) {
+        int at = yearStart(stem == null ? "" : stem);
+        if (at < 0) return 0;
+        int y = Integer.parseInt(stem.substring(at, at + 4));
+        return (y >= 1917 && y <= 2099) ? y : 0;
+    }
+
+    /** 第一个「像年份」的 4 位数字下标；没有返回 -1。 */
+    private static int yearStart(String stem) {
+        java.util.regex.Matcher m = YEAR_PAT.matcher(stem);
+        while (m.find()) {
+            int y = Integer.parseInt(m.group());
+            if (y >= 1917 && y <= 2099) return m.start();
+        }
+        return -1;
     }
 
     private static ShowMeta loadShow(String showId) {
