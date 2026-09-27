@@ -51,7 +51,7 @@ public final class TmdbClient {
 
     private TmdbClient() {}
 
-    /** 没填密钥就什么都别做（密钥只存在本机设置里，不随 APK 发布）。 */
+    /** 有没有可用的密钥（内置一个，设置页里填的优先；见 {@code Settings.tmdbApiKey()}）。 */
     public static boolean ready() {
         return !Settings.tmdbApiKey().isEmpty();
     }
@@ -79,10 +79,13 @@ public final class TmdbClient {
                         continue;
                     }
                     String body = read(code >= 400 ? conn.getErrorStream() : conn.getInputStream());
-                    if (code == 404) return null;    // TMDB 明确说没这个东西，换域名也一样
                     if (code >= 400) {
-                        Log.d(TAG, "TMDB " + code + " " + path + " :: " + brief(body));
-                        return null;
+                        Log.d(TAG, "TMDB " + code + " " + base + path + " :: " + brief(body));
+                        // 只有 TMDB 亲口回的 4xx 才算结论（它的错误体是带 status_code 的 JSON）。
+                        // 镜像 / CDN 自己挡下来的不能：实测 s8k 那个镜像会对本机回 Cloudflare
+                        // 「error code: 1010」的 text/plain 403，当结论就等于整个功能一条请求都没发出去。
+                        if (isTmdbError(body)) return null;
+                        break;          // 换下一个域名再试
                     }
                     JSONObject o = new JSONObject(body);
                     if (o.has("success") && !o.optBoolean("success", true)) {
@@ -225,6 +228,12 @@ public final class TmdbClient {
     private static String brief(String s) {
         if (s == null) return "";
         return s.length() > 160 ? s.substring(0, 160) + "…" : s;
+    }
+
+    /** TMDB 自己的错误体长这样：{@code {"status_code":7,"status_message":"...","success":false}}。 */
+    private static boolean isTmdbError(String body) {
+        String s = body == null ? "" : body.trim();
+        return s.startsWith("{") && s.contains("status_code");
     }
 
     private static int rand(int bound) {
