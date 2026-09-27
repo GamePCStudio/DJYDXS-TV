@@ -1044,6 +1044,17 @@ public final class DlEngine {
         t.done = total;
         t.total = total;
         prof.afterDownload(out, t);
+        // ⑤.1 生成 NFO + 海报（开关与 TMDB 密钥都在设置页里）。放在最后一步、并且整体吞异常：
+        // 影片本身已经校验通过落盘了，刮不到海报绝不能把这次下载报成失败。
+        if (Settings.nfoEnabled()) {
+            note = "生成海报与简介…";
+            notifyChanged();
+        }
+        try {
+            NfoWriter.forDownload(out, t);
+        } catch (Throwable e) {
+            Log.w(TAG, "NFO 生成失败: " + e);
+        }
         note = "已完成：" + out.getName();
     }
 

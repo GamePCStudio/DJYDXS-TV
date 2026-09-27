@@ -234,6 +234,50 @@ public final class Settings {
         p().edit().putBoolean(K_SKIP_ONLINE_WARN, skip).apply();
     }
 
+    // ---------- TMDB 海报 / NFO 生成（v1.39）----------
+
+    private static final String K_NFO_ON = "nfo_gen_on";
+    private static final String K_TMDB_KEY = "tmdb_key";
+
+    /**
+     * 下载完成后是否顺手生成 NFO + 海报。
+     *
+     * <p>缺省<b>关</b>：NFO 一旦写下去，Jellyfin/Emby 会优先读它而不再自己刮，
+     * 匹配错了比没有更糟；所以要么用户在设置里明确打开，要么走「补生成」手动补。</p>
+     */
+    public static boolean nfoEnabled() {
+        if (p() == null) return false;
+        try {
+            return p().getBoolean(K_NFO_ON, false);
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    public static void setNfoEnabled(boolean on) {
+        if (p() == null) return;
+        p().edit().putBoolean(K_NFO_ON, on).apply();
+    }
+
+    /**
+     * TMDB 接口密钥。存在本机 SharedPreferences 里，<b>不写进代码、不进仓库</b>：
+     * 仓库是公开的，密钥一旦提交就等于公开。32 位十六进制是 v3 key（走 api_key 参数），
+     * 带点号的长串是 v4 令牌（走 Authorization 头），两种都支持。
+     */
+    public static String tmdbApiKey() {
+        if (p() == null) return "";
+        try {
+            return p().getString(K_TMDB_KEY, "").trim();
+        } catch (Throwable e) {
+            return "";
+        }
+    }
+
+    public static void setTmdbApiKey(String key) {
+        if (p() == null) return;
+        p().edit().putString(K_TMDB_KEY, key == null ? "" : key.trim()).apply();
+    }
+
     // ---------- 播放进度记忆（v1.15）----------
 
     /** 进度记录的 key 前缀，便于整体淘汰 */

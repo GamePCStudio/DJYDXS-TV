@@ -954,6 +954,135 @@ public final class MovieStore {
     }
 
     /**
+     * 一条 hash 对应的 TMDB 侧标识（生成 NFO / 海报用）。
+     *
+     * <p>{@code movie_ext_id} 里 {@code source='tmdb'} 的行：单片存的是 <b>TMDB 电影 id</b>，
+     * 分集剧存的是 <b>TMDB 分集 id</b>（{@code subtype='tv'}，不是剧 id）。所以走 tv 这条路
+     * 必须先由「剧名搜到剧 → 季清单里比对分集 id」把剧 id 认出来，认不出就不生成。</p>
+     */
+    public static class TmdbRef {
+        public String tmdbId = "";
+        /** {@code "movie"} 或 {@code "tv"}。 */
+        public String subtype = "movie";
+        /** 界面片名（{@code title_cn} 优先，回落 {@code title}），也是落盘文件名的来源。 */
+        public String title = "";
+        /** 剧名（单片为空）。 */
+        public String seriesName = "";
+        public int seasonNo;
+        public int episodeNo;
+        public boolean isTv() {
+            return "tv".equals(subtype);
+        }
+    }
+
+    /** 按 40 位云指纹取该片的 TMDB 标识；库里没这个 hash 或没挂 TMDB id 时返回 null。 */
+    public static TmdbRef tmdbRefForHash(String hash) {
+        if (hash == null || hash.isEmpty()) return null;
+        SQLiteDatabase q = database();
+        if (q == null) return null;
+        Cursor c = null;
+        try {
+            c = q.rawQuery(TMDB_REF_SQL + " AND m.hash=?", new String[]{hash});
+            return c.moveToNext() ? readTmdbRef(c) : null;
+        } catch (Throwable e) {
+            Log.d(TAG, "tmdbRefForHash 查询失败: " + e);
+            return null;
+        } finally {
+            if (c != null) c.close();
+        }
+    }
+
+    /**
+     * 补生成用的全库索引：键 = {@link #titleKey(String)}，值 = {@link TmdbRef}。
+     *
+     * <p>为什么不按 hash 认盘上的文件：落盘文件名是<b>中文片名</b>（下载后处理改的名），
+     * 磁盘上看不到 hash。而片名会被 {@link FilmNaming#safe} 把非法字符换成下划线，
+     * 还可能被 {@link FilmNaming#unique} 加上「 (2)」，所以两边都先归一化再比。</p>
+     *
+     * <p><b>重名不索引：</b>同一个归一化片名如果对应<b>两个不同的 TMDB id</b>
+     * （库里实测 18 组：美女与野兽 / 狮子王 / 哥斯拉 这类翻拍，1519 行里占 1.5%），
+     * 这个键直接不放进索引。因为盘上文件名不带年份，{@code unique} 加的「(2)」又是按下载
+     * 先后排的量，没法判断这个文件到底是哪一版 —— 猜错了就把 2017 年的海报贴到 1991 年的片上，
+     * 而本地 NFO 的优先级还盖过播放器的在线刮削，属于「贴错不如不贴」。</p>
+     */
+    public static Map<String, TmdbRef> tmdbRefIndex() {
+        Map<String, TmdbRef> out = new HashMap<>();
+        List<String> drop = new ArrayList<>();
+        SQLiteDatabase q = database();
+        if (q == null) return out;
+        Cursor c = null;
+        try {
+            c = q.rawQuery(TMDB_REF_SQL, new String[]{});
+            while (c.moveToNext()) {
+                TmdbRef r = readTmdbRef(c);
+                if (r == null) continue;
+                String k = titleKey(r.title);
+                if (k.isEmpty()) continue;
+                TmdbRef hit = out.get(k);
+                if (hit == null) {
+                    out.put(k, r);
+                } else if (!hit.tmdbId.equals(r.tmdbId)) {
+                    drop.add(k);        // 同名不同片：认不准
+                }
+            }
+        } catch (Throwable e) {
+            Log.d(TAG, "tmdbRefIndex 查询失败: " + e);
+        } finally {
+            if (c != null) c.close();
+        }
+        out.keySet().removeAll(drop);
+        Log.d(TAG, "tmdbRefIndex：可用键 " + out.size() + "，同名不同片已排除 " + drop.size());
+        return out;
+    }
+
+    /**
+     * 片名归一化：只留汉字、字母、数字，其余（空格、标点、被 {@link FilmNaming#safe} 换成
+     * 下划线的禁忌字符、{@link FilmNaming#unique} 加的「(2)」尾巴）统统丢掉，并统一小写。
+     *
+     * <p>目的是让「库里片名」和「盘上文件名」被同一个函数压成同一个键，比对就不受
+     * 文件系统禁忌字符的影响。</p>
+     */
+    public static String titleKey(String raw) {
+        if (raw == null) return "";
+        StringBuilder sb = new StringBuilder(raw.length());
+        for (int i = 0; i < raw.length(); i++) {
+            char ch = raw.charAt(i);
+            if (ch >= '0' && ch <= '9') sb.append(ch);
+            else if (ch >= 'A' && ch <= 'Z') sb.append((char) (ch + 32));
+            else if (ch >= 'a' && ch <= 'z') sb.append(ch);
+            else if (ch >= 0x4E00 && ch <= 0x9FFF) sb.append(ch);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * TMDB 标识的取数 SQL。
+     *
+     * <p>这里破例碰了基表（{@code movie} / {@code movie_ext_id}）而不是视图：视图没暴露外部 id。
+     * {@code fillExtUrls} 取豆瓣/IMDb 链接走的也是这两个表，口径保持一致；
+     * 万一装到一版没有 {@code movie_ext_id} 的库，两个方法都是捕获异常后返回空，不影响播放与下载。</p>
+     */
+    private static final String TMDB_REF_SQL =
+            "SELECT e.id, e.subtype, COALESCE(NULLIF(m.title_cn,''), m.title),"
+                    + " COALESCE(m.series_name,''), COALESCE(m.season_no,0), COALESCE(m.episode_no,0)"
+                    + " FROM movie m JOIN movie_ext_id e ON e.movie_id = m.id"
+                    + " WHERE e.source='tmdb'";
+
+    private static TmdbRef readTmdbRef(Cursor c) {
+        String id = str(c, 0);
+        if (id.isEmpty()) return null;
+        TmdbRef r = new TmdbRef();
+        r.tmdbId = id;
+        String st = str(c, 1);
+        r.subtype = st.isEmpty() ? "movie" : st;
+        r.title = str(c, 2);
+        r.seriesName = str(c, 3);
+        r.seasonNo = (int) lng(c, 4);
+        r.episodeNo = (int) lng(c, 5);
+        return r;
+    }
+
+    /**
      * 把数据库字段拼成详情页上半屏的「资料区」。
      *
      * <p>顺序刻意把 {@code ◎上映日期} 放在<b>最后</b>：界面上用

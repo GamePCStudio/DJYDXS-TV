@@ -9,6 +9,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
 import java.util.List;
 
 /** 设置页：百度网盘扫码 / 转存目录 / 下载目录 / 后台下载限速 / 授权状态 / 解除授权。 */
@@ -60,6 +61,28 @@ public class SettingsActivity extends Activity {
                         + Settings.DL_LIMIT_MIN + " ~ " + Settings.DL_LIMIT_MAX + " Mbps\n"
                         + "下载管理页面内下载不限速；退出该页面后按此限速",
                 v -> showDlLimitDialog()));
+
+        // ②.5 TMDB 海报 / NFO 生成
+        group.addView(sectionLabel("TMDB 海报 · NFO"));
+        group.addView(option("海报/NFO 生成: " + onOff(Settings.nfoEnabled()),
+                "开：每部下完，在影片旁边补一个「与影片同名」的 .nfo 和海报图。\n"
+                        + "关：什么都不写，只留影片。\n"
+                        + "缺省关着的原因：Jellyfin / Emby 读本地 NFO 的优先级高于它自己联网刮，\n"
+                        + "而且这个优先级关不掉 —— 认错一部就会盖掉播放器本来能刮对的结果，宁缺毋滥。\n"
+                        + "要先在下面填 TMDB 接口密钥，否则开了也不会生成。",
+                v -> {
+                    Settings.setNfoEnabled(!Settings.nfoEnabled());
+                    rebuild();
+                }));
+        group.addView(option("TMDB 接口密钥: " + (Settings.tmdbApiKey().isEmpty() ? "未填写" : "已填写"),
+                "生成海报和 NFO 要访问 TMDB。密钥只存在这台机器的设置里，不会写进安装包、也不会上传。\n"
+                        + "两种都能用：32 位十六进制（v3 key），或一长串带点号的令牌（v4 只读访问令牌）",
+                v -> showTmdbKeyDialog()));
+        group.addView(option("补生成已下载影片的海报/NFO",
+                "扫一遍下载目录，给「有影片文件、旁边没有 NFO」的片子补上资料 ——\n"
+                        + "下载时开关还没打开的、以前下完的都在这一批里。已经有 NFO 的一律不动。\n"
+                        + "认法是按文件名回片库里找 TMDB 编号，对不上的直接跳过，不会硬贴资料",
+                v -> runNfoBackfill()));
 
         // ②.6 云端取址（hash 片源）
         group.addView(sectionLabel("云端取址"));
@@ -345,6 +368,89 @@ public class SettingsActivity extends Activity {
                 .create();
         dlg.show();
         dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).requestFocus();
+    }
+
+    /**
+     * TMDB 接口密钥。
+     *
+     * <p>不回显已保存的值：密钥不该出现在屏幕上（截图、投屏、远程协助都会看到）。
+     * 输入框永远空白，填了就是覆盖，清空就是关掉这项能力的网络侧。</p>
+     */
+    private void showTmdbKeyDialog() {
+        final android.widget.EditText input = new android.widget.EditText(this);
+        input.setTextSize(15);
+        input.setHint("粘贴密钥（32 位十六进制，或带点号的长令牌）");
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(
+                this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("TMDB 接口密钥（当前" + (Settings.tmdbApiKey().isEmpty() ? "未填写" : "已填写") + "）")
+                .setView(input)
+                .setPositiveButton("保存", (d, w) -> {
+                    String v = input.getText().toString().trim();
+                    if (v.isEmpty()) {
+                        Settings.setTmdbApiKey("");
+                        Toast.makeText(this, "已清空密钥，不会再生成", Toast.LENGTH_SHORT).show();
+                        rebuild();
+                        return;
+                    }
+                    if (!v.matches("[0-9a-fA-F]{32}") && !(v.indexOf('.') > 0 && v.length() > 80)) {
+                        Toast.makeText(this, "看着不像 TMDB 的密钥：要 32 位十六进制，"
+                                + "或者带点号的长令牌", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    Settings.setTmdbApiKey(v);
+                    Toast.makeText(this, "密钥已存到本机", Toast.LENGTH_SHORT).show();
+                    rebuild();
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        dlg.show();
+        dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).requestFocus();
+    }
+
+    /**
+     * 补生成：扫下载目录，给「有影片、没同名 NFO」的片子补资料。
+     *
+     * <p>整个过程在一部一部串行访问 TMDB（内部已限速），几百部要跑十几分钟，所以给一个
+     * 能看进度的对话框 + 「停止」按钮；边跑边把当前处理到哪一个显示出来。</p>
+     */
+    private void runNfoBackfill() {
+        if (!TmdbClient.ready()) {
+            Toast.makeText(this, "先填 TMDB 接口密钥", Toast.LENGTH_LONG).show();
+            return;
+        }
+        final File root = new File(Settings.downloadDir());
+        if (!root.exists()) {
+            Toast.makeText(this, "下载目录不存在：" + root.getAbsolutePath(), Toast.LENGTH_LONG).show();
+            return;
+        }
+        final TextView box = new TextView(this);
+        box.setTextSize(15);
+        box.setTextColor(0xFFEEEEEE);
+        box.setPadding(dip(16), dip(12), dip(16), dip(12));
+        box.setText("正在清点目录…\n" + root.getAbsolutePath());
+        NfoWriter.abort = false;
+        final AlertDialog dlg = new android.app.AlertDialog.Builder(
+                this, android.R.style.Theme_DeviceDefault_Dialog)
+                .setTitle("补生成海报 / NFO")
+                .setView(box)
+                .setNegativeButton("停止", (d, w) -> {
+                    NfoWriter.abort = true;
+                })
+                .setPositiveButton("关闭", null)
+                .create();
+        dlg.show();
+        new Thread(() -> {
+            final String result = NfoWriter.backfill(root,
+                    (text, done, total) -> runOnUiThread(() -> {
+                        if (!isFinishing()) box.setText(text);
+                    }));
+            runOnUiThread(() -> {
+                if (isFinishing()) return;
+                box.setText(result);
+                dlg.getButton(android.app.AlertDialog.BUTTON_NEGATIVE).setText("好");
+                rebuild();
+            });
+        }, "nfo-backfill").start();
     }
 
     /**
